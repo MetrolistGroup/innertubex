@@ -1244,7 +1244,7 @@ class InnerTubeExtractor internal constructor(
         if (clientName != "ANDROID_VR" && clientName != "VISIONOS" && clientName != "TVHTML5_SIMPLY") {
             headers["User-Agent"] = userAgent
             headers["Accept"] = "*/*"
-            headers["Accept-Language"] = "${innerTube.locale.hl}-${innerTube.locale.gl},${innerTube.locale.hl};q=0.9"
+            headers["Accept-Language"] = innerTube.locale.acceptLanguageHeader()
 
             when (clientName) {
                 "WEB_REMIX" -> {
