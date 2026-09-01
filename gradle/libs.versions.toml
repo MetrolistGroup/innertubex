@@ -1,5 +1,5 @@
 [versions]
-androidGradlePlugin = "9.3.1"
+androidGradlePlugin = "9.3.2"
 binaryCompatibilityValidator = "0.18.1"
 compileSdk = "37"
 dokka = "2.2.0"
