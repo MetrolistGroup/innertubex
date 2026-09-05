@@ -1266,7 +1266,13 @@ class InnerTube(
     suspend fun unlikePlaylist(
         client: YouTubeClient,
         playlistId: String,
-    ) = executeMutation("unlikePlaylist") { requestSession ->
+    ) = unlikePlaylist(client, playlistId, sessionSnapshot())
+
+    suspend fun unlikePlaylist(
+        client: YouTubeClient,
+        playlistId: String,
+        requestSession: SessionSnapshot,
+    ) = executeMutation("unlikePlaylist", requestSession) { requestSession ->
         httpClient.post("like/removelike") {
             ytClient(client, requestSession, setLogin = true)
             setBody(
@@ -1488,7 +1494,13 @@ class InnerTube(
     suspend fun deletePlaylist(
         client: YouTubeClient,
         playlistId: String,
-    ) = executeMutation("deletePlaylist") { requestSession ->
+    ) = deletePlaylist(client, playlistId, sessionSnapshot())
+
+    suspend fun deletePlaylist(
+        client: YouTubeClient,
+        playlistId: String,
+        requestSession: SessionSnapshot,
+    ) = executeMutation("deletePlaylist", requestSession) { requestSession ->
         httpClient.post("playlist/delete") {
             ytClient(client, requestSession, setLogin = true)
             setBody(

@@ -267,6 +267,23 @@ class InnerTubeSessionTest {
         }
 
     @Test
+    fun staleSessionCannotStartPlaylistMutation() =
+        runBlocking {
+            val engine = MockEngine { respondOk() }
+            val innerTube = clientWithContentNegotiation(engine).also { it.cookie = "SAPISID=old-session" }
+            val oldSession = innerTube.sessionSnapshot()
+            innerTube.cookie = "SAPISID=new-session"
+
+            assertFailsWith<CancellationException> {
+                innerTube.unlikePlaylist(YouTubeClient.WEB_REMIX, "playlist-id", oldSession)
+            }
+            assertFailsWith<CancellationException> {
+                innerTube.deletePlaylist(YouTubeClient.WEB_REMIX, "playlist-id", oldSession)
+            }
+            assertTrue(engine.requestHistory.isEmpty())
+        }
+
+    @Test
     fun sessionChangeCancelsFeedback() =
         runBlocking {
             val requestStarted = CompletableDeferred<Unit>()
