@@ -23,7 +23,6 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
-import java.util.Locale
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -268,6 +267,23 @@ class InnerTubeSessionTest {
         }
 
     @Test
+    fun staleSessionCannotStartPlaylistMutation() =
+        runBlocking {
+            val engine = MockEngine { respondOk() }
+            val innerTube = clientWithContentNegotiation(engine).also { it.cookie = "SAPISID=old-session" }
+            val oldSession = innerTube.sessionSnapshot()
+            innerTube.cookie = "SAPISID=new-session"
+
+            assertFailsWith<CancellationException> {
+                innerTube.unlikePlaylist(YouTubeClient.WEB_REMIX, "playlist-id", oldSession)
+            }
+            assertFailsWith<CancellationException> {
+                innerTube.deletePlaylist(YouTubeClient.WEB_REMIX, "playlist-id", oldSession)
+            }
+            assertTrue(engine.requestHistory.isEmpty())
+        }
+
+    @Test
     fun sessionChangeCancelsFeedback() =
         runBlocking {
             val requestStarted = CompletableDeferred<Unit>()
@@ -379,22 +395,6 @@ class InnerTubeSessionTest {
             assertTrue(request.headers[HttpHeaders.Authorization]?.startsWith("SAPISIDHASH ") == true)
             assertEquals("0", request.headers["X-Goog-AuthUser"])
         }
-
-    @Test
-    fun systemLocaleRetainsLanguageScriptAndUsesCountryForRegion() {
-        val scriptLocale =
-            Locale
-                .Builder()
-                .setLanguage("zh")
-                .setScript("Hant")
-                .setRegion("TW")
-                .build()
-
-        val locale = systemYouTubeLocale(scriptLocale)
-
-        assertEquals("zh-Hant-TW", locale.hl)
-        assertEquals("TW", locale.gl)
-    }
 
     @Test
     fun bulkSessionReplacementNeverPublishesMixedIdentity() {

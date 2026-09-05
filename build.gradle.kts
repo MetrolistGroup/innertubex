@@ -33,6 +33,10 @@ kotlin {
     jvm("desktop") {
         compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
     }
+
+    iosArm64()
+    iosSimulatorArm64()
+
     jvmToolchain(21)
     applyDefaultHierarchyTemplate()
 

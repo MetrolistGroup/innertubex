@@ -21,6 +21,7 @@ public final class com/metrolist/innertubex/InnerTube {
 	public final fun close ()V
 	public final fun createIsolatedSession (Z)Lcom/metrolist/innertubex/InnerTube;
 	public final fun createPlaylist (Lcom/metrolist/innertubex/models/YouTubeClient;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun deletePlaylist (Lcom/metrolist/innertubex/models/YouTubeClient;Ljava/lang/String;Lcom/metrolist/innertubex/InnerTube$SessionSnapshot;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun deletePlaylist (Lcom/metrolist/innertubex/models/YouTubeClient;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun deletePrivatelyOwnedEntity (Lcom/metrolist/innertubex/models/YouTubeClient;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun dislikeVideo (Lcom/metrolist/innertubex/models/YouTubeClient;Ljava/lang/String;Lcom/metrolist/innertubex/InnerTube$SessionSnapshot;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
@@ -80,6 +81,7 @@ public final class com/metrolist/innertubex/InnerTube {
 	public final fun setVisitorData (Ljava/lang/String;)V
 	public final fun subscribeChannel (Lcom/metrolist/innertubex/models/YouTubeClient;Ljava/lang/String;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static synthetic fun subscribeChannel$default (Lcom/metrolist/innertubex/InnerTube;Lcom/metrolist/innertubex/models/YouTubeClient;Ljava/lang/String;Ljava/lang/String;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun unlikePlaylist (Lcom/metrolist/innertubex/models/YouTubeClient;Ljava/lang/String;Lcom/metrolist/innertubex/InnerTube$SessionSnapshot;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun unlikePlaylist (Lcom/metrolist/innertubex/models/YouTubeClient;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun unlikeVideo (Lcom/metrolist/innertubex/models/YouTubeClient;Ljava/lang/String;Lcom/metrolist/innertubex/InnerTube$SessionSnapshot;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun unlikeVideo (Lcom/metrolist/innertubex/models/YouTubeClient;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;

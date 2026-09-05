@@ -536,6 +536,32 @@ class SabrAudioStreamTest {
             assertEquals(SabrFailureKind.ATTESTATION_REQUIRED, error.kind)
         }
 
+    @Test
+    fun segmentOvershootStopsBeforeAnotherRequestAndFailsValidation() =
+        runBlocking {
+            var requests = 0
+            val engine =
+                MockEngine {
+                    requests++
+                    respond(
+                        content =
+                            initializationAndSegmentResponse(endSegmentNumber = 0, durationMs = 3_000) +
+                                finalSegmentResponse(includeEndOfTrack = false),
+                        status = HttpStatusCode.OK,
+                        headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"),
+                    )
+                }
+
+            assertFailsWith<SabrProtocolException> {
+                SabrAudioStream(
+                    httpClient = HttpClient(engine),
+                    bootstrap = bootstrap().copy(durationMs = 3_000, contentLengthBytes = 13),
+                ).bytes().toList()
+            }
+
+            assertEquals(1, requests)
+        }
+
     private fun completeResponse(endSegmentNumber: Int): ByteArray = initializationResponsePrefix(endSegmentNumber) + mediaResponseSuffix()
 
     private fun initializationResponsePrefix(endSegmentNumber: Int): ByteArray =

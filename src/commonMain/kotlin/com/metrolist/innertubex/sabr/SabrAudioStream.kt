@@ -23,8 +23,9 @@ import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.map
 
 /** Fixed-format, audio-only SABR transport. */
@@ -118,7 +119,7 @@ private class SabrMediaStream(
         var lastResponseBytes = 0L
         var lastRequestPlayerTimeMs = initialPlayerTimeMs
         var lastObservedPlaybackPositionMs: Long? = null
-        return flow {
+        return channelFlow {
             logger.i(
                 tag,
                 buildString {
@@ -159,7 +160,9 @@ private class SabrMediaStream(
 
             while (
                 !ended &&
-                initialization?.endSegmentNumber?.let { lastSequenceNumber == it } != true &&
+                initialization?.endSegmentNumber?.let { end ->
+                    lastSequenceNumber?.let { sequence -> sequence >= end } == true
+                } != true &&
                 playerTimeMs < expectedDurationMs(initialization)
             ) {
                 if (requestNumber >= MAX_REQUEST_COUNT) {
@@ -280,7 +283,7 @@ private class SabrMediaStream(
                             val newSegments = mutableListOf<SabrSegment>()
 
                             suspend fun emitMediaSegment(segment: SabrSegment) {
-                                emit(segment.toChunk())
+                                send(segment.toChunk())
                                 emittedSequences += segment.header.sequenceNumber
                                 lastSequenceNumber = segment.header.sequenceNumber
                                 playerTimeMs = maxOf(playerTimeMs, segment.checkedEndTimeMs())
@@ -337,7 +340,7 @@ private class SabrMediaStream(
                                                 throw SabrProtocolException("SABR returned duplicate initialization segments")
                                             }
                                             if (!initSegmentEmitted) {
-                                                emit(segment.toChunk())
+                                                send(segment.toChunk())
                                                 initSegmentEmitted = true
                                                 cumulativeStreamBytes += segment.data.size
                                             }
@@ -588,7 +591,7 @@ private class SabrMediaStream(
                         "protectionRetries" to protectionRetryCount.toString(),
                     ) + bootstrap.logDetails(selectedFormat, mediaType),
             )
-        }.catch { error ->
+        }.buffer(0).catch { error ->
             if (error is CancellationException) throw error
             onResponse?.invoke(
                 SabrResponseDiagnostics(

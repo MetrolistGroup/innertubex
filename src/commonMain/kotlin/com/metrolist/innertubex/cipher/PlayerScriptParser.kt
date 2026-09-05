@@ -44,10 +44,7 @@ internal object PlayerScriptParser {
         }
 
         val altPattern =
-            Regex(
-                """function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(\s*a\s*\)\s*\{[^{}]*a\s*[=.][^{}]*reverse[^{}]*\}""",
-                RegexOption.DOT_MATCHES_ALL,
-            )
+            Regex("""(?s)function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(\s*a\s*\)\s*\{[^{}]*a\s*[=.][^{}]*reverse[^{}]*\}""")
         altPattern.findAll(playerCode).forEach { m ->
             val funcName = m.groupValues[1]
             val func = extractFunctionByName(playerCode, funcName)
@@ -73,15 +70,9 @@ internal object PlayerScriptParser {
         val helpers = mutableMapOf<String, String>()
         val helperPatterns =
             listOf(
-                Regex(
-                    """var\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*\{\s*[^}]*reverse[^}]*\}""",
-                    RegexOption.DOT_MATCHES_ALL,
-                ),
-                Regex("""var\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*\{\s*[^}]*slice[^}]*\}""", RegexOption.DOT_MATCHES_ALL),
-                Regex(
-                    """var\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*\{\s*[^}]*splice[^}]*\}""",
-                    RegexOption.DOT_MATCHES_ALL,
-                ),
+                Regex("""(?s)var\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*\{\s*[^}]*reverse[^}]*\}"""),
+                Regex("""(?s)var\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*\{\s*[^}]*slice[^}]*\}"""),
+                Regex("""(?s)var\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*\{\s*[^}]*splice[^}]*\}"""),
             )
         for (pattern in helperPatterns) {
             pattern.findAll(playerCode).forEach { match ->
@@ -115,12 +106,9 @@ internal object PlayerScriptParser {
     ): String? {
         val patterns =
             listOf(
-                Regex(
-                    """var\s+${Regex.escape(functionName)}\s*=\s*function\s*\([^)]*\)\s*\{""",
-                    RegexOption.DOT_MATCHES_ALL,
-                ),
-                Regex("""function\s+${Regex.escape(functionName)}\s*\([^)]*\)\s*\{""", RegexOption.DOT_MATCHES_ALL),
-                Regex("""${Regex.escape(functionName)}\s*=\s*function\s*\([^)]*\)\s*\{""", RegexOption.DOT_MATCHES_ALL),
+                Regex("""(?s)var\s+${Regex.escape(functionName)}\s*=\s*function\s*\([^)]*\)\s*\{"""),
+                Regex("""(?s)function\s+${Regex.escape(functionName)}\s*\([^)]*\)\s*\{"""),
+                Regex("""(?s)${Regex.escape(functionName)}\s*=\s*function\s*\([^)]*\)\s*\{"""),
             )
         for (pattern in patterns) {
             val match = pattern.find(playerCode)

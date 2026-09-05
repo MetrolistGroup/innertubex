@@ -29,6 +29,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlin.concurrent.atomics.AtomicInt
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -891,15 +893,22 @@ internal class PlayerClientDirector(
     ) : Exception("Player request for $clientName exceeded ${timeoutMs}ms", cause)
 }
 
+@OptIn(ExperimentalAtomicApi::class)
 internal class PlayerRequestBudget(
     initial: Int,
 ) {
-    var remaining = initial.also { require(it > 0) { "Player request budget must be positive" } }
-        private set
+    private val remainingCount = AtomicInt(initial.also { require(it > 0) { "Player request budget must be positive" } })
 
-    @Synchronized
+    val remaining: Int
+        get() = remainingCount.load()
+
     fun consume() {
-        check(remaining > 0) { "Player request budget exhausted" }
-        remaining--
+        while (true) {
+            val current = remainingCount.load()
+            check(current > 0) { "Player request budget exhausted" }
+            if (remainingCount.compareAndSet(current, current - 1)) {
+                return
+            }
+        }
     }
 }

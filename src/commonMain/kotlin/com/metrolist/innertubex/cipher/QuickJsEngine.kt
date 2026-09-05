@@ -51,7 +51,8 @@ internal class QuickJsEngine {
 
                         else -> {
                             if (c.code < 0x20) {
-                                append("\\u%04x".format(c.code))
+                                val hex = c.code.toString(16).padStart(4, '0')
+                                append("\\u$hex")
                             } else {
                                 append(c)
                             }
