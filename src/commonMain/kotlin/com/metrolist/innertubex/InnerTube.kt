@@ -337,12 +337,6 @@ class InnerTube(
 
     private fun sanitizeAuthUser(value: String): String = value.filter { it.isDigit() }.ifBlank { "0" }
 
-    private fun YouTubeLocale.acceptLanguageHeader(): String {
-        val languageTag = hl.replace('_', '-')
-        val regionalTag = if ('-' in languageTag) languageTag else "$languageTag-$gl"
-        return "$regionalTag,${languageTag.substringBefore('-')};q=0.9"
-    }
-
     private fun resolveSapisidValue(cookie: String?): String? {
         val cookieMap = cookie?.let(::parseCookieString).orEmpty()
         return cookieMap["SAPISID"]

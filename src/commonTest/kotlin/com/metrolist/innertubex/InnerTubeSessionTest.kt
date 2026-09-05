@@ -750,6 +750,17 @@ class InnerTubeSessionTest {
         }
 
     @Test
+    fun requestLanguageHeaderOmitsRegionWhenCountryIsEmpty() =
+        runBlocking {
+            val engine = MockEngine { respondOk() }
+            val innerTube = clientWithContentNegotiation(engine).also { it.locale = YouTubeLocale(gl = "", hl = "en") }
+
+            innerTube.browse(YouTubeClient.WEB_REMIX, browseId = "FEmusic_home")
+
+            assertEquals("en", engine.requestHistory.single().headers[HttpHeaders.AcceptLanguage])
+        }
+
+    @Test
     fun searchSendsVisitorData() =
         runBlocking {
             val engine = MockEngine { respondOk() }

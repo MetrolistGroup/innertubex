@@ -72,7 +72,7 @@ public class YtConfigParserImpl(
                 header(HttpHeaders.Accept, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
                 referer?.let { header("Referer", it) }
                 requestCookie?.let { header(HttpHeaders.Cookie, it) }
-                header(HttpHeaders.AcceptLanguage, "${innerTube.locale.hl}-${innerTube.locale.gl},${innerTube.locale.hl};q=0.9")
+                header(HttpHeaders.AcceptLanguage, innerTube.locale.acceptLanguageHeader())
                 timeout {
                     requestTimeoutMillis = PAGE_TIMEOUT_MS
                     connectTimeoutMillis = PAGE_TIMEOUT_MS
