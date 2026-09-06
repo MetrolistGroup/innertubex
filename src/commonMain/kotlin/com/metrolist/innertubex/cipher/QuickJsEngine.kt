@@ -18,6 +18,7 @@ internal class QuickJsEngine {
 
         // Current ~2.6 MiB player scripts need more than 128 MiB while EJS builds their AST.
         private const val NATIVE_MEMORY_LIMIT_BYTES = 192L * 1024L * 1024L
+        private const val MAX_STACK_SIZE_BYTES = 256L * 1024L
         private const val MAX_EVALUATION_RESULT_LENGTH = 16 * 1024 * 1024
         private const val MAX_FUNCTION_INPUT_LENGTH = 64 * 1024
         private const val MAX_FUNCTION_RESULT_LENGTH = 256 * 1024
@@ -107,7 +108,7 @@ internal class QuickJsEngine {
                       return text.length <= $maxResultLength ? text : "";
                     })()
                     """.trimIndent()
-                runtime.evaluate<String?>(boundedCode).orEmpty()
+                runtime.evaluateSafely<String?>(boundedCode).orEmpty()
             }
         }
 
@@ -116,7 +117,7 @@ internal class QuickJsEngine {
         withContext(Dispatchers.Default) {
             mutex.withLock {
                 val runtime = quickJs ?: throw IllegalStateException("QuickJS not initialized")
-                runtime.evaluate<Any?>("$code\n;undefined;")
+                runtime.evaluateSafely<Any?>("$code\n;undefined;")
             }
         }
     }
@@ -138,7 +139,7 @@ internal class QuickJsEngine {
             mutex.withLock {
                 val runtime = quickJs ?: throw IllegalStateException("QuickJS not initialized")
                 val inputLiteral = jsStringLiteral(input)
-                runtime.evaluate<String?>(
+                runtime.evaluateSafely<String?>(
                     """
                     (function() {
                       const value = $functionName($inputLiteral);
@@ -150,6 +151,13 @@ internal class QuickJsEngine {
                 )
             }
         }
+
+    private suspend inline fun <reified T> QuickJs.evaluateSafely(code: String): T {
+        // QuickJS measures its limit from the current native thread's stack top. Coroutines may
+        // resume on another worker, so refresh it immediately before every evaluation.
+        maxStackSize = MAX_STACK_SIZE_BYTES
+        return evaluate(code)
+    }
 
     /**
      * Set up the global environment for YouTube player execution.
