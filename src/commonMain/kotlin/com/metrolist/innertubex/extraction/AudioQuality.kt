@@ -4,4 +4,5 @@ public enum class AudioQuality {
     AUTO,
     LOW,
     HIGH,
+    MP4,
 }
