@@ -47,6 +47,18 @@ class AudioFormatSelectorTest {
     }
 
     @Test
+    fun mp4RequiresAPlayerCompatibleFormat() {
+        val formats =
+            listOf(
+                Format(itag = 251, mimeType = "audio/webm", bitrate = 160_000, url = "https://opus"),
+                Format(itag = 140, mimeType = "audio/mp4", bitrate = 128_000, url = "https://aac"),
+            )
+
+        assertEquals(140, selectBestAudioFormat(formats, AudioQuality.MP4)?.itag)
+        assertNull(selectBestAudioFormat(formats.take(1), AudioQuality.MP4))
+    }
+
+    @Test
     fun highQualityPrefersStereoBeforeBitrate() {
         val formats =
             listOf(

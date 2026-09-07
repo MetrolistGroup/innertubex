@@ -1,11 +1,13 @@
 package com.metrolist.innertubex
 
+import com.dokar.quickjs.QuickJsException
 import com.metrolist.innertubex.cipher.QuickJsEngine
 import com.metrolist.innertubex.cipher.readYtEjsSolverScript
 import com.metrolist.innertubex.utils.sha1
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
 class NativeRuntimeTest {
     @Test
@@ -19,6 +21,10 @@ class NativeRuntimeTest {
             try {
                 engine.initialize()
                 assertEquals("2", engine.evaluate("1 + 1", maxResultLength = 1))
+                assertFailsWith<QuickJsException> {
+                    engine.evaluate("(function recurse() { return recurse(); })()", maxResultLength = 1)
+                }
+                Unit
             } finally {
                 engine.dispose()
             }

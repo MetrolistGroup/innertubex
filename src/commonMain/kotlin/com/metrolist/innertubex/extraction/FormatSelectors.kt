@@ -23,6 +23,10 @@ public fun selectBestAudioFormat(
         AudioQuality.HIGH -> {
             validFormats.maxByOrNull(::audioFormatScore)
         }
+
+        AudioQuality.MP4 -> {
+            validFormats.filter { it.mimeType.contains("audio/mp4") }.maxByOrNull(::audioFormatScore)
+        }
     }
 }
 

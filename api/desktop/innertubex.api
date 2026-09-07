@@ -224,6 +224,7 @@ public final class com/metrolist/innertubex/extraction/AudioQuality : java/lang/
 	public static final field AUTO Lcom/metrolist/innertubex/extraction/AudioQuality;
 	public static final field HIGH Lcom/metrolist/innertubex/extraction/AudioQuality;
 	public static final field LOW Lcom/metrolist/innertubex/extraction/AudioQuality;
+	public static final field MP4 Lcom/metrolist/innertubex/extraction/AudioQuality;
 	public static fun getEntries ()Lkotlin/enums/EnumEntries;
 	public static fun valueOf (Ljava/lang/String;)Lcom/metrolist/innertubex/extraction/AudioQuality;
 	public static fun values ()[Lcom/metrolist/innertubex/extraction/AudioQuality;
