@@ -6,6 +6,24 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-07
+
+### Added
+
+- Add iOS device and simulator targets with native locale, hashing, and EJS
+  implementations.
+- Allow playlist deletion and unlike requests to use an explicit session
+  snapshot so account changes cannot redirect a mutation.
+- Add strict MP4 audio selection for native players.
+
+### Fixed
+
+- Refresh QuickJS native stack metadata before each evaluation so authenticated
+  playback cannot crash after a coroutine changes workers.
+- Build `Accept-Language` consistently without duplicating or inventing a
+  region.
+- Handle native locale discovery and SABR end-of-stream behavior safely.
+
 ## [0.5.2] - 2026-09-02
 
 ### Fixed

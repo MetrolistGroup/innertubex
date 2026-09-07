@@ -4,7 +4,7 @@
 [![JitPack](https://jitpack.io/v/MetrolistGroup/innertubex.svg)](https://jitpack.io/#MetrolistGroup/innertubex)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
-InnerTubeX is an extended Android and JVM Kotlin Multiplatform client for
+InnerTubeX is an extended Android, JVM, and iOS Kotlin Multiplatform client for
 YouTube's InnerTube APIs. It retains standard browse, search, account,
 playlist, and player operations while adding:
 
@@ -27,7 +27,7 @@ repositories {
 }
 
 dependencies {
-    implementation("com.github.MetrolistGroup.innertubex:innertubex:0.4.1")
+    implementation("com.github.MetrolistGroup.innertubex:innertubex:0.6.0")
 }
 ```
 
