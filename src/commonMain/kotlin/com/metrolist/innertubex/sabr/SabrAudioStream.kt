@@ -144,6 +144,7 @@ private class SabrMediaStream(
             var backoffTimeMs = 0L
             var requestsWithoutProgress = 0
             var ended = false
+            var firstSequenceNumber: Int? = null
             var lastSequenceNumber: Int? = null
             var consecutiveTransientFailures = 0
             var transientRetryCount = 0
@@ -287,6 +288,7 @@ private class SabrMediaStream(
 
                             suspend fun emitMediaSegment(segment: SabrSegment) {
                                 send(segment.toChunk())
+                                if (firstSequenceNumber == null) firstSequenceNumber = segment.header.sequenceNumber
                                 lastSequenceNumber = segment.header.sequenceNumber
                                 playerTimeMs = maxOf(playerTimeMs, segment.checkedEndTimeMs())
                                 cumulativeMediaBytes += segment.data.size
@@ -356,7 +358,11 @@ private class SabrMediaStream(
                                             }
                                         } else {
                                             val sequenceNumber = segment.header.sequenceNumber
-                                            if (lastSequenceNumber?.let { sequenceNumber <= it } != true) {
+                                            val alreadyEmitted =
+                                                lastSequenceNumber?.let { last ->
+                                                    sequenceNumber >= checkNotNull(firstSequenceNumber) && sequenceNumber <= last
+                                                } == true
+                                            if (!alreadyEmitted) {
                                                 if (pendingMediaBySequence.put(sequenceNumber, segment) != null) {
                                                     throw SabrProtocolException("SABR returned duplicate segment $sequenceNumber")
                                                 }

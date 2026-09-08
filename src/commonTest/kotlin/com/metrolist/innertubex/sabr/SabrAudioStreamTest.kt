@@ -335,6 +335,45 @@ class SabrAudioStreamTest {
         }
 
     @Test
+    fun rejectsUnseenSequenceBelowEmittedRange() =
+        runBlocking {
+            var requests = 0
+            val engine =
+                MockEngine {
+                    requests++
+                    respond(
+                        content =
+                            if (requests == 1) {
+                                initializationResponsePrefix(endSegmentNumber = 2, durationMs = 3_000) +
+                                    mediaResponseSegment(headerId = 2, sequenceNumber = 1, startMs = 1_000, data = byteArrayOf(8, 9, 10))
+                            } else {
+                                mediaResponseSegment(headerId = 3, sequenceNumber = 0, startMs = 0, data = byteArrayOf(5, 6, 7)) +
+                                    mediaResponseSegment(
+                                        headerId = 4,
+                                        sequenceNumber = 2,
+                                        startMs = 2_000,
+                                        data = byteArrayOf(11, 12, 13),
+                                    ) +
+                                    umpPart(UmpPartType.END_OF_TRACK, byteArrayOf())
+                            },
+                        status = HttpStatusCode.OK,
+                        headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"),
+                    )
+                }
+
+            val error =
+                assertFailsWith<SabrProtocolException> {
+                    SabrAudioStream(
+                        httpClient = HttpClient(engine),
+                        bootstrap = bootstrap().copy(durationMs = 3_000, contentLengthBytes = null),
+                    ).bytes().toList()
+                }
+
+            assertEquals("SABR segment sequence gap: expected 3, received 0", error.message)
+            assertEquals(2, requests)
+        }
+
+    @Test
     fun finalSegmentCompletesWithoutEndOfTrackPart() =
         runBlocking {
             var requestCount = 0
@@ -627,8 +666,11 @@ class SabrAudioStreamTest {
 
     private fun completeResponse(endSegmentNumber: Int): ByteArray = initializationResponsePrefix(endSegmentNumber) + mediaResponseSuffix()
 
-    private fun initializationResponsePrefix(endSegmentNumber: Int): ByteArray =
-        umpPart(UmpPartType.FORMAT_INITIALIZATION_METADATA, initialization(endSegmentNumber)) +
+    private fun initializationResponsePrefix(
+        endSegmentNumber: Int,
+        durationMs: Long = 1_000,
+    ): ByteArray =
+        umpPart(UmpPartType.FORMAT_INITIALIZATION_METADATA, initialization(endSegmentNumber, durationMs = durationMs)) +
             umpPart(UmpPartType.MEDIA_HEADER, mediaHeader(headerId = 1, isInit = true, sequenceNumber = 0, contentLength = 4)) +
             umpPart(UmpPartType.MEDIA, byteArrayOf(1, 1, 2, 3, 4)) +
             umpPart(UmpPartType.MEDIA_END, byteArrayOf(1))
