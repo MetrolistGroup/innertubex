@@ -163,6 +163,53 @@ class InnerTubeExtractorTest {
         }
 
     @Test
+    fun readyProgressiveVideoSurvivesUnresolvedAdaptiveNParameter() =
+        runBlocking {
+            val response =
+                PROGRESSIVE_AND_ADAPTIVE_VIDEO_RESPONSE.replace(
+                    "stream=adaptive",
+                    "stream=adaptive&n=source",
+                )
+            val client = jsonClient(response)
+            val cipher = RecordingCipherService()
+            val stream =
+                makeExtractor(
+                    client = client,
+                    innerTube = InnerTube(client, retryDelay = {}),
+                    parser = CountingParser(),
+                    cipherService = cipher,
+                ).extract("video", ContentHints(isExplicit = true, wantVideo = true))
+
+            assertNotNull(stream)
+            assertEquals(22, stream.videoItag)
+            assertTrue(cipher.calls.isEmpty())
+            client.close()
+        }
+
+    @Test
+    fun progressiveVideoRemainsFallbackWhenAdaptiveTransformFails() =
+        runBlocking {
+            val response =
+                PROGRESSIVE_AND_ADAPTIVE_VIDEO_RESPONSE
+                    .replace("stream=audio", "stream=audio&n=source")
+                    .replace("stream=adaptive", "stream=adaptive&n=source")
+            val client = jsonClient(response)
+            val cipher = RejectingVideoNTransformCipherService()
+            val stream =
+                makeExtractor(
+                    client = client,
+                    innerTube = InnerTube(client, retryDelay = {}),
+                    parser = CountingParser(),
+                    cipherService = cipher,
+                ).extract("video", ContentHints(isExplicit = true, wantVideo = true))
+
+            assertNotNull(stream)
+            assertEquals(22, stream.videoItag)
+            assertEquals(listOf(251, 136, 22), cipher.itags)
+            client.close()
+        }
+
+    @Test
     fun progressiveVideoRemainsFallbackWhenAdaptiveVideoIsMissing() =
         runBlocking {
             val client = jsonClient(PROGRESSIVE_VIDEO_FALLBACK_RESPONSE)
@@ -919,6 +966,30 @@ class InnerTubeExtractorTest {
             formats: List<PlayerResponse.StreamingData.Format>,
         ): List<PlayerResponse.StreamingData.Format> =
             formats.map { format -> format.copy(url = format.url?.replace("n=source", "n=solved")) }
+    }
+
+    private class RejectingVideoNTransformCipherService : ExtractionCipherService {
+        var itags = emptyList<Int>()
+
+        override suspend fun initialize() {}
+
+        override suspend fun preloadPlayerCode(playerUrl: String) {}
+
+        override suspend fun prewarmEjs() {}
+
+        override suspend fun processFormats(
+            playerUrl: String,
+            formats: List<PlayerResponse.StreamingData.Format>,
+        ): List<PlayerResponse.StreamingData.Format> {
+            itags = formats.map { it.itag }
+            return formats.map { format ->
+                when {
+                    format.isAudio -> format.copy(url = format.url?.replace("n=source", "n=solved"))
+                    format.url?.contains("n=source") == true -> format.copy(url = null)
+                    else -> format
+                }
+            }
+        }
     }
 
     private object AudioOnlyCipherService : ExtractionCipherService {
