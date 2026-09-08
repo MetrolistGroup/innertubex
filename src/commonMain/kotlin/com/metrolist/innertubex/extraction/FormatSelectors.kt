@@ -39,12 +39,12 @@ public fun selectBestVideoFormat(
     val videoFormats = validFormats.filter { it.width != null && (it.height ?: 0) > 0 }
     if (videoFormats.isEmpty()) return null
     val withinCap = videoFormats.filter { it.height!! <= maxHeight }
-    return withinCap.maxWithOrNull(compareBy(::videoFormatScore))
+    return withinCap.maxWithOrNull(videoFormatComparator)
         ?: videoFormats
             .groupBy { it.height!! }
             .minByOrNull { it.key }
             ?.value
-            ?.maxWithOrNull(compareBy(::videoFormatScore))
+            ?.maxWithOrNull(videoFormatComparator)
 }
 
 private fun audioFormatScore(format: Format): Int {
@@ -63,14 +63,14 @@ private fun audioFormatScore(format: Format): Int {
     return codecRank * 1_000_000 + channelBonus + format.bitrate + (format.audioSampleRate ?: 0).coerceIn(0, 48_000) / 10
 }
 
-private fun videoFormatScore(format: Format): Long {
-    val codec = format.mimeType.lowercase()
-    val codecRank =
-        when {
-            "vp09" in codec || "vp9" in codec || "video/webm" in codec -> 3L
-            "avc1" in codec || "video/mp4" in codec -> 2L
-            "av01" in codec -> 1L
-            else -> 0L
-        }
-    return (format.height ?: 0).toLong() * 1_000_000_000_000L + codecRank * 1_000_000_000L + format.bitrate
-}
+// AVC and VP9 both have broad native decoding support; avoid excess bitrate at the same resolution.
+private val videoFormatComparator =
+    compareBy<Format> { it.height ?: 0 }
+        .thenBy {
+            val codec = it.mimeType.lowercase()
+            when {
+                "av01" in codec -> 1
+                "avc1" in codec || "vp09" in codec || "vp9" in codec || "video/mp4" in codec || "video/webm" in codec -> 2
+                else -> 0
+            }
+        }.thenByDescending { it.bitrate.takeIf { bitrate -> bitrate > 0 } ?: Int.MAX_VALUE }

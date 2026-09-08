@@ -92,6 +92,15 @@ class YouTubeCipherService(
      */
     suspend fun initialize() = operationMutex.withLock { initializeUnsafe() }
 
+    /**
+     * Installs optional persistent storage for generated EJS preprocessed players.
+     * Passing null to [write] deletes an unusable cached value.
+     */
+    suspend fun setPreprocessedPlayerCache(
+        read: suspend (String) -> String?,
+        write: suspend (String, String?) -> Unit,
+    ) = operationMutex.withLock { ejs.setPreprocessedPlayerCache(read, write) }
+
     private suspend fun initializeUnsafe() {
         engine.initialize()
     }
@@ -834,24 +843,6 @@ class YouTubeCipherService(
         throw lastFailure ?: IllegalStateException("Player script request failed")
     }
 
-    private fun validatedPlayerScriptUrl(value: String): Url {
-        val url = Url(value)
-        val isYouTubeHost =
-            url.host == "youtube.com" ||
-                url.host.endsWith(".youtube.com") ||
-                url.host == "youtube-nocookie.com" ||
-                url.host.endsWith(".youtube-nocookie.com")
-        require(
-            url.protocol.name == "https" &&
-                isYouTubeHost &&
-                url.encodedPath.startsWith("/s/player/") &&
-                url.encodedPath.endsWith(".js"),
-        ) {
-            "Player script URL must use an approved YouTube HTTPS endpoint"
-        }
-        return url
-    }
-
     /**
      * Create a solver from the player JavaScript code using the parser (QuickJS _solveN / _solveSig).
      */
@@ -1054,4 +1045,22 @@ class YouTubeCipherService(
     private fun String.logId(): String = RemotePlayerConfigParser.extractPlayerHash(this) ?: "unknown"
 
     private fun Throwable.logType(): String = this::class.simpleName ?: "Exception"
+}
+
+internal fun validatedPlayerScriptUrl(value: String): Url {
+    val url = Url(value)
+    val isYouTubeHost =
+        url.host == "youtube.com" ||
+            url.host.endsWith(".youtube.com") ||
+            url.host == "youtube-nocookie.com" ||
+            url.host.endsWith(".youtube-nocookie.com")
+    require(
+        url.protocol.name == "https" &&
+            isYouTubeHost &&
+            url.encodedPath.startsWith("/s/player/") &&
+            url.encodedPath.endsWith(".js"),
+    ) {
+        "Player script URL must use an approved YouTube HTTPS endpoint"
+    }
+    return url
 }

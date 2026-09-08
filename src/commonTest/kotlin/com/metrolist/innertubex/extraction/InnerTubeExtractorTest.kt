@@ -99,6 +99,100 @@ class InnerTubeExtractorTest {
         }
 
     @Test
+    fun adaptiveVideoIsPreferredOverHigherBitrateProgressiveVideo() =
+        runBlocking {
+            val client = jsonClient(PROGRESSIVE_AND_ADAPTIVE_VIDEO_RESPONSE)
+            val stream = extractor(client).extract("video", ContentHints(isExplicit = true, wantVideo = true))
+
+            assertNotNull(stream)
+            assertEquals(136, stream.videoItag)
+            client.close()
+        }
+
+    @Test
+    fun progressiveVideoStillProvidesResolutionsMissingFromAdaptiveVideo() =
+        runBlocking {
+            val response =
+                PROGRESSIVE_AND_ADAPTIVE_VIDEO_RESPONSE.replace(
+                    "\"bitrate\":5000000,\"width\":1280,\"height\":720",
+                    "\"bitrate\":5000000,\"width\":1920,\"height\":1080",
+                )
+            val client = jsonClient(response)
+            val stream = extractor(client).extract("video", ContentHints(isExplicit = true, wantVideo = true, maxVideoHeight = 1080))
+            assertNotNull(stream)
+            assertEquals(22, stream.videoItag)
+            client.close()
+        }
+
+    @Test
+    fun adaptivePreferenceDoesNotExceedTheRequestedResolution() =
+        runBlocking {
+            val response =
+                PROGRESSIVE_AND_ADAPTIVE_VIDEO_RESPONSE.replace(
+                    "\"bitrate\":1000000,\"width\":1280,\"height\":720",
+                    "\"bitrate\":1000000,\"width\":1920,\"height\":1080",
+                )
+            val client = jsonClient(response)
+            val stream = extractor(client).extract("video", ContentHints(isExplicit = true, wantVideo = true, maxVideoHeight = 720))
+            assertNotNull(stream)
+            assertEquals(22, stream.videoItag)
+            client.close()
+        }
+
+    @Test
+    fun readyProgressiveVideoDoesNotTriggerCipherWorkForAdaptiveVideo() =
+        runBlocking {
+            val response =
+                PROGRESSIVE_AND_ADAPTIVE_VIDEO_RESPONSE.replace(
+                    "\"url\":\"https://r.googlevideo.com/videoplayback?stream=adaptive\"",
+                    "\"signatureCipher\":\"url=https%3A%2F%2Fr.googlevideo.com%2Fvideoplayback&sp=sig&s=encrypted\"",
+                )
+            val client = jsonClient(response)
+            val cipher = RecordingCipherService()
+            val stream =
+                makeExtractor(
+                    client = client,
+                    innerTube = InnerTube(client, retryDelay = {}),
+                    parser = CountingParser(),
+                    cipherService = cipher,
+                ).extract("video", ContentHints(isExplicit = true, wantVideo = true))
+            assertNotNull(stream)
+            assertEquals(22, stream.videoItag)
+            assertTrue(cipher.calls.isEmpty())
+            client.close()
+        }
+
+    @Test
+    fun progressiveVideoRemainsFallbackWhenAdaptiveVideoIsMissing() =
+        runBlocking {
+            val client = jsonClient(PROGRESSIVE_VIDEO_FALLBACK_RESPONSE)
+            val stream = extractor(client).extract("video", ContentHints(isExplicit = true, wantVideo = true))
+
+            assertNotNull(stream)
+            assertEquals(22, stream.videoItag)
+            client.close()
+        }
+
+    @Test
+    fun selectedAudioAndVideoAreProcessedInOneCipherBatch() =
+        runBlocking {
+            val client = jsonClient(CIPHERED_VIDEO_RESPONSE)
+            val cipherService = RecordingCipherService()
+            val stream =
+                makeExtractor(
+                    client = client,
+                    innerTube = InnerTube(client, retryDelay = {}),
+                    parser = CountingParser(),
+                    cipherService = cipherService,
+                ).extract("video", ContentHints(isExplicit = true, wantVideo = true))
+
+            assertNotNull(stream)
+            assertEquals(136, stream.videoItag)
+            assertEquals(listOf(listOf(251, 136)), cipherService.calls)
+            client.close()
+        }
+
+    @Test
     fun normalDirectPlaybackSkipsWatchPageAndCipherSetup() =
         runBlocking {
             val client = jsonClient(DIRECT_RESPONSE)
@@ -840,6 +934,26 @@ class InnerTubeExtractorTest {
         ): List<PlayerResponse.StreamingData.Format> = formats.filter(PlayerResponse.StreamingData.Format::isAudio)
     }
 
+    private class RecordingCipherService : ExtractionCipherService {
+        val calls = mutableListOf<List<Int>>()
+
+        override suspend fun initialize() {}
+
+        override suspend fun preloadPlayerCode(playerUrl: String) {}
+
+        override suspend fun prewarmEjs() {}
+
+        override suspend fun processFormats(
+            playerUrl: String,
+            formats: List<PlayerResponse.StreamingData.Format>,
+        ): List<PlayerResponse.StreamingData.Format> {
+            calls += formats.map { it.itag }
+            return formats.map { format ->
+                format.copy(url = format.url ?: "https://r.googlevideo.com/videoplayback?itag=${format.itag}")
+            }
+        }
+    }
+
     private companion object {
         val DIRECT_RESPONSE =
             """
@@ -852,6 +966,14 @@ class InnerTubeExtractorTest {
         val CIPHERED_VIDEO_RESPONSE =
             """
             {"playabilityStatus":{"status":"OK"},"streamingData":{"adaptiveFormats":[{"itag":251,"url":"https://r.googlevideo.com/videoplayback","mimeType":"audio/webm","bitrate":128000},{"itag":136,"signatureCipher":"url=https%3A%2F%2Fr.googlevideo.com%2Fvideoplayback&sp=sig&s=encrypted","mimeType":"video/mp4; codecs=\"avc1\"","bitrate":1000000,"width":1280,"height":720}]}}
+            """.trimIndent()
+        val PROGRESSIVE_AND_ADAPTIVE_VIDEO_RESPONSE =
+            """
+            {"playabilityStatus":{"status":"OK"},"streamingData":{"formats":[{"itag":22,"url":"https://r.googlevideo.com/videoplayback?stream=progressive","mimeType":"video/mp4; codecs=\"avc1\"","bitrate":5000000,"width":1280,"height":720}],"adaptiveFormats":[{"itag":251,"url":"https://r.googlevideo.com/videoplayback?stream=audio","mimeType":"audio/webm","bitrate":128000},{"itag":136,"url":"https://r.googlevideo.com/videoplayback?stream=adaptive","mimeType":"video/mp4; codecs=\"avc1\"","bitrate":1000000,"width":1280,"height":720}]}}
+            """.trimIndent()
+        val PROGRESSIVE_VIDEO_FALLBACK_RESPONSE =
+            """
+            {"playabilityStatus":{"status":"OK"},"streamingData":{"formats":[{"itag":22,"url":"https://r.googlevideo.com/videoplayback?stream=progressive","mimeType":"video/mp4; codecs=\"avc1\"","bitrate":5000000,"width":1280,"height":720}],"adaptiveFormats":[{"itag":251,"url":"https://r.googlevideo.com/videoplayback?stream=audio","mimeType":"audio/webm","bitrate":128000}]}}
             """.trimIndent()
         val BOUNDED_VIDEO_RESPONSE =
             """

@@ -272,6 +272,69 @@ class SabrAudioStreamTest {
         }
 
     @Test
+    fun multiSegmentResponsePreservesBufferedRangeDiagnostics() =
+        runBlocking {
+            val diagnostics = mutableListOf<SabrResponseDiagnostics>()
+            val engine =
+                MockEngine {
+                    respond(
+                        content = initializationAndSegmentResponse(endSegmentNumber = 1) + finalSegmentResponse(),
+                        status = HttpStatusCode.OK,
+                        headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"),
+                    )
+                }
+
+            val chunks =
+                SabrAudioStream(
+                    httpClient = HttpClient(engine),
+                    bootstrap = bootstrap().copy(durationMs = 2_000, contentLengthBytes = 10),
+                    onResponse = diagnostics::add,
+                ).chunks().toList()
+
+            assertEquals(3, chunks.size)
+            assertEquals(6, diagnostics.single().selectedMediaBytes)
+            assertEquals(2, diagnostics.single().selectedSegmentCount)
+            assertEquals(SabrBufferedRange(SabrFormatId(140, 100, "x"), 0, 2_000, 0, 1), diagnostics.single().bufferedRanges.single())
+        }
+
+    @Test
+    fun duplicateOldAndOutOfOrderNewSegmentsRemainOrdered() =
+        runBlocking {
+            var requests = 0
+            val engine =
+                MockEngine {
+                    requests++
+                    respond(
+                        content =
+                            if (requests == 1) {
+                                initializationAndSegmentResponse(endSegmentNumber = 2, durationMs = 3_000)
+                            } else {
+                                mediaResponseSegment(headerId = 3, sequenceNumber = 0, startMs = 0, data = byteArrayOf(5, 6, 7)) +
+                                    mediaResponseSegment(
+                                        headerId = 4,
+                                        sequenceNumber = 2,
+                                        startMs = 2_000,
+                                        data = byteArrayOf(11, 12, 13),
+                                    ) +
+                                    mediaResponseSegment(headerId = 5, sequenceNumber = 1, startMs = 1_000, data = byteArrayOf(8, 9, 10)) +
+                                    umpPart(UmpPartType.END_OF_TRACK, byteArrayOf())
+                            },
+                        status = HttpStatusCode.OK,
+                        headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"),
+                    )
+                }
+
+            val chunks =
+                SabrAudioStream(
+                    httpClient = HttpClient(engine),
+                    bootstrap = bootstrap().copy(durationMs = 3_000, contentLengthBytes = 13),
+                ).chunks().toList()
+
+            assertEquals(2, requests)
+            assertEquals(listOf(null, 0, 1, 2), chunks.map(SabrChunk::sequenceNumber))
+        }
+
+    @Test
     fun finalSegmentCompletesWithoutEndOfTrackPart() =
         runBlocking {
             var requestCount = 0
@@ -591,13 +654,27 @@ class SabrAudioStreamTest {
             umpPart(UmpPartType.MEDIA_END, byteArrayOf(2))
 
     private fun finalSegmentResponse(includeEndOfTrack: Boolean = true): ByteArray =
+        mediaResponseSegment(headerId = 3, sequenceNumber = 1, startMs = 1_000, data = byteArrayOf(8, 9, 10)) +
+            if (includeEndOfTrack) umpPart(UmpPartType.END_OF_TRACK, byteArrayOf()) else byteArrayOf()
+
+    private fun mediaResponseSegment(
+        headerId: Int,
+        sequenceNumber: Int,
+        startMs: Long,
+        data: ByteArray,
+    ): ByteArray =
         umpPart(
             UmpPartType.MEDIA_HEADER,
-            mediaHeader(headerId = 3, isInit = false, sequenceNumber = 1, contentLength = 3, startMs = 1_000),
+            mediaHeader(
+                headerId = headerId,
+                isInit = false,
+                sequenceNumber = sequenceNumber,
+                contentLength = data.size,
+                startMs = startMs,
+            ),
         ) +
-            umpPart(UmpPartType.MEDIA, byteArrayOf(3, 8, 9, 10)) +
-            umpPart(UmpPartType.MEDIA_END, byteArrayOf(3)) +
-            if (includeEndOfTrack) umpPart(UmpPartType.END_OF_TRACK, byteArrayOf()) else byteArrayOf()
+            umpPart(UmpPartType.MEDIA, byteArrayOf(headerId.toByte()) + data) +
+            umpPart(UmpPartType.MEDIA_END, byteArrayOf(headerId.toByte()))
 
     private fun seekResponse(
         sequenceNumber: Int,
