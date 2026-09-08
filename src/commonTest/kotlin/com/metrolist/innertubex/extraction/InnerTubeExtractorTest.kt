@@ -19,6 +19,7 @@ import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -172,7 +173,86 @@ class InnerTubeExtractorTest {
         }
 
     @Test
-    fun directPlaybackDoesNotStartAnUnusedTokenRuntime() =
+    fun refreshedConfigRetainsBudgetAfterNativeAndCachedFailures() =
+        runBlocking {
+            val parser = CountingParser()
+            var requests = 0
+            val client =
+                HttpClient(
+                    MockEngine {
+                        requests++
+                        respond(
+                            if (requests == 1 || parser.calls >= 2) DIRECT_RESPONSE else UNPLAYABLE_RESPONSE,
+                            HttpStatusCode.OK,
+                            headersOf("Content-Type", "application/json"),
+                        )
+                    },
+                ) { install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) } }
+            val fallback =
+                object : com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy {
+                    override fun resolveClients(hints: ContentHints) =
+                        List(PlaybackClientCatalog.automaticManifests.size * 2) { YouTubeClient.VISIONOS }
+                }
+            try {
+                val extractor = makeExtractor(client, InnerTube(client, retryDelay = {}), parser, fallback)
+                assertNotNull(extractor.extract("prime", ContentHints(isExplicit = true)))
+                assertNotNull(extractor.extract("refresh", ContentHints()))
+                assertEquals(2, parser.calls)
+                assertTrue(requests > PlaybackClientCatalog.automaticManifests.size * 2 + 2)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun explicitTokenMintingRunsConcurrentlyWithConfigFetch() =
+        runBlocking {
+            val started = CompletableDeferred<Unit>()
+            val client = jsonClient(DIRECT_RESPONSE)
+            val innerTube = InnerTube(client, retryDelay = {}).also { it.visitorData = "visitor" }
+            var tokenCalls = 0
+            val provider =
+                object : TokenProvider {
+                    override val capabilities = TokenProviderCapabilities(providers = setOf(PoTokenProviderKind.WEB_BOTGUARD))
+
+                    override suspend fun getPoToken(
+                        videoId: String,
+                        visitorData: String,
+                        cookie: String?,
+                    ): PoTokenResult {
+                        tokenCalls++
+                        started.complete(Unit)
+                        return PoTokenResult("player-token", "AQID", visitorData)
+                    }
+                }
+            val parser =
+                object : YtConfigParser {
+                    override suspend fun fetchConfig(
+                        videoId: String,
+                        useLoginCookies: Boolean,
+                    ): PlayerConfig {
+                        started.await()
+                        return PlayerConfig("https://www.youtube.com/s/player/test/base.js", 123, "visitor", null)
+                    }
+                }
+            try {
+                val extractor =
+                    InnerTubeExtractor(
+                        parser,
+                        PlayerClientDirector(innerTube, WebRemixFallback, provider),
+                        AudioOnlyCipherService,
+                        innerTube,
+                        provider,
+                    )
+                assertNotNull(withTimeout(1_000) { extractor.extract("video", ContentHints(isExplicit = true)) })
+                assertEquals(1, tokenCalls)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun directPlaybackCancelsUnusedTokenPrefetch() =
         runBlocking {
             val client = jsonClient(DIRECT_RESPONSE)
             val innerTube = InnerTube(client, retryDelay = {}).also { it.visitorData = "visitor" }
@@ -187,7 +267,7 @@ class InnerTubeExtractorTest {
                         cookie: String?,
                     ): PoTokenResult? {
                         tokenCalls++
-                        return null
+                        awaitCancellation()
                     }
                 }
             val parser = CountingParser()
@@ -201,7 +281,7 @@ class InnerTubeExtractorTest {
                 )
             try {
                 assertNotNull(withTimeout(1_000) { extractor.extract("video", ContentHints(isExplicit = true)) })
-                assertEquals(0, tokenCalls)
+                assertEquals(1, tokenCalls)
             } finally {
                 client.close()
             }
