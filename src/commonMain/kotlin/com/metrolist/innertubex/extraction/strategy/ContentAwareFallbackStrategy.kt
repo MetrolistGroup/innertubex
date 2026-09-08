@@ -62,9 +62,21 @@ class ContentAwareFallbackStrategy(
             candidates.sortedWith(
                 compareBy<SelectedClient> {
                     when (request.transportPreference) {
-                        PlaybackTransportPreference.AUTO -> if (it.client.useSabr) 1 else 0
-                        PlaybackTransportPreference.SABR -> if (it.client.useSabr) 0 else 1
-                        else -> 0
+                        PlaybackTransportPreference.AUTO -> {
+                            when {
+                                it.client.useSabr -> 2
+                                request.hints.isKidsContent == true && it.client == YouTubeClient.WEB_KIDS -> 0
+                                else -> 1
+                            }
+                        }
+
+                        PlaybackTransportPreference.SABR -> {
+                            if (it.client.useSabr) 0 else 1
+                        }
+
+                        else -> {
+                            0
+                        }
                     }
                 }.thenByDescending { it.score }
                     .thenBy { it.manifest?.id },
@@ -123,6 +135,7 @@ class ContentAwareFallbackStrategy(
             }
 
             if (request.fastPathOnly) {
+                if (manifest.request.signatureTimestamp) add("watch config excluded from fast path")
                 val requiresToken =
                     listOf(manifest.poTokens.player, manifest.poTokens.gvs).any {
                         it.requirement == PoTokenRequirement.REQUIRED && !(request.premium && it.premiumMayBypass)

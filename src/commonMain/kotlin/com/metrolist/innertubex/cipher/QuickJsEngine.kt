@@ -89,11 +89,13 @@ internal class QuickJsEngine {
      * Execute JavaScript code and return the result.
      *
      * @param code The JavaScript code to execute
+     * @param collectGarbage Whether to collect unreachable cycles before returning
      * @return The result of the execution as a string
      */
     suspend fun evaluate(
         code: String,
         maxResultLength: Int,
+        collectGarbage: Boolean = false,
     ): String =
         withContext(Dispatchers.Default) {
             require(maxResultLength in 1..MAX_EVALUATION_RESULT_LENGTH) { "Invalid QuickJS result limit" }
@@ -108,7 +110,11 @@ internal class QuickJsEngine {
                       return text.length <= $maxResultLength ? text : "";
                     })()
                     """.trimIndent()
-                runtime.evaluateSafely<String?>(boundedCode).orEmpty()
+                try {
+                    runtime.evaluateSafely<String?>(boundedCode).orEmpty()
+                } finally {
+                    if (collectGarbage) runtime.gc()
+                }
             }
         }
 

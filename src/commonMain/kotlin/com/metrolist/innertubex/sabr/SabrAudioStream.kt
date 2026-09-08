@@ -144,6 +144,7 @@ private class SabrMediaStream(
             var backoffTimeMs = 0L
             var requestsWithoutProgress = 0
             var ended = false
+            var firstSequenceNumber: Int? = null
             var lastSequenceNumber: Int? = null
             var consecutiveTransientFailures = 0
             var transientRetryCount = 0
@@ -153,7 +154,6 @@ private class SabrMediaStream(
             var protectionPending = false
             var protectionRetryCount = 0
             var protectionRetryLimit: Int? = null
-            val emittedSequences = mutableSetOf<Int>()
             val contexts = mutableMapOf<Int, SabrContext>()
             val activeContextTypes = mutableSetOf<Int>()
             var retainedContextBytes = 0L
@@ -280,17 +280,29 @@ private class SabrMediaStream(
                             var responseProtectionStatus: Int? = null
                             var responseProtectionMaxRetries: Int? = null
                             val pendingMediaBySequence = linkedMapOf<Int, SabrSegment>()
-                            val newSegments = mutableListOf<SabrSegment>()
+                            var firstNewSegmentHeader: SabrMediaHeader? = null
+                            var lastNewSegmentHeader: SabrMediaHeader? = null
+                            var newSegmentsDurationMs = 0L
+                            var newSegmentsBytes = 0L
+                            var newSegmentCount = 0
 
                             suspend fun emitMediaSegment(segment: SabrSegment) {
                                 send(segment.toChunk())
-                                emittedSequences += segment.header.sequenceNumber
+                                if (firstSequenceNumber == null) firstSequenceNumber = segment.header.sequenceNumber
                                 lastSequenceNumber = segment.header.sequenceNumber
                                 playerTimeMs = maxOf(playerTimeMs, segment.checkedEndTimeMs())
                                 cumulativeMediaBytes += segment.data.size
                                 cumulativeStreamBytes += segment.data.size
                                 cumulativeSegmentCount++
-                                newSegments += segment
+                                val durationMs = segment.header.durationMs
+                                if (newSegmentsDurationMs > Long.MAX_VALUE - durationMs) {
+                                    throw SabrProtocolException("SABR buffered duration exceeded the supported range")
+                                }
+                                if (firstNewSegmentHeader == null) firstNewSegmentHeader = segment.header
+                                lastNewSegmentHeader = segment.header
+                                newSegmentsDurationMs += durationMs
+                                newSegmentsBytes += segment.data.size
+                                newSegmentCount++
                             }
 
                             suspend fun emitReadyMediaSegments(establishFromMinimum: Boolean = false) {
@@ -346,7 +358,11 @@ private class SabrMediaStream(
                                             }
                                         } else {
                                             val sequenceNumber = segment.header.sequenceNumber
-                                            if (sequenceNumber !in emittedSequences) {
+                                            val alreadyEmitted =
+                                                lastSequenceNumber?.let { last ->
+                                                    sequenceNumber >= checkNotNull(firstSequenceNumber) && sequenceNumber <= last
+                                                } == true
+                                            if (!alreadyEmitted) {
                                                 if (pendingMediaBySequence.put(sequenceNumber, segment) != null) {
                                                     throw SabrProtocolException("SABR returned duplicate segment $sequenceNumber")
                                                 }
@@ -467,18 +483,18 @@ private class SabrMediaStream(
                                 throw error
                             }
 
-                            if (newSegments.isNotEmpty()) {
+                            if (newSegmentCount > 0) {
                                 requestsWithoutProgress = 0
-                                val firstBufferedSegment = newSegments.first()
-                                val lastBufferedSegment = newSegments.last()
+                                val firstBufferedSegment = checkNotNull(firstNewSegmentHeader)
+                                val lastBufferedSegment = checkNotNull(lastNewSegmentHeader)
                                 bufferedRanges =
                                     listOf(
                                         SabrBufferedRange(
                                             formatId = selectedFormat,
-                                            startTimeMs = firstBufferedSegment.header.startMs,
-                                            durationMs = newSegments.checkedDurationSum(),
-                                            startSegmentIndex = firstBufferedSegment.header.sequenceNumber,
-                                            endSegmentIndex = lastBufferedSegment.header.sequenceNumber,
+                                            startTimeMs = firstBufferedSegment.startMs,
+                                            durationMs = newSegmentsDurationMs,
+                                            startSegmentIndex = firstBufferedSegment.sequenceNumber,
+                                            endSegmentIndex = lastBufferedSegment.sequenceNumber,
                                         ),
                                     )
                             } else {
@@ -522,9 +538,9 @@ private class SabrMediaStream(
                                     maxTimeSinceLastRequestMs = maxTimeSinceLastRequestMs,
                                     backoffTimeMs = backoffTimeMs,
                                     responseBytes = responseBytes,
-                                    selectedMediaBytes = newSegments.sumOf { it.data.size.toLong() },
+                                    selectedMediaBytes = newSegmentsBytes,
                                     cumulativeMediaBytes = cumulativeMediaBytes,
-                                    selectedSegmentCount = newSegments.size,
+                                    selectedSegmentCount = newSegmentCount,
                                     cumulativeSegmentCount = cumulativeSegmentCount,
                                     transientRetryCount = transientRetryCount,
                                     noProgressRequestCount = requestsWithoutProgress,
@@ -538,7 +554,7 @@ private class SabrMediaStream(
                                 protectionRetryLimit?.let { protectionRetryCount > it } == true
                             val protectionRequired =
                                 responseProtectionStatus?.let { it >= PROTECTION_ATTESTATION_REQUIRED } == true
-                            if (protectionPending && (protectionRequired || newSegments.isEmpty() || protectionRetriesExhausted)) {
+                            if (protectionPending && (protectionRequired || newSegmentCount == 0 || protectionRetriesExhausted)) {
                                 throw SabrProtocolException(
                                     "SABR stream protection requires attestation " +
                                         "(status ${responseProtectionStatus ?: PROTECTION_ATTESTATION_PENDING}, " +
@@ -547,7 +563,7 @@ private class SabrMediaStream(
                                 )
                             }
 
-                            if (newSegments.isEmpty() && !ended) {
+                            if (newSegmentCount == 0 && !ended) {
                                 val playbackPosition = playbackPositionMs?.invoke()?.coerceAtLeast(0L)
                                 val hasSafeReadahead = playbackPosition != null && playerTimeMs - playbackPosition > STARVATION_TOLERANCE_MS
                                 if (hasSafeReadahead) {
@@ -772,18 +788,6 @@ private class SabrMediaStream(
             throw SabrProtocolException("SABR segment has an invalid time range")
         }
         return startMs + durationMs
-    }
-
-    private fun List<SabrSegment>.checkedDurationSum(): Long {
-        var total = 0L
-        forEach { segment ->
-            val durationMs = segment.header.durationMs
-            if (durationMs < 0L || total > Long.MAX_VALUE - durationMs) {
-                throw SabrProtocolException("SABR buffered duration exceeded the supported range")
-            }
-            total += durationMs
-        }
-        return total
     }
 
     private companion object {

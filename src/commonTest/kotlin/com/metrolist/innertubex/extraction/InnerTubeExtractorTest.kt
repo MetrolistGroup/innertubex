@@ -19,6 +19,7 @@ import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -98,6 +99,176 @@ class InnerTubeExtractorTest {
         }
 
     @Test
+    fun adaptiveVideoIsPreferredOverHigherBitrateProgressiveVideo() =
+        runBlocking {
+            val client = jsonClient(PROGRESSIVE_AND_ADAPTIVE_VIDEO_RESPONSE)
+            val stream = extractor(client).extract("video", ContentHints(isExplicit = true, wantVideo = true))
+
+            assertNotNull(stream)
+            assertEquals(136, stream.videoItag)
+            client.close()
+        }
+
+    @Test
+    fun progressiveVideoStillProvidesResolutionsMissingFromAdaptiveVideo() =
+        runBlocking {
+            val response =
+                PROGRESSIVE_AND_ADAPTIVE_VIDEO_RESPONSE.replace(
+                    "\"bitrate\":5000000,\"width\":1280,\"height\":720",
+                    "\"bitrate\":5000000,\"width\":1920,\"height\":1080",
+                )
+            val client = jsonClient(response)
+            val stream = extractor(client).extract("video", ContentHints(isExplicit = true, wantVideo = true, maxVideoHeight = 1080))
+            assertNotNull(stream)
+            assertEquals(22, stream.videoItag)
+            client.close()
+        }
+
+    @Test
+    fun adaptivePreferenceDoesNotExceedTheRequestedResolution() =
+        runBlocking {
+            val response =
+                PROGRESSIVE_AND_ADAPTIVE_VIDEO_RESPONSE.replace(
+                    "\"bitrate\":1000000,\"width\":1280,\"height\":720",
+                    "\"bitrate\":1000000,\"width\":1920,\"height\":1080",
+                )
+            val client = jsonClient(response)
+            val stream = extractor(client).extract("video", ContentHints(isExplicit = true, wantVideo = true, maxVideoHeight = 720))
+            assertNotNull(stream)
+            assertEquals(22, stream.videoItag)
+            client.close()
+        }
+
+    @Test
+    fun readyProgressiveVideoDoesNotTriggerCipherWorkForAdaptiveVideo() =
+        runBlocking {
+            val response =
+                PROGRESSIVE_AND_ADAPTIVE_VIDEO_RESPONSE.replace(
+                    "\"url\":\"https://r.googlevideo.com/videoplayback?stream=adaptive\"",
+                    "\"signatureCipher\":\"url=https%3A%2F%2Fr.googlevideo.com%2Fvideoplayback&sp=sig&s=encrypted\"",
+                )
+            val client = jsonClient(response)
+            val cipher = RecordingCipherService()
+            val stream =
+                makeExtractor(
+                    client = client,
+                    innerTube = InnerTube(client, retryDelay = {}),
+                    parser = CountingParser(),
+                    cipherService = cipher,
+                ).extract("video", ContentHints(isExplicit = true, wantVideo = true))
+            assertNotNull(stream)
+            assertEquals(22, stream.videoItag)
+            assertTrue(cipher.calls.isEmpty())
+            client.close()
+        }
+
+    @Test
+    fun readyProgressiveVideoSurvivesUnresolvedAdaptiveNParameter() =
+        runBlocking {
+            val response =
+                PROGRESSIVE_AND_ADAPTIVE_VIDEO_RESPONSE.replace(
+                    "stream=adaptive",
+                    "stream=adaptive&n=source",
+                )
+            val client = jsonClient(response)
+            val cipher = RecordingCipherService()
+            val stream =
+                makeExtractor(
+                    client = client,
+                    innerTube = InnerTube(client, retryDelay = {}),
+                    parser = CountingParser(),
+                    cipherService = cipher,
+                ).extract("video", ContentHints(isExplicit = true, wantVideo = true))
+
+            assertNotNull(stream)
+            assertEquals(22, stream.videoItag)
+            assertTrue(cipher.calls.isEmpty())
+            client.close()
+        }
+
+    @Test
+    fun progressiveVideoRemainsFallbackWhenAdaptiveTransformFails() =
+        runBlocking {
+            val response =
+                PROGRESSIVE_AND_ADAPTIVE_VIDEO_RESPONSE
+                    .replace("stream=audio", "stream=audio&n=source")
+                    .replace("stream=adaptive", "stream=adaptive&n=source")
+            val client = jsonClient(response)
+            val cipher = RejectingVideoNTransformCipherService()
+            val stream =
+                makeExtractor(
+                    client = client,
+                    innerTube = InnerTube(client, retryDelay = {}),
+                    parser = CountingParser(),
+                    cipherService = cipher,
+                ).extract("video", ContentHints(isExplicit = true, wantVideo = true))
+
+            assertNotNull(stream)
+            assertEquals(22, stream.videoItag)
+            assertEquals(listOf(251, 136, 22), cipher.itags)
+            client.close()
+        }
+
+    @Test
+    fun progressiveVideoRemainsFallbackWhenAdaptiveVideoIsMissing() =
+        runBlocking {
+            val client = jsonClient(PROGRESSIVE_VIDEO_FALLBACK_RESPONSE)
+            val stream = extractor(client).extract("video", ContentHints(isExplicit = true, wantVideo = true))
+
+            assertNotNull(stream)
+            assertEquals(22, stream.videoItag)
+            client.close()
+        }
+
+    @Test
+    fun selectedAudioAndVideoAreProcessedInOneCipherBatch() =
+        runBlocking {
+            val client = jsonClient(CIPHERED_VIDEO_RESPONSE)
+            val cipherService = RecordingCipherService()
+            val stream =
+                makeExtractor(
+                    client = client,
+                    innerTube = InnerTube(client, retryDelay = {}),
+                    parser = CountingParser(),
+                    cipherService = cipherService,
+                ).extract("video", ContentHints(isExplicit = true, wantVideo = true))
+
+            assertNotNull(stream)
+            assertEquals(136, stream.videoItag)
+            assertEquals(listOf(listOf(251, 136)), cipherService.calls)
+            client.close()
+        }
+
+    @Test
+    fun normalDirectPlaybackSkipsWatchPageAndCipherSetup() =
+        runBlocking {
+            val client = jsonClient(DIRECT_RESPONSE)
+            val parser = CountingParser()
+            try {
+                val extractor = makeExtractor(client, InnerTube(client, retryDelay = {}), parser)
+                assertNotNull(extractor.extract("video", ContentHints()))
+                assertEquals(0, parser.calls)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun configFreeResponseNeedingCipherFallsBackToWatchConfig() =
+        runBlocking {
+            val client = jsonClient(DIRECT_RESPONSE.replace("expire=9999999999", "expire=9999999999&n=source"))
+            val parser = CountingParser()
+            try {
+                val extractor = makeExtractor(client, InnerTube(client, retryDelay = {}), parser, cipherService = NTransformCipherService)
+                val stream = assertNotNull(extractor.extract("video", ContentHints()))
+                assertTrue(stream.audioUrl.contains("n=solved"))
+                assertEquals(1, parser.calls)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
     fun configFetchIsSharedAndSessionChangeInvalidatesIt() =
         runBlocking {
             val client = jsonClient(DIRECT_RESPONSE)
@@ -111,6 +282,150 @@ class InnerTubeExtractorTest {
             assertNotNull(extractor.extract("three", ContentHints(isExplicit = true)))
             assertEquals(2, parser.calls)
             client.close()
+        }
+
+    @Test
+    fun unusableCachedConfigIsRefreshedBeforeRetry() =
+        runBlocking {
+            var requests = 0
+            val client =
+                HttpClient(
+                    MockEngine {
+                        requests++
+                        respond(
+                            if (requests == 2) UNPLAYABLE_RESPONSE else DIRECT_RESPONSE,
+                            HttpStatusCode.OK,
+                            headersOf("Content-Type", "application/json"),
+                        )
+                    },
+                ) {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
+            val parser = CountingParser()
+            val extractor = makeExtractor(client, InnerTube(client, retryDelay = {}), parser)
+            try {
+                assertNotNull(extractor.extract("one", ContentHints(isExplicit = true)))
+                assertNotNull(extractor.extract("two", ContentHints(isExplicit = true)))
+                assertEquals(2, parser.calls)
+                assertEquals(3, requests)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun refreshedConfigRetainsBudgetAfterNativeAndCachedFailures() =
+        runBlocking {
+            val parser = CountingParser()
+            var requests = 0
+            val client =
+                HttpClient(
+                    MockEngine {
+                        requests++
+                        respond(
+                            if (requests == 1 || parser.calls >= 2) DIRECT_RESPONSE else UNPLAYABLE_RESPONSE,
+                            HttpStatusCode.OK,
+                            headersOf("Content-Type", "application/json"),
+                        )
+                    },
+                ) { install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) } }
+            val fallback =
+                object : com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy {
+                    override fun resolveClients(hints: ContentHints) =
+                        List(PlaybackClientCatalog.automaticManifests.size * 2) { YouTubeClient.VISIONOS }
+                }
+            try {
+                val extractor = makeExtractor(client, InnerTube(client, retryDelay = {}), parser, fallback)
+                assertNotNull(extractor.extract("prime", ContentHints(isExplicit = true)))
+                assertNotNull(extractor.extract("refresh", ContentHints()))
+                assertEquals(2, parser.calls)
+                assertTrue(requests > PlaybackClientCatalog.automaticManifests.size * 2 + 2)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun explicitTokenMintingRunsConcurrentlyWithConfigFetch() =
+        runBlocking {
+            val started = CompletableDeferred<Unit>()
+            val client = jsonClient(DIRECT_RESPONSE)
+            val innerTube = InnerTube(client, retryDelay = {}).also { it.visitorData = "visitor" }
+            var tokenCalls = 0
+            val provider =
+                object : TokenProvider {
+                    override val capabilities = TokenProviderCapabilities(providers = setOf(PoTokenProviderKind.WEB_BOTGUARD))
+
+                    override suspend fun getPoToken(
+                        videoId: String,
+                        visitorData: String,
+                        cookie: String?,
+                    ): PoTokenResult {
+                        tokenCalls++
+                        started.complete(Unit)
+                        return PoTokenResult("player-token", "AQID", visitorData)
+                    }
+                }
+            val parser =
+                object : YtConfigParser {
+                    override suspend fun fetchConfig(
+                        videoId: String,
+                        useLoginCookies: Boolean,
+                    ): PlayerConfig {
+                        started.await()
+                        return PlayerConfig("https://www.youtube.com/s/player/test/base.js", 123, "visitor", null)
+                    }
+                }
+            try {
+                val extractor =
+                    InnerTubeExtractor(
+                        parser,
+                        PlayerClientDirector(innerTube, WebRemixFallback, provider),
+                        AudioOnlyCipherService,
+                        innerTube,
+                        provider,
+                    )
+                assertNotNull(withTimeout(1_000) { extractor.extract("video", ContentHints(isExplicit = true)) })
+                assertEquals(1, tokenCalls)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun directPlaybackCancelsUnusedTokenPrefetch() =
+        runBlocking {
+            val client = jsonClient(DIRECT_RESPONSE)
+            val innerTube = InnerTube(client, retryDelay = {}).also { it.visitorData = "visitor" }
+            var tokenCalls = 0
+            val tokenProvider =
+                object : TokenProvider {
+                    override val capabilities = TokenProviderCapabilities(providers = setOf(PoTokenProviderKind.WEB_BOTGUARD))
+
+                    override suspend fun getPoToken(
+                        videoId: String,
+                        visitorData: String,
+                        cookie: String?,
+                    ): PoTokenResult? {
+                        tokenCalls++
+                        awaitCancellation()
+                    }
+                }
+            val parser = CountingParser()
+            val extractor =
+                InnerTubeExtractor(
+                    parser,
+                    PlayerClientDirector(innerTube, DirectFallback, tokenProvider),
+                    AudioOnlyCipherService,
+                    innerTube,
+                    tokenProvider,
+                )
+            try {
+                assertNotNull(withTimeout(1_000) { extractor.extract("video", ContentHints(isExplicit = true)) })
+                assertEquals(1, tokenCalls)
+            } finally {
+                client.close()
+            }
         }
 
     @Test
@@ -131,9 +446,9 @@ class InnerTubeExtractorTest {
                 }
             val extractor = makeExtractor(client, innerTube, parser)
 
-            assertNotNull(extractor.extract("normal-one", ContentHints()))
+            assertNotNull(extractor.extract("normal-one", ContentHints(playbackClientOverrideId = "VISIONOS_0_1")))
             assertNotNull(extractor.extract("explicit-one", ContentHints(isExplicit = true)))
-            assertNotNull(extractor.extract("normal-two", ContentHints()))
+            assertNotNull(extractor.extract("normal-two", ContentHints(playbackClientOverrideId = "VISIONOS_0_1")))
             assertNotNull(extractor.extract("explicit-two", ContentHints(isExplicit = true)))
 
             assertEquals(listOf(false, true), modes)
@@ -365,20 +680,18 @@ class InnerTubeExtractorTest {
         }
 
     @Test
-    fun explicitTokenMintStartsWhilePlayerConfigLoads() =
+    fun requiredClientMintsTokenOnlyAfterConfigIsReady() =
         runBlocking {
             val client = jsonClient(DIRECT_RESPONSE)
             val innerTube = InnerTube(client, retryDelay = {}).also { it.visitorData = "visitor" }
-            val configStarted = CompletableDeferred<Unit>()
-            val tokenStarted = CompletableDeferred<Unit>()
+            var configReady = false
             val parser =
                 object : YtConfigParser {
                     override suspend fun fetchConfig(
                         videoId: String,
                         useLoginCookies: Boolean,
                     ): PlayerConfig {
-                        configStarted.complete(Unit)
-                        tokenStarted.await()
+                        configReady = true
                         return PlayerConfig("https://www.youtube.com/s/player/test/base.js", 123, null, null)
                     }
                 }
@@ -394,8 +707,7 @@ class InnerTubeExtractorTest {
                         cookie: String?,
                     ): PoTokenResult {
                         tokenCalls++
-                        configStarted.await()
-                        tokenStarted.complete(Unit)
+                        assertTrue(configReady)
                         return PoTokenResult("player-token", "AQID", visitorData)
                     }
                 }
@@ -656,6 +968,30 @@ class InnerTubeExtractorTest {
             formats.map { format -> format.copy(url = format.url?.replace("n=source", "n=solved")) }
     }
 
+    private class RejectingVideoNTransformCipherService : ExtractionCipherService {
+        var itags = emptyList<Int>()
+
+        override suspend fun initialize() {}
+
+        override suspend fun preloadPlayerCode(playerUrl: String) {}
+
+        override suspend fun prewarmEjs() {}
+
+        override suspend fun processFormats(
+            playerUrl: String,
+            formats: List<PlayerResponse.StreamingData.Format>,
+        ): List<PlayerResponse.StreamingData.Format> {
+            itags = formats.map { it.itag }
+            return formats.map { format ->
+                when {
+                    format.isAudio -> format.copy(url = format.url?.replace("n=source", "n=solved"))
+                    format.url?.contains("n=source") == true -> format.copy(url = null)
+                    else -> format
+                }
+            }
+        }
+    }
+
     private object AudioOnlyCipherService : ExtractionCipherService {
         override suspend fun initialize() {}
 
@@ -667,6 +1003,26 @@ class InnerTubeExtractorTest {
             playerUrl: String,
             formats: List<PlayerResponse.StreamingData.Format>,
         ): List<PlayerResponse.StreamingData.Format> = formats.filter(PlayerResponse.StreamingData.Format::isAudio)
+    }
+
+    private class RecordingCipherService : ExtractionCipherService {
+        val calls = mutableListOf<List<Int>>()
+
+        override suspend fun initialize() {}
+
+        override suspend fun preloadPlayerCode(playerUrl: String) {}
+
+        override suspend fun prewarmEjs() {}
+
+        override suspend fun processFormats(
+            playerUrl: String,
+            formats: List<PlayerResponse.StreamingData.Format>,
+        ): List<PlayerResponse.StreamingData.Format> {
+            calls += formats.map { it.itag }
+            return formats.map { format ->
+                format.copy(url = format.url ?: "https://r.googlevideo.com/videoplayback?itag=${format.itag}")
+            }
+        }
     }
 
     private companion object {
@@ -681,6 +1037,14 @@ class InnerTubeExtractorTest {
         val CIPHERED_VIDEO_RESPONSE =
             """
             {"playabilityStatus":{"status":"OK"},"streamingData":{"adaptiveFormats":[{"itag":251,"url":"https://r.googlevideo.com/videoplayback","mimeType":"audio/webm","bitrate":128000},{"itag":136,"signatureCipher":"url=https%3A%2F%2Fr.googlevideo.com%2Fvideoplayback&sp=sig&s=encrypted","mimeType":"video/mp4; codecs=\"avc1\"","bitrate":1000000,"width":1280,"height":720}]}}
+            """.trimIndent()
+        val PROGRESSIVE_AND_ADAPTIVE_VIDEO_RESPONSE =
+            """
+            {"playabilityStatus":{"status":"OK"},"streamingData":{"formats":[{"itag":22,"url":"https://r.googlevideo.com/videoplayback?stream=progressive","mimeType":"video/mp4; codecs=\"avc1\"","bitrate":5000000,"width":1280,"height":720}],"adaptiveFormats":[{"itag":251,"url":"https://r.googlevideo.com/videoplayback?stream=audio","mimeType":"audio/webm","bitrate":128000},{"itag":136,"url":"https://r.googlevideo.com/videoplayback?stream=adaptive","mimeType":"video/mp4; codecs=\"avc1\"","bitrate":1000000,"width":1280,"height":720}]}}
+            """.trimIndent()
+        val PROGRESSIVE_VIDEO_FALLBACK_RESPONSE =
+            """
+            {"playabilityStatus":{"status":"OK"},"streamingData":{"formats":[{"itag":22,"url":"https://r.googlevideo.com/videoplayback?stream=progressive","mimeType":"video/mp4; codecs=\"avc1\"","bitrate":5000000,"width":1280,"height":720}],"adaptiveFormats":[{"itag":251,"url":"https://r.googlevideo.com/videoplayback?stream=audio","mimeType":"audio/webm","bitrate":128000}]}}
             """.trimIndent()
         val BOUNDED_VIDEO_RESPONSE =
             """

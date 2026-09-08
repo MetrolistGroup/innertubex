@@ -218,6 +218,7 @@ public final class com/metrolist/innertubex/cipher/YouTubeCipherService {
 	public final fun processNParameter (Ljava/lang/String;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun refreshAfterStreamRejection (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun refreshForUnknownPlayer (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun setPreprocessedPlayerCache (Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function3;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
 public final class com/metrolist/innertubex/extraction/AudioQuality : java/lang/Enum {
