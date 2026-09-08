@@ -26,6 +26,8 @@ class YtConfigParserTest {
         )
         assertEquals("abc123", parser.extractPlayerId("https:\\/\\/www.youtube.com\\/s\\/player\\/abc123\\/www-widgetapi.js"))
         assertEquals(20668, parser.extractSignatureTimestamp("signatureTimestamp:20668"))
+        assertEquals(20668, parser.extractSignatureTimestamp("{\"signatureTimestamp\":20668}"))
+        assertEquals(20668, parser.extractSignatureTimestamp("{\"sts\":20668}"))
         assertNull(parser.extractPlayerUrl("{\"PLAYER_JS_URL\":\"https://evil.test/s/player/x/base.js\"}"))
         assertNull(parser.extractPlayerUrl("{\"PLAYER_JS_URL\":\"https://www.youtube.com/watch?v=x\"}"))
         assertNull(parser.extractPlayerUrl("{\"PLAYER_JS_URL\":\"https://user:pass@www.youtube.com/s/player/x/base.js\"}"))

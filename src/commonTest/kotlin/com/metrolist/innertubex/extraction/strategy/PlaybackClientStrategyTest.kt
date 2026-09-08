@@ -160,7 +160,7 @@ class PlaybackClientStrategyTest {
     }
 
     @Test
-    fun automaticCandidatesKeepDirectClientsBeforeSabrByDefault() {
+    fun automaticCandidatesKeepSabrBehindAllDirectClients() {
         val candidates =
             ContentAwareFallbackStrategy()
                 .selectClients(
@@ -176,6 +176,55 @@ class PlaybackClientStrategyTest {
         assertTrue(firstSabr > 0)
         assertTrue(candidates.take(firstSabr).none { it.client.useSabr })
         assertTrue(candidates.drop(firstSabr).all { it.client.useSabr })
+    }
+
+    @Test
+    fun kidsPlaybackTriesUntokenizedDirectClientBeforeTokenMinting() {
+        val candidates =
+            ContentAwareFallbackStrategy()
+                .selectClients(
+                    ClientSelectionRequest(
+                        hints = ContentHints(isKidsContent = true),
+                        authenticated = true,
+                        availablePoTokenProviders = allProviders,
+                        webViewAvailable = true,
+                    ),
+                ).candidates
+        assertEquals("WEB_KIDS", candidates.first().manifest?.id)
+    }
+
+    @Test
+    fun explicitPlaybackKeepsProvenDirectClientFirst() {
+        val candidates =
+            ContentAwareFallbackStrategy()
+                .selectClients(
+                    ClientSelectionRequest(
+                        hints = ContentHints(isExplicit = true),
+                        authenticated = true,
+                        availablePoTokenProviders = allProviders,
+                        webViewAvailable = true,
+                    ),
+                ).candidates
+        assertEquals("WEB_REMIX", candidates.first().manifest?.id)
+    }
+
+    @Test
+    fun configFreeFastPathExcludesWatchPageDependentClients() {
+        val candidates =
+            ContentAwareFallbackStrategy()
+                .selectClients(
+                    ClientSelectionRequest(
+                        hints = ContentHints(),
+                        authenticated = true,
+                        availablePoTokenProviders = allProviders,
+                        webViewAvailable = true,
+                        fastPathOnly = true,
+                        javaScriptRuntimeAvailable = false,
+                    ),
+                ).candidates
+        assertTrue(candidates.isNotEmpty())
+        assertTrue(candidates.all { it.manifest?.request?.signatureTimestamp == false })
+        assertTrue(candidates.none { it.client.useWebPoTokens })
     }
 
     @Test

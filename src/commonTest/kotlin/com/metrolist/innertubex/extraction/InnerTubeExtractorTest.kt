@@ -98,6 +98,35 @@ class InnerTubeExtractorTest {
         }
 
     @Test
+    fun normalDirectPlaybackSkipsWatchPageAndCipherSetup() =
+        runBlocking {
+            val client = jsonClient(DIRECT_RESPONSE)
+            val parser = CountingParser()
+            try {
+                val extractor = makeExtractor(client, InnerTube(client, retryDelay = {}), parser)
+                assertNotNull(extractor.extract("video", ContentHints()))
+                assertEquals(0, parser.calls)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun configFreeResponseNeedingCipherFallsBackToWatchConfig() =
+        runBlocking {
+            val client = jsonClient(DIRECT_RESPONSE.replace("expire=9999999999", "expire=9999999999&n=source"))
+            val parser = CountingParser()
+            try {
+                val extractor = makeExtractor(client, InnerTube(client, retryDelay = {}), parser, cipherService = NTransformCipherService)
+                val stream = assertNotNull(extractor.extract("video", ContentHints()))
+                assertTrue(stream.audioUrl.contains("n=solved"))
+                assertEquals(1, parser.calls)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
     fun configFetchIsSharedAndSessionChangeInvalidatesIt() =
         runBlocking {
             val client = jsonClient(DIRECT_RESPONSE)
@@ -111,6 +140,71 @@ class InnerTubeExtractorTest {
             assertNotNull(extractor.extract("three", ContentHints(isExplicit = true)))
             assertEquals(2, parser.calls)
             client.close()
+        }
+
+    @Test
+    fun unusableCachedConfigIsRefreshedBeforeRetry() =
+        runBlocking {
+            var requests = 0
+            val client =
+                HttpClient(
+                    MockEngine {
+                        requests++
+                        respond(
+                            if (requests == 2) UNPLAYABLE_RESPONSE else DIRECT_RESPONSE,
+                            HttpStatusCode.OK,
+                            headersOf("Content-Type", "application/json"),
+                        )
+                    },
+                ) {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
+            val parser = CountingParser()
+            val extractor = makeExtractor(client, InnerTube(client, retryDelay = {}), parser)
+            try {
+                assertNotNull(extractor.extract("one", ContentHints(isExplicit = true)))
+                assertNotNull(extractor.extract("two", ContentHints(isExplicit = true)))
+                assertEquals(2, parser.calls)
+                assertEquals(3, requests)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun directPlaybackDoesNotStartAnUnusedTokenRuntime() =
+        runBlocking {
+            val client = jsonClient(DIRECT_RESPONSE)
+            val innerTube = InnerTube(client, retryDelay = {}).also { it.visitorData = "visitor" }
+            var tokenCalls = 0
+            val tokenProvider =
+                object : TokenProvider {
+                    override val capabilities = TokenProviderCapabilities(providers = setOf(PoTokenProviderKind.WEB_BOTGUARD))
+
+                    override suspend fun getPoToken(
+                        videoId: String,
+                        visitorData: String,
+                        cookie: String?,
+                    ): PoTokenResult? {
+                        tokenCalls++
+                        return null
+                    }
+                }
+            val parser = CountingParser()
+            val extractor =
+                InnerTubeExtractor(
+                    parser,
+                    PlayerClientDirector(innerTube, DirectFallback, tokenProvider),
+                    AudioOnlyCipherService,
+                    innerTube,
+                    tokenProvider,
+                )
+            try {
+                assertNotNull(withTimeout(1_000) { extractor.extract("video", ContentHints(isExplicit = true)) })
+                assertEquals(0, tokenCalls)
+            } finally {
+                client.close()
+            }
         }
 
     @Test
@@ -131,9 +225,9 @@ class InnerTubeExtractorTest {
                 }
             val extractor = makeExtractor(client, innerTube, parser)
 
-            assertNotNull(extractor.extract("normal-one", ContentHints()))
+            assertNotNull(extractor.extract("normal-one", ContentHints(playbackClientOverrideId = "VISIONOS_0_1")))
             assertNotNull(extractor.extract("explicit-one", ContentHints(isExplicit = true)))
-            assertNotNull(extractor.extract("normal-two", ContentHints()))
+            assertNotNull(extractor.extract("normal-two", ContentHints(playbackClientOverrideId = "VISIONOS_0_1")))
             assertNotNull(extractor.extract("explicit-two", ContentHints(isExplicit = true)))
 
             assertEquals(listOf(false, true), modes)
@@ -365,20 +459,18 @@ class InnerTubeExtractorTest {
         }
 
     @Test
-    fun explicitTokenMintStartsWhilePlayerConfigLoads() =
+    fun requiredClientMintsTokenOnlyAfterConfigIsReady() =
         runBlocking {
             val client = jsonClient(DIRECT_RESPONSE)
             val innerTube = InnerTube(client, retryDelay = {}).also { it.visitorData = "visitor" }
-            val configStarted = CompletableDeferred<Unit>()
-            val tokenStarted = CompletableDeferred<Unit>()
+            var configReady = false
             val parser =
                 object : YtConfigParser {
                     override suspend fun fetchConfig(
                         videoId: String,
                         useLoginCookies: Boolean,
                     ): PlayerConfig {
-                        configStarted.complete(Unit)
-                        tokenStarted.await()
+                        configReady = true
                         return PlayerConfig("https://www.youtube.com/s/player/test/base.js", 123, null, null)
                     }
                 }
@@ -394,8 +486,7 @@ class InnerTubeExtractorTest {
                         cookie: String?,
                     ): PoTokenResult {
                         tokenCalls++
-                        configStarted.await()
-                        tokenStarted.complete(Unit)
+                        assertTrue(configReady)
                         return PoTokenResult("player-token", "AQID", visitorData)
                     }
                 }

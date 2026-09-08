@@ -174,7 +174,7 @@ public class YtConfigParserImpl(
 
     internal fun extractSignatureTimestamp(html: String): Int? =
         listOf(
-            Regex("(?:signatureTimestamp|sts)\\s*:\\s*([0-9]{5})"),
+            Regex("(?:signatureTimestamp|sts)\"?\\s*:\\s*([0-9]{5})"),
             Regex("\"STS\":\\s*([0-9]{5})"),
         ).asSequence()
             .mapNotNull {
