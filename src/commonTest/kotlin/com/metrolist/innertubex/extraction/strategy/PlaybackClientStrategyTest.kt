@@ -38,7 +38,7 @@ class PlaybackClientStrategyTest {
         val withPremium =
             strategy.selectClients(
                 ClientSelectionRequest(
-                    hints = ContentHints(premium = true),
+                    hints = ContentHints().withPremium(),
                     authenticated = true,
                     premium = true,
                 ),

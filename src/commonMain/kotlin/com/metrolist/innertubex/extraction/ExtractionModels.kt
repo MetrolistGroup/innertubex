@@ -17,9 +17,10 @@ public data class ContentHints(
     val playbackClientOverrideId: String? = null,
     val sabrFirst: Boolean = false,
     val maxVideoHeight: Int? = null,
-    /** True only when the caller has independently confirmed YouTube Premium entitlement. */
-    val premium: Boolean = false,
 ) {
+    /** True only when the caller has independently confirmed YouTube Premium entitlement. */
+    public var premium: Boolean = false
+        private set
     public var allowHls: Boolean = true
         private set
     public var allowSabr: Boolean = true
@@ -27,12 +28,26 @@ public data class ContentHints(
     public var allowBoundedRange: Boolean = true
         private set
 
+    /** Returns a copy carrying the caller-confirmed entitlement state. */
+    public fun withPremium(premium: Boolean = true): ContentHints =
+        copyWithState().also {
+            it.premium = premium
+        }
+
     public fun withStreamCapabilities(
         allowHls: Boolean = true,
         allowSabr: Boolean = true,
         allowBoundedRange: Boolean = true,
     ): ContentHints =
+        copyWithState().also {
+            it.allowHls = allowHls
+            it.allowSabr = allowSabr
+            it.allowBoundedRange = allowBoundedRange
+        }
+
+    private fun copyWithState(): ContentHints =
         copy().also {
+            it.premium = premium
             it.allowHls = allowHls
             it.allowSabr = allowSabr
             it.allowBoundedRange = allowBoundedRange

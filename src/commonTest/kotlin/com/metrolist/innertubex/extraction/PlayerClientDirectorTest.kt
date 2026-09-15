@@ -51,7 +51,7 @@ class PlayerClientDirectorTest {
                 director.fetchPlayerResponses(
                     "video",
                     PlayerConfig("player.js", null, null, null),
-                    ContentHints(playbackClientOverrideId = "WEB_REMIX", premium = true),
+                    ContentHints(playbackClientOverrideId = "WEB_REMIX").withPremium(),
                 )
 
             assertTrue(selectionRequest?.premium == true)
