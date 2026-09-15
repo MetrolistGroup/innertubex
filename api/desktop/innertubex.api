@@ -233,11 +233,12 @@ public final class com/metrolist/innertubex/extraction/AudioQuality : java/lang/
 
 public final class com/metrolist/innertubex/extraction/ContentHints {
 	public fun <init> ()V
-	public fun <init> (Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/String;ZLjava/lang/String;ZLjava/lang/Integer;)V
-	public synthetic fun <init> (Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/String;ZLjava/lang/String;ZLjava/lang/Integer;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/String;ZLjava/lang/String;ZLjava/lang/Integer;Z)V
+	public synthetic fun <init> (Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/String;ZLjava/lang/String;ZLjava/lang/Integer;ZILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1 ()Ljava/lang/Boolean;
 	public final fun component10 ()Z
 	public final fun component11 ()Ljava/lang/Integer;
+	public final fun component12 ()Z
 	public final fun component2 ()Ljava/lang/Boolean;
 	public final fun component3 ()Ljava/lang/Boolean;
 	public final fun component4 ()Ljava/lang/Boolean;
@@ -246,8 +247,8 @@ public final class com/metrolist/innertubex/extraction/ContentHints {
 	public final fun component7 ()Ljava/lang/String;
 	public final fun component8 ()Z
 	public final fun component9 ()Ljava/lang/String;
-	public final fun copy (Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/String;ZLjava/lang/String;ZLjava/lang/Integer;)Lcom/metrolist/innertubex/extraction/ContentHints;
-	public static synthetic fun copy$default (Lcom/metrolist/innertubex/extraction/ContentHints;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/String;ZLjava/lang/String;ZLjava/lang/Integer;ILjava/lang/Object;)Lcom/metrolist/innertubex/extraction/ContentHints;
+	public final fun copy (Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/String;ZLjava/lang/String;ZLjava/lang/Integer;Z)Lcom/metrolist/innertubex/extraction/ContentHints;
+	public static synthetic fun copy$default (Lcom/metrolist/innertubex/extraction/ContentHints;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/String;ZLjava/lang/String;ZLjava/lang/Integer;ZILjava/lang/Object;)Lcom/metrolist/innertubex/extraction/ContentHints;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getAllowBoundedRange ()Z
 	public final fun getAllowHls ()Z
@@ -255,6 +256,7 @@ public final class com/metrolist/innertubex/extraction/ContentHints {
 	public final fun getEndpointParams ()Ljava/lang/String;
 	public final fun getMaxVideoHeight ()Ljava/lang/Integer;
 	public final fun getPlaybackClientOverrideId ()Ljava/lang/String;
+	public final fun getPremium ()Z
 	public final fun getSabrFirst ()Z
 	public final fun getWantVideo ()Z
 	public fun hashCode ()I

@@ -282,7 +282,8 @@ class InnerTubeExtractor internal constructor(
         if (
             hints.playbackClientOverrideId == null && !hints.wantVideo &&
             hints.isExplicit != true && hints.isAgeRestricted != true &&
-            hints.isUploaded != true && hints.isLive != true
+            hints.isUploaded != true && hints.isLive != true &&
+            !innerTube.hasSapCookieAuth()
         ) {
             val directStream =
                 extractWithConfig(
@@ -299,7 +300,7 @@ class InnerTubeExtractor internal constructor(
             if (directStream != null) return directStream
         }
 
-        val cookieFirst = hints.isExplicit == true && innerTube.hasSapCookieAuth()
+        val cookieFirst = hints.playbackClientOverrideId == null && innerTube.hasSapCookieAuth()
         val stream =
             extractWithCachedConfig(
                 videoId = videoId,
@@ -882,6 +883,13 @@ class InnerTubeExtractor internal constructor(
                         (it.itag in directAudioItags)
                 }
             val directFastPathCandidate = selectBestAudioFormat(directAudioFormats, audioQuality)
+            val bestAvailableAudioFormat =
+                selectBestAudioFormat(
+                    allFormats.filter(PlayerResponse.StreamingData.Format::isAudio),
+                    audioQuality,
+                    requireUrl = false,
+                )
+            val directAudioIsBest = directFastPathCandidate?.itag == bestAvailableAudioFormat?.itag
             val wantVideo = hints.wantVideo
             val directVideoFormats =
                 if (wantVideo) preferredVideoFormats(streamingData, requireUrl = true) else emptyList()
@@ -896,7 +904,7 @@ class InnerTubeExtractor internal constructor(
                         maxHeight = hints.maxVideoHeight ?: 2160,
                     )
                     ?: preferredDirectVideo
-            if (directFastPathCandidate != null && (!wantVideo || directFastPathVideo != null)) {
+            if (directFastPathCandidate != null && directAudioIsBest && (!wantVideo || directFastPathVideo != null)) {
                 val directUrl =
                     appendClientPlaybackNonce(
                         directFastPathCandidate.url.orEmpty().withPoToken(result.streamingDataPoToken),

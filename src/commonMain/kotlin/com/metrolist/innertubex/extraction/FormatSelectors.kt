@@ -16,16 +16,16 @@ public fun selectBestAudioFormat(
         }
 
         AudioQuality.AUTO -> {
-            validFormats.filter { it.mimeType.contains("audio/webm") }.maxByOrNull(::audioFormatScore)
-                ?: validFormats.maxByOrNull(::audioFormatScore)
+            validFormats.filter { it.mimeType.contains("audio/webm") }.maxWithOrNull(audioFormatComparator)
+                ?: validFormats.maxWithOrNull(audioFormatComparator)
         }
 
         AudioQuality.HIGH -> {
-            validFormats.maxByOrNull(::audioFormatScore)
+            validFormats.maxWithOrNull(audioFormatComparator)
         }
 
         AudioQuality.MP4 -> {
-            validFormats.filter { it.mimeType.contains("audio/mp4") }.maxByOrNull(::audioFormatScore)
+            validFormats.filter { it.mimeType.contains("audio/mp4") }.maxWithOrNull(audioFormatComparator)
         }
     }
 }
@@ -47,21 +47,22 @@ public fun selectBestVideoFormat(
             ?.maxWithOrNull(videoFormatComparator)
 }
 
-private fun audioFormatScore(format: Format): Int {
-    val codecRank =
-        when {
-            format.mimeType.contains("audio/webm") -> 100
-            format.mimeType.contains("audio/mp4") -> 50
+private val audioFormatComparator =
+    compareBy<Format> {
+        when (it.audioChannels) {
+            2 -> 2
+            null -> 1
             else -> 0
         }
-    val channelBonus =
-        when (format.audioChannels) {
-            2 -> 50_000
-            1 -> 0
-            else -> 25_000
+    }.thenBy { it.bitrate }
+        .thenBy { (it.audioSampleRate ?: 0).coerceIn(0, 48_000) }
+        .thenBy {
+            when {
+                it.mimeType.contains("audio/webm") -> 2
+                it.mimeType.contains("audio/mp4") -> 1
+                else -> 0
+            }
         }
-    return codecRank * 1_000_000 + channelBonus + format.bitrate + (format.audioSampleRate ?: 0).coerceIn(0, 48_000) / 10
-}
 
 // AVC and VP9 both have broad native decoding support; avoid excess bitrate at the same resolution.
 private val videoFormatComparator =

@@ -17,6 +17,8 @@ public data class ContentHints(
     val playbackClientOverrideId: String? = null,
     val sabrFirst: Boolean = false,
     val maxVideoHeight: Int? = null,
+    /** True only when the caller has independently confirmed YouTube Premium entitlement. */
+    val premium: Boolean = false,
 ) {
     public var allowHls: Boolean = true
         private set
@@ -44,7 +46,7 @@ public fun ContentHints.diagnosticSummary(): String =
         "live=$isLive, uploaded=$isUploaded, local=$isLocal, " +
         "endpointParamsPresent=${endpointParams != null}, wantVideo=$wantVideo, " +
         "clientOverride=$playbackClientOverrideId, sabrFirst=$sabrFirst, maxVideoHeight=$maxVideoHeight, " +
-        "allowHls=$allowHls, allowSabr=$allowSabr, allowBoundedRange=$allowBoundedRange}"
+        "premium=$premium, allowHls=$allowHls, allowSabr=$allowSabr, allowBoundedRange=$allowBoundedRange}"
 
 public data class PlayerConfig(
     val playerUrl: String,

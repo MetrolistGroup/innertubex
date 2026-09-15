@@ -70,6 +70,31 @@ class AudioFormatSelectorTest {
     }
 
     @Test
+    fun highQualityUsesBitrateBeforeContainer() {
+        val formats =
+            listOf(
+                Format(
+                    itag = 251,
+                    mimeType = "audio/webm; codecs=\"opus\"",
+                    bitrate = 128_000,
+                    audioChannels = 2,
+                    url = "https://opus.example.test/audio",
+                ),
+                Format(
+                    itag = 141,
+                    mimeType = "audio/mp4; codecs=\"mp4a.40.2\"",
+                    bitrate = 256_000,
+                    audioChannels = 2,
+                    url = "https://aac.example.test/audio",
+                ),
+            )
+
+        assertEquals(141, selectBestAudioFormat(formats, AudioQuality.HIGH)?.itag)
+        assertEquals(251, selectBestAudioFormat(formats, AudioQuality.AUTO)?.itag)
+        assertEquals(141, selectBestAudioFormat(formats, AudioQuality.MP4)?.itag)
+    }
+
+    @Test
     fun autoPrefersOpusAndUrlRequirementIsHonored() {
         val formats =
             listOf(
