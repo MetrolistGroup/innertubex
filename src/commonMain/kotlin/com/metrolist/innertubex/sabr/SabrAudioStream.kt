@@ -366,7 +366,9 @@ private class SabrMediaStream(
                                                 if (pendingMediaBySequence.put(sequenceNumber, segment) != null) {
                                                     throw SabrProtocolException("SABR returned duplicate segment $sequenceNumber")
                                                 }
-                                                emitReadyMediaSegments()
+                                                emitReadyMediaSegments(
+                                                    establishFromMinimum = firstSequenceNumber == null && requestPlayerTimeMs > 0L,
+                                                )
                                             }
                                         }
                                     }

@@ -191,6 +191,73 @@ class SabrAudioStreamTest {
         }
 
     @Test
+    fun seekedHighBitrateVideoEmitsFirstMediaBeforeResponseCompletes() =
+        runBlocking {
+            val releaseResponseTail = CompletableDeferred<Unit>()
+            val firstMedia = CompletableDeferred<ByteArray>()
+            var requestBody: ByteArray? = null
+            val engine =
+                MockEngine { request ->
+                    requestBody = (request.body as OutgoingContent.ByteArrayContent).bytes()
+                    val channel = ByteChannel(autoFlush = true)
+                    launch {
+                        channel.writeFully(
+                            umpPart(UmpPartType.FORMAT_INITIALIZATION_METADATA, initialization(6, 61_000, 401, 400)) +
+                                mediaSegment(headerId = 1, itag = 248, lastModified = 300, isInit = true, data = byteArrayOf(9)) +
+                                mediaSegment(headerId = 2, itag = 401, lastModified = 400, isInit = true, data = byteArrayOf(1, 2)) +
+                                mediaResponseSegment(
+                                    headerId = 3,
+                                    sequenceNumber = 6,
+                                    startMs = 60_000,
+                                    data = byteArrayOf(3, 4, 5),
+                                    itag = 248,
+                                    lastModified = 300,
+                                ) +
+                                mediaResponseSegment(
+                                    headerId = 4,
+                                    sequenceNumber = 6,
+                                    startMs = 60_000,
+                                    data = byteArrayOf(6, 7, 8),
+                                    itag = 401,
+                                    lastModified = 400,
+                                ),
+                        )
+                        releaseResponseTail.await()
+                        channel.writeFully(umpPart(UmpPartType.END_OF_TRACK, byteArrayOf()))
+                        channel.close()
+                    }
+                    respond(
+                        content = channel,
+                        status = HttpStatusCode.OK,
+                        headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"),
+                    )
+                }
+            val bootstrap =
+                bootstrap().copy(
+                    selectedVideoFormat = SabrFormatId(401, 400, "x"),
+                    selectedVideoWidth = 3840,
+                    selectedVideoHeight = 2160,
+                    selectedVideoContentLengthBytes = 5,
+                    selectedVideoMimeType = "video/webm",
+                    selectedVideoBitrate = 12_000_000,
+                    durationMs = 61_000,
+                )
+            val collection =
+                async {
+                    SabrVideoStream(HttpClient(engine), bootstrap, initialPlayerTimeMs = 60_000).chunks().collect { chunk ->
+                        if (!chunk.isInitialization && !firstMedia.isCompleted) firstMedia.complete(chunk.data)
+                    }
+                }
+
+            assertContentEquals(byteArrayOf(6, 7, 8), withTimeout(1_000) { firstMedia.await() })
+            assertEquals(60_000, decodePlayerTimeMs(requestBody ?: error("No SABR request")))
+            assertFalse(collection.isCompleted)
+
+            releaseResponseTail.complete(Unit)
+            collection.await()
+        }
+
+    @Test
     fun rejectsEndOfTrackBeforeInitializationMetadataEndSegment() =
         runBlocking {
             val engine =
@@ -704,6 +771,8 @@ class SabrAudioStreamTest {
         sequenceNumber: Int,
         startMs: Long,
         data: ByteArray,
+        itag: Int = 140,
+        lastModified: Long = 100,
     ): ByteArray =
         umpPart(
             UmpPartType.MEDIA_HEADER,
@@ -713,6 +782,8 @@ class SabrAudioStreamTest {
                 sequenceNumber = sequenceNumber,
                 contentLength = data.size,
                 startMs = startMs,
+                itag = itag,
+                lastModified = lastModified,
             ),
         ) +
             umpPart(UmpPartType.MEDIA, byteArrayOf(headerId.toByte()) + data) +
