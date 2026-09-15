@@ -191,10 +191,11 @@ class SabrAudioStreamTest {
         }
 
     @Test
-    fun seekedHighBitrateVideoOrdersOutOfOrderMediaBeforeResponseCompletes() =
+    fun seekedHighBitrateVideoEmitsInitializationBeforeOutOfOrderMedia() =
         runBlocking {
             val releaseResponseTail = CompletableDeferred<Unit>()
             val firstMedia = CompletableDeferred<ByteArray>()
+            val mediaBeforeTail = CompletableDeferred<List<Int?>>()
             val chunks = mutableListOf<SabrChunk>()
             var requestBody: ByteArray? = null
             val engine =
@@ -205,7 +206,6 @@ class SabrAudioStreamTest {
                         channel.writeFully(
                             umpPart(UmpPartType.FORMAT_INITIALIZATION_METADATA, initialization(7, 62_000, 401, 400)) +
                                 mediaSegment(headerId = 1, itag = 248, lastModified = 300, isInit = true, data = byteArrayOf(9)) +
-                                mediaSegment(headerId = 2, itag = 401, lastModified = 400, isInit = true, data = byteArrayOf(1, 2)) +
                                 mediaResponseSegment(
                                     headerId = 3,
                                     sequenceNumber = 6,
@@ -229,7 +229,8 @@ class SabrAudioStreamTest {
                                     data = byteArrayOf(9, 10, 11),
                                     itag = 401,
                                     lastModified = 400,
-                                ),
+                                ) +
+                                mediaSegment(headerId = 2, itag = 401, lastModified = 400, isInit = true, data = byteArrayOf(1, 2)),
                         )
                         releaseResponseTail.await()
                         channel.writeFully(umpPart(UmpPartType.END_OF_TRACK, byteArrayOf()))
@@ -256,16 +257,17 @@ class SabrAudioStreamTest {
                     SabrVideoStream(HttpClient(engine), bootstrap, initialPlayerTimeMs = 60_000).chunks().collect { chunk ->
                         chunks += chunk
                         if (!chunk.isInitialization && !firstMedia.isCompleted) firstMedia.complete(chunk.data)
+                        if (chunk.sequenceNumber == 7) mediaBeforeTail.complete(chunks.map(SabrChunk::sequenceNumber))
                     }
                 }
 
             assertContentEquals(byteArrayOf(9, 10, 11), withTimeout(1_000) { firstMedia.await() })
+            assertEquals(listOf(null, 6, 7), withTimeout(1_000) { mediaBeforeTail.await() })
             assertEquals(60_000, decodePlayerTimeMs(requestBody ?: error("No SABR request")))
             assertFalse(collection.isCompleted)
 
             releaseResponseTail.complete(Unit)
             collection.await()
-            assertEquals(listOf(null, 6, 7), chunks.map(SabrChunk::sequenceNumber))
         }
 
     @Test
