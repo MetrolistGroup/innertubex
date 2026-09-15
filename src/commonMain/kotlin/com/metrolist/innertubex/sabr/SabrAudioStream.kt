@@ -323,6 +323,14 @@ private class SabrMediaStream(
                                 }
                             }
 
+                            fun canEstablishInitialSeekSequence(): Boolean =
+                                firstSequenceNumber == null &&
+                                    requestPlayerTimeMs > 0L &&
+                                    pendingMediaBySequence.values.any { pending ->
+                                        pending.header.startMs <= requestPlayerTimeMs &&
+                                            requestPlayerTimeMs < pending.checkedEndTimeMs()
+                                    }
+
                             suspend fun processEvent(event: SabrEvent) {
                                 when (event) {
                                     is SabrEvent.MediaHeader -> {
@@ -355,6 +363,7 @@ private class SabrMediaStream(
                                                 send(segment.toChunk())
                                                 initSegmentEmitted = true
                                                 cumulativeStreamBytes += segment.data.size
+                                                emitReadyMediaSegments(canEstablishInitialSeekSequence())
                                             }
                                         } else {
                                             val sequenceNumber = segment.header.sequenceNumber
@@ -366,12 +375,9 @@ private class SabrMediaStream(
                                                 if (pendingMediaBySequence.put(sequenceNumber, segment) != null) {
                                                     throw SabrProtocolException("SABR returned duplicate segment $sequenceNumber")
                                                 }
-                                                emitReadyMediaSegments(
-                                                    establishFromMinimum =
-                                                        firstSequenceNumber == null &&
-                                                            segment.header.startMs <= requestPlayerTimeMs &&
-                                                            requestPlayerTimeMs < segment.checkedEndTimeMs(),
-                                                )
+                                                if (initSegmentEmitted) {
+                                                    emitReadyMediaSegments(canEstablishInitialSeekSequence())
+                                                }
                                             }
                                         }
                                     }
