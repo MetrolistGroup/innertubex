@@ -13,6 +13,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -35,6 +36,25 @@ class RemotePlayerConfigStoreTest {
 
             assertNull(store.getSignatureTimestamp("https://www.youtube.com/s/player/12345678/player.js"))
             assertTrue(engine.requestHistory.isEmpty())
+        }
+
+    @Test
+    fun freshUnknownHashDoesNotImmediatelyRefetchConfigTable() =
+        runBlocking {
+            val engine =
+                MockEngine {
+                    respondOk(
+                        """{"schemaVersion":1,"players":{"aaaaaaaa":{"sig":"A(1,2,INPUT)","nClass":"B","sts":1}}}""",
+                    )
+                }
+            val store = RemotePlayerConfigStore(HttpClient(engine), repository())
+            val playerUrl = "https://www.youtube.com/s/player/deadbeef/player.js"
+
+            assertNull(store.getConfig(playerUrl))
+            assertFalse(store.forceRefresh(missingHash = "deadbeef"))
+            assertNull(store.getConfig(playerUrl))
+
+            assertEquals(1, engine.requestHistory.size)
         }
 
     @Test
