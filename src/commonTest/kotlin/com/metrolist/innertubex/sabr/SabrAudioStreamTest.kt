@@ -191,10 +191,11 @@ class SabrAudioStreamTest {
         }
 
     @Test
-    fun seekedHighBitrateVideoEmitsFirstMediaBeforeResponseCompletes() =
+    fun seekedHighBitrateVideoOrdersOutOfOrderMediaBeforeResponseCompletes() =
         runBlocking {
             val releaseResponseTail = CompletableDeferred<Unit>()
             val firstMedia = CompletableDeferred<ByteArray>()
+            val chunks = mutableListOf<SabrChunk>()
             var requestBody: ByteArray? = null
             val engine =
                 MockEngine { request ->
@@ -202,7 +203,7 @@ class SabrAudioStreamTest {
                     val channel = ByteChannel(autoFlush = true)
                     launch {
                         channel.writeFully(
-                            umpPart(UmpPartType.FORMAT_INITIALIZATION_METADATA, initialization(6, 61_000, 401, 400)) +
+                            umpPart(UmpPartType.FORMAT_INITIALIZATION_METADATA, initialization(7, 62_000, 401, 400)) +
                                 mediaSegment(headerId = 1, itag = 248, lastModified = 300, isInit = true, data = byteArrayOf(9)) +
                                 mediaSegment(headerId = 2, itag = 401, lastModified = 400, isInit = true, data = byteArrayOf(1, 2)) +
                                 mediaResponseSegment(
@@ -215,9 +216,17 @@ class SabrAudioStreamTest {
                                 ) +
                                 mediaResponseSegment(
                                     headerId = 4,
+                                    sequenceNumber = 7,
+                                    startMs = 61_000,
+                                    data = byteArrayOf(6, 7, 8),
+                                    itag = 401,
+                                    lastModified = 400,
+                                ) +
+                                mediaResponseSegment(
+                                    headerId = 5,
                                     sequenceNumber = 6,
                                     startMs = 60_000,
-                                    data = byteArrayOf(6, 7, 8),
+                                    data = byteArrayOf(9, 10, 11),
                                     itag = 401,
                                     lastModified = 400,
                                 ),
@@ -237,24 +246,26 @@ class SabrAudioStreamTest {
                     selectedVideoFormat = SabrFormatId(401, 400, "x"),
                     selectedVideoWidth = 3840,
                     selectedVideoHeight = 2160,
-                    selectedVideoContentLengthBytes = 5,
+                    selectedVideoContentLengthBytes = 8,
                     selectedVideoMimeType = "video/webm",
                     selectedVideoBitrate = 12_000_000,
-                    durationMs = 61_000,
+                    durationMs = 62_000,
                 )
             val collection =
                 async {
                     SabrVideoStream(HttpClient(engine), bootstrap, initialPlayerTimeMs = 60_000).chunks().collect { chunk ->
+                        chunks += chunk
                         if (!chunk.isInitialization && !firstMedia.isCompleted) firstMedia.complete(chunk.data)
                     }
                 }
 
-            assertContentEquals(byteArrayOf(6, 7, 8), withTimeout(1_000) { firstMedia.await() })
+            assertContentEquals(byteArrayOf(9, 10, 11), withTimeout(1_000) { firstMedia.await() })
             assertEquals(60_000, decodePlayerTimeMs(requestBody ?: error("No SABR request")))
             assertFalse(collection.isCompleted)
 
             releaseResponseTail.complete(Unit)
             collection.await()
+            assertEquals(listOf(null, 6, 7), chunks.map(SabrChunk::sequenceNumber))
         }
 
     @Test
