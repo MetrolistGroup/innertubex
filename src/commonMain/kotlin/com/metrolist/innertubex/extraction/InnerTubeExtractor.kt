@@ -395,13 +395,15 @@ class InnerTubeExtractor internal constructor(
                 nowMs = Clock.System.now().toEpochMilliseconds(),
             )?.config ?: return null
         logger.d(TAG, "kids fallback attempted", details = mapOf("fallback" to "kids"))
-        return extractWithConfig(
-            videoId = videoId,
-            hints =
-                hints.copy(
+        val fallbackHints =
+            hints
+                .copy(
                     isKidsContent = true,
                     playbackClientOverrideId = WEB_KIDS_ID,
-                ),
+                ).withPremium(hints.premium)
+        return extractWithConfig(
+            videoId = videoId,
+            hints = fallbackHints,
             excludedClients = excludedClients,
             clientPlaybackNonce = clientPlaybackNonce,
             playerConfig = config,
@@ -445,16 +447,18 @@ class InnerTubeExtractor internal constructor(
             details =
                 mapOf("elapsedMs" to (Clock.System.now().toEpochMilliseconds() - configStart).toString()),
         )
-        return extractWithConfig(
-            videoId = videoId,
-            hints =
-                hints.copy(
+        val fallbackHints =
+            hints
+                .copy(
                     isAgeRestricted = true,
                     playbackClientOverrideId =
                         hints.playbackClientOverrideId?.takeIf { id ->
                             PlaybackClientCatalog.findManifest(id)?.request?.embedded == true
                         } ?: WEB_EMBEDDED_PLAYER_ID,
-                ),
+                ).withPremium(hints.premium)
+        return extractWithConfig(
+            videoId = videoId,
+            hints = fallbackHints,
             excludedClients = excludedClients,
             clientPlaybackNonce = clientPlaybackNonce,
             playerConfig = config,

@@ -291,7 +291,7 @@ class InnerTubeExtractorTest {
                         parser,
                         fallback = ContentAwareFallbackStrategy(),
                         cipherService = RecordingCipherService(),
-                    ).extract("video", ContentHints(premium = true), audioQuality = AudioQuality.HIGH)
+                    ).extract("video", ContentHints().withPremium(), audioQuality = AudioQuality.HIGH)
 
                 assertNotNull(stream)
                 assertTrue(stream.clientName != YouTubeClient.VISIONOS.clientName)
