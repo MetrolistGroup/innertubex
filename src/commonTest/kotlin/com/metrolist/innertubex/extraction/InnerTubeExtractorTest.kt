@@ -5,6 +5,7 @@ import com.metrolist.innertubex.cipher.YouTubeCipherService
 import com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy
 import com.metrolist.innertubex.extraction.strategy.ClientSelectionRequest
 import com.metrolist.innertubex.extraction.strategy.ClientSelectionResult
+import com.metrolist.innertubex.extraction.strategy.ContentAwareFallbackStrategy
 import com.metrolist.innertubex.extraction.strategy.PlaybackClientCatalog
 import com.metrolist.innertubex.extraction.strategy.PoTokenProviderKind
 import com.metrolist.innertubex.extraction.strategy.SelectedClient
@@ -248,6 +249,92 @@ class InnerTubeExtractorTest {
                 val extractor = makeExtractor(client, InnerTube(client, retryDelay = {}), parser)
                 assertNotNull(extractor.extract("video", ContentHints()))
                 assertEquals(0, parser.calls)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun authenticatedExtractionKeepsAccountClientAheadOfAnonymousFastPath() =
+        runBlocking {
+            val configModes = mutableListOf<Boolean>()
+            val client =
+                HttpClient(
+                    MockEngine { request ->
+                        val response =
+                            if (request.headers["Cookie"]?.contains("synthetic-session") == true) {
+                                HIGH_QUALITY_CIPHER_RESPONSE
+                            } else {
+                                DIRECT_RESPONSE
+                            }
+                        respond(response, HttpStatusCode.OK, headersOf("Content-Type", "application/json"))
+                    },
+                ) {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
+            val innerTube = InnerTube(client, retryDelay = {}).also { it.cookie = "SAPISID=synthetic-session" }
+            val parser =
+                object : YtConfigParser {
+                    override suspend fun fetchConfig(
+                        videoId: String,
+                        useLoginCookies: Boolean,
+                    ): PlayerConfig {
+                        configModes += useLoginCookies
+                        return PlayerConfig("https://www.youtube.com/s/player/test/base.js", 123, null, null)
+                    }
+                }
+            try {
+                val stream =
+                    makeExtractor(
+                        client,
+                        innerTube,
+                        parser,
+                        fallback = ContentAwareFallbackStrategy(),
+                        cipherService = RecordingCipherService(),
+                    ).extract("video", ContentHints(premium = true), audioQuality = AudioQuality.HIGH)
+
+                assertNotNull(stream)
+                assertTrue(stream.clientName != YouTubeClient.VISIONOS.clientName)
+                assertEquals(141, stream.itag)
+                assertEquals(listOf(true), configModes)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun highQualityDoesNotFastPathPastHigherCipherFormat() =
+        runBlocking {
+            var playerRequests = 0
+            val client =
+                HttpClient(
+                    MockEngine {
+                        playerRequests++
+                        respond(
+                            HIGH_QUALITY_CIPHER_RESPONSE,
+                            HttpStatusCode.OK,
+                            headersOf("Content-Type", "application/json"),
+                        )
+                    },
+                ) {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
+            val parser = CountingParser()
+            val cipher = RecordingCipherService()
+            try {
+                val stream =
+                    makeExtractor(
+                        client,
+                        InnerTube(client, retryDelay = {}),
+                        parser,
+                        cipherService = cipher,
+                    ).extract("video", ContentHints(), audioQuality = AudioQuality.HIGH)
+
+                assertNotNull(stream)
+                assertEquals(141, stream.itag)
+                assertEquals(1, parser.calls)
+                assertEquals(2, playerRequests)
+                assertEquals(listOf(listOf(141)), cipher.calls)
             } finally {
                 client.close()
             }
@@ -1033,6 +1120,10 @@ class InnerTubeExtractorTest {
         val VIDEO_RESPONSE =
             """
             {"playabilityStatus":{"status":"OK"},"streamingData":{"adaptiveFormats":[{"itag":251,"url":"https://r.googlevideo.com/videoplayback","mimeType":"audio/webm","bitrate":128000},{"itag":136,"url":"https://r.googlevideo.com/videoplayback","mimeType":"video/mp4; codecs=\"avc1\"","bitrate":1000000,"width":1280,"height":720},{"itag":247,"url":"https://r.googlevideo.com/videoplayback","mimeType":"video/webm; codecs=\"vp9\"","bitrate":2000000,"width":1920,"height":1080},{"itag":313,"url":"https://r.googlevideo.com/videoplayback","mimeType":"video/webm; codecs=\"vp9\"","bitrate":10000000,"width":3840,"height":2160}]}}
+            """.trimIndent()
+        val HIGH_QUALITY_CIPHER_RESPONSE =
+            """
+            {"playabilityStatus":{"status":"OK"},"streamingData":{"adaptiveFormats":[{"itag":251,"url":"https://r.googlevideo.com/videoplayback","mimeType":"audio/webm; codecs=\"opus\"","bitrate":128000,"audioChannels":2},{"itag":141,"signatureCipher":"url=https%3A%2F%2Fr.googlevideo.com%2Fvideoplayback&sp=sig&s=encrypted","mimeType":"audio/mp4; codecs=\"mp4a.40.2\"","bitrate":256000,"audioChannels":2}]}}
             """.trimIndent()
         val CIPHERED_VIDEO_RESPONSE =
             """

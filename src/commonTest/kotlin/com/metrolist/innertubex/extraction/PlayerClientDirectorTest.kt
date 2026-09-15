@@ -27,6 +27,39 @@ import kotlin.test.assertTrue
 
 class PlayerClientDirectorTest {
     @Test
+    fun premiumHintReachesSelectionAndAllowsUntokenizedPlayback() =
+        runBlocking {
+            val client = client { PLAYER_RESPONSE }
+            val innerTube = InnerTube(client, retryDelay = {})
+            val manifest = checkNotNull(PlaybackClientCatalog.findManifest("WEB_REMIX"))
+            var selectionRequest: ClientSelectionRequest? = null
+            val director =
+                PlayerClientDirector(
+                    innerTube,
+                    object : ClientFallbackStrategy {
+                        override fun resolveClients(hints: ContentHints) = listOf(manifest.client)
+
+                        override fun selectClients(request: ClientSelectionRequest): ClientSelectionResult {
+                            selectionRequest = request
+                            return ClientSelectionResult(listOf(SelectedClient(manifest.client, manifest)))
+                        }
+                    },
+                    NoTokenProvider,
+                )
+
+            val result =
+                director.fetchPlayerResponses(
+                    "video",
+                    PlayerConfig("player.js", null, null, null),
+                    ContentHints(playbackClientOverrideId = "WEB_REMIX", premium = true),
+                )
+
+            assertTrue(selectionRequest?.premium == true)
+            assertEquals("WEB_REMIX", result.playableResponses.single().clientName)
+            client.close()
+        }
+
+    @Test
     fun requiredPoTokenIsBoundToTheCorrectVisitorAndBinding() =
         runBlocking {
             val client = client { TOKEN_PLAYER_RESPONSE }
