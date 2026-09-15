@@ -150,12 +150,19 @@ class YouTubeCipherService(
     suspend fun processFormats(
         playerUrl: String,
         formats: List<Format>,
-    ): List<Format> =
-        withContext(Dispatchers.Default) {
+    ): List<Format> {
+        if (
+            formats.none {
+                !it.signatureCipher.isNullOrBlank() ||
+                    !it.cipher.isNullOrBlank() ||
+                    it.url?.extractNParameter() != null
+            }
+        ) {
+            return formats
+        }
+        return withContext(Dispatchers.Default) {
             operationMutex.withLock {
                 val totalStartMs = Clock.System.now().toEpochMilliseconds()
-                initializeUnsafe()
-                if (formats.isEmpty()) return@withLock formats
 
                 val cached = cacheMutex.withLock { solverCacheHitLocked(playerUrl) }
                 val cipherFormats = formats.count { !it.signatureCipher.isNullOrBlank() || !it.cipher.isNullOrBlank() }
@@ -471,6 +478,7 @@ class YouTubeCipherService(
                 processedFormats
             }
         }
+    }
 
     private suspend fun processFormatWithSolver(
         solver: CachedSolver,
