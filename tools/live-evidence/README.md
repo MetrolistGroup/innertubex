@@ -1,6 +1,6 @@
 # Reproduce the live evidence
 
-This is an opt-in Metrolist-KMP desktop-test artifact. It does not add benchmark code or dependencies to InnerTubeX production sources.
+This directory carries an opt-in patch for a Metrolist-KMP desktop test. The app-only code is applied to and compiled only in a temporary host checkout; InnerTubeX source sets and APIs do not reference Metrolist classes or dependencies.
 
 ## Exact checkouts
 
@@ -27,9 +27,9 @@ git -C <innertubex-repository> diff --quiet \
 
 Do not substitute PR #12 head `59da579d6d8452f80ad4f8dbf57343b8b260a0c2`; its `src` tree contains a later, unmeasured SABR fix.
 
-## Install and compile the harness
+## Apply and compile the host patch
 
-From this evidence checkout:
+From this evidence checkout, apply `metrolist-live-benchmark.patch` only to the temporary app checkouts:
 
 ```bash
 tools/live-evidence/prepare-metrolist-checkout.sh <baseline-app> <baseline-library>
@@ -43,7 +43,7 @@ flock -x /tmp/metrolist-gradle.lock timeout 1800s <baseline-app>/gradlew -p <bas
   -Pkotlin.compiler.execution.strategy=in-process
 ```
 
-With the opt-in environment unset, the test exits without network access. This compile dry-run also proves the test path is an app task, not an InnerTubeX checkout task.
+With the opt-in environment unset, the test exits without network access. This compile dry-run also proves the patched test is owned and compiled by the host app, not InnerTubeX.
 
 ## Run
 

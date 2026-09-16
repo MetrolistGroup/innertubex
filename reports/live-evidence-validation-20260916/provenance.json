@@ -1,18 +1,19 @@
 {
   "harness": {
     "account_menu_body_limit_bytes": 2097152,
-    "artifact": "tools/live-evidence/LivePremiumAbBenchmarkTest.kt",
+    "artifact": "tools/live-evidence/metrolist-live-benchmark.patch",
     "decode_seconds": 30,
     "decode_timeout_ms": 60000,
     "first_media_timeout_ms": 30000,
+    "host_target": "shared/src/desktopTest/kotlin/com/metrolist/shared/youtube/innertube/LivePremiumAbBenchmarkTest.kt",
     "opt_in": true,
     "playback_clock_lead_ms": 250,
-    "post_run_changes": "ktlint-only formatting and equivalent constant concatenation",
+    "post_run_changes": "ktlint-only formatting, equivalent constant concatenation, and host-patch packaging",
     "production_changes": false,
     "resolve_timeout_ms": 30000,
     "sample_timeout_ms": 120000,
     "seek_target_ms": 15000,
-    "sha256": "d790792c164c360c466180ca96a6c3db2dbf8e09867084a2f78fbbcf7b2e35fd"
+    "sha256": "b4283e59b1a5dd94ffb53f8e15638a04b5c5d62a4c767218e567885c860e2752"
   },
   "measured_at_utc": {
     "first": "2026-09-16T11:16:52.102037462Z",

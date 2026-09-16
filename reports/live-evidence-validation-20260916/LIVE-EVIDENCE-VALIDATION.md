@@ -7,7 +7,7 @@ Measured 2026-09-16. This evidence-only report supersedes the methodology and re
 - Authentication is now established for the rerun: all 24/24 bounded probes had credentials present, HTTP 200, and a parseable authenticated account-menu marker. No account details were retained.
 - Premium entitlement was **not observed**. Every candidate Premium value below is an explicit entitlement hypothesis, never a cookie inference or caller confirmation.
 - The negative normal-song result remains. Exact-format profile repeats were materially slower on the original PR #11 candidate because it selected WEB_REMIX instead of baseline VISIONOS.
-- Forced WEB_REMIX_SABR first media and 15 s seeks succeeded in both arms, but 30 s decode did not: every paced run ended at 19,974 ms with `attestation-required`. The frozen-clock defect in the old harness was fixed, but it was not the complete cause.
+- Forced WEB_REMIX_SABR first media succeeded 6/6, 15 s seeks succeeded 6/6, and 0/6 paced 30 s decodes completed; observed failures: `decode-30s:eof:attestation-required` (6).
 - A faster removable cross-platform token runtime is still unproven. Existing Android WebView, iOS WKWebView, and optional desktop WebView already share the common page-bound minter; QuickJS 1.0.14 remains only a disabled-by-default proof-of-concept candidate.
 
 ## Exact revisions
@@ -57,12 +57,12 @@ All matched rows kept the same per-case itag 251 Opus identity, 48 kHz sample ra
 
 The corrected harness advances the decoder playback clock for every PCM frame, paces it within 250 ms of wall time, places the 15 s seek before the long decode, bounds each decode to 60 s and each sample to 120 s, and closes resources on interruption. External cancellation still propagates.
 
-| Arm | Runs | First media | 15 s seek | 30 s decode | Position before failure | Failure |
+| Arm | Runs | First media | 15 s seek | 30 s decode | Decoded position | Failure |
 |---|---:|---:|---:|---:|---:|---|
-| baseline | 3 | 3/3 | 3/3 | 0/3 | 19974 ms | `decode-30s:eof:attestation-required` |
-| candidate_entitlement_hypothesis | 3 | 3/3 | 3/3 | 0/3 | 19974 ms | `decode-30s:eof:attestation-required` |
+| baseline | 3 | 3/3 | 3/3 | 0/3 | 19974 ms | `decode-30s:eof:attestation-required` (3) |
+| candidate_entitlement_hypothesis | 3 | 3/3 | 3/3 | 0/3 | 19974 ms | `decode-30s:eof:attestation-required` (3) |
 
-Both arms selected `WEB_REMIX_SABR__nopo`, itag 251, Opus, 141473 bps, 48 kHz, stereo. Every seek landed at 14,994 ms. Thus the earlier failure was partly obscured by a frozen accelerated clock, but corrected real-time feedback still exposed a shared mid-stream attestation requirement. First-media success is not complete-playback evidence, and no production fix is claimed here.
+Both arms selected `WEB_REMIX_SABR__nopo`, itag 251, opus, 141473 bps, 48 kHz, stereo. Validated seeks succeeded 6/6 at median 14994 ms. The old frozen-clock harness defect is corrected; paced playback observed `decode-30s:eof:attestation-required` (6), with 0/6 30 s decodes completing. First-media success is not complete-playback evidence, and no production fix is claimed here.
 
 ## Sidecar conclusion
 
@@ -70,8 +70,8 @@ PR #13's feasibility report remains the applicable design evidence, with one cor
 
 ## Reproducibility and artifacts
 
-- `tools/live-evidence/LivePremiumAbBenchmarkTest.kt`: privacy-safe opt-in Metrolist test artifact; sample definitions come from the existing live suite.
-- `tools/live-evidence/prepare-metrolist-checkout.sh`: validates exact revisions, installs the test artifact, and wires the temporary composite checkout.
+- `tools/live-evidence/metrolist-live-benchmark.patch`: privacy-safe opt-in patch compiled only in the host app; InnerTubeX source sets do not reference Metrolist classes.
+- `tools/live-evidence/prepare-metrolist-checkout.sh`: validates exact revisions, applies the host patch, and wires the temporary composite checkout.
 - `tools/live-evidence/run-targeted-reruns.sh`: exact balanced run order and bounded serialized Gradle invocation.
 - `tools/live-evidence/derive_report.py`: normalizes phases and regenerates all aggregate CSV, JSON, and Markdown outputs.
 - `original/`: immutable sanitized source observations from the first worker.
@@ -84,6 +84,6 @@ Cookie contents, account fields, media identifiers, titles, request headers, PO 
 
 1. Split process-first/process-warm from profile-first/profile-repeat and recomputed repeat-only `n=2` summaries.
 2. Replaced SAPISID-plus-HTTP-200 inference with a bounded in-memory authenticated account-menu marker; Premium remains unobserved.
-3. Added clock progression, pacing, deadlines, seek-position validation, cancellation propagation, and cleanup to the harness. The remaining SABR failure is explicitly classified as shared attestation-required behavior.
-4. Preserved a compilable opt-in app harness, exact checkout/fetch instructions, candidate tree identity, full row artifacts, and programmatic derivation.
+3. Added clock progression, pacing, deadlines, seek-position validation, cancellation propagation, and cleanup to the harness. SABR outcomes and failure categories are rendered from the observed rows.
+4. Preserved a compilable opt-in host-app patch, exact checkout/fetch instructions, candidate tree identity, full row artifacts, and programmatic derivation without adding Metrolist dependencies to InnerTubeX.
 5. Kept sidecar feasibility separate from production and made no unsupported speed or removability claim.

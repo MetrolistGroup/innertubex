@@ -26,6 +26,8 @@ def median(values: list[int]) -> int | float:
 
 def stats(rows: list[dict], metric: str) -> dict:
     values = [row[metric] for row in rows if row.get(metric) is not None]
+    if not values:
+        return {"n": 0, "median": None, "min": None, "max": None}
     return {"n": len(values), "median": median(values), "min": min(values), "max": max(values)}
 
 
@@ -250,7 +252,8 @@ def build_provenance(documents: list[dict], harness: Path) -> dict:
             "authentication_boolean_is_not_reused": True,
         },
         "harness": {
-            "artifact": "tools/live-evidence/LivePremiumAbBenchmarkTest.kt",
+            "artifact": "tools/live-evidence/metrolist-live-benchmark.patch",
+            "host_target": "shared/src/desktopTest/kotlin/com/metrolist/shared/youtube/innertube/LivePremiumAbBenchmarkTest.kt",
             "sha256": hashlib.sha256(harness.read_bytes()).hexdigest(),
             "opt_in": True,
             "production_changes": False,
@@ -262,7 +265,7 @@ def build_provenance(documents: list[dict], harness: Path) -> dict:
             "decode_seconds": 30,
             "seek_target_ms": 15_000,
             "playback_clock_lead_ms": 250,
-            "post_run_changes": "ktlint-only formatting and equivalent constant concatenation",
+            "post_run_changes": "ktlint-only formatting, equivalent constant concatenation, and host-patch packaging",
         },
         "method": {
             "audio_quality": "HIGH",
@@ -319,6 +322,63 @@ def value(summary: dict, metric: str = "time_to_first_media_ms") -> str:
     return f'{item["median"]} [{item["min"]}..{item["max"]}] (n={item["n"]})'
 
 
+def sabr_failures(item: dict) -> Counter:
+    return Counter({name: count for name, count in item["failure_categories"].items() if name != "none"})
+
+
+def format_sabr_failures(item: dict) -> str:
+    failures = sabr_failures(item)
+    return ", ".join(f"`{name}` ({count})" for name, count in sorted(failures.items())) or "none"
+
+
+def sabr_result(sabr: dict) -> str:
+    items = list(sabr.values())
+    total = sum(item["n"] for item in items)
+    first_media = sum(item["first_media_successes"] for item in items)
+    seeks = sum(item["seek_successes"] for item in items)
+    decodes = sum(item["decode_30s_successes"] for item in items)
+    failures = sum((sabr_failures(item) for item in items), Counter())
+    outcome = f"{decodes}/{total} paced 30 s decodes completed"
+    if failures:
+        observed = ", ".join(f"`{name}` ({count})" for name, count in sorted(failures.items()))
+        outcome += f"; observed failures: {observed}"
+    return f"- Forced WEB_REMIX_SABR first media succeeded {first_media}/{total}, 15 s seeks succeeded {seeks}/{total}, and {outcome}."
+
+
+def sabr_detail(sabr: dict) -> str:
+    items = list(sabr.values())
+    total = sum(item["n"] for item in items)
+    identities = {tuple(identity) for item in items for identity in item["format_identities"]}
+    if len(identities) == 1:
+        profile, itag, codecs, bitrate, sample_rate, channels = identities.pop()
+        channel_label = {1: "mono", 2: "stereo"}.get(channels, f"{channels} channels")
+        identity = (
+            f"Both arms selected `{profile}`, itag {itag}, {codecs}, {bitrate} bps, "
+            f"{sample_rate / 1000:g} kHz, {channel_label}."
+        )
+    else:
+        identity = "SABR format identities differed by arm; exact identities are retained in `derived/summary.json`."
+
+    seek_positions = [item["seek_position_ms"] for item in items if item["seek_position_ms"]["n"]]
+    seek_successes = sum(item["seek_successes"] for item in items)
+    if seek_positions and len({position["median"] for position in seek_positions}) == 1:
+        seek = f'Validated seeks succeeded {seek_successes}/{total} at median {seek_positions[0]["median"]} ms.'
+    else:
+        seek = f"Validated seeks succeeded {seek_successes}/{total}; per-arm positions are retained in `derived/summary.json`."
+
+    decodes = sum(item["decode_30s_successes"] for item in items)
+    failures = sum((sabr_failures(item) for item in items), Counter())
+    if failures:
+        observed = ", ".join(f"`{name}` ({count})" for name, count in sorted(failures.items()))
+        outcome = (
+            "The old frozen-clock harness defect is corrected; paced playback observed "
+            f"{observed}, with {decodes}/{total} 30 s decodes completing."
+        )
+    else:
+        outcome = f"The corrected paced harness completed {decodes}/{total} 30 s decodes without a recorded failure."
+    return f"{identity} {seek} {outcome} First-media success is not complete-playback evidence, and no production fix is claimed here."
+
+
 def render_report(summary: dict) -> str:
     original = summary["original"]
     rerun = summary["rerun"]
@@ -334,7 +394,7 @@ def render_report(summary: dict) -> str:
         f'- Authentication is now established for the rerun: all {auth["authentication_verified"]}/{auth["runs"]} bounded probes had credentials present, HTTP 200, and a parseable authenticated account-menu marker. No account details were retained.',
         '- Premium entitlement was **not observed**. Every candidate Premium value below is an explicit entitlement hypothesis, never a cookie inference or caller confirmation.',
         '- The negative normal-song result remains. Exact-format profile repeats were materially slower on the original PR #11 candidate because it selected WEB_REMIX instead of baseline VISIONOS.',
-        '- Forced WEB_REMIX_SABR first media and 15 s seeks succeeded in both arms, but 30 s decode did not: every paced run ended at 19,974 ms with `attestation-required`. The frozen-clock defect in the old harness was fixed, but it was not the complete cause.',
+        sabr_result(sabr),
         '- A faster removable cross-platform token runtime is still unproven. Existing Android WebView, iOS WKWebView, and optional desktop WebView already share the common page-bound minter; QuickJS 1.0.14 remains only a disabled-by-default proof-of-concept candidate.',
         "",
         "## Exact revisions",
@@ -399,19 +459,20 @@ def render_report(summary: dict) -> str:
         "",
         "The corrected harness advances the decoder playback clock for every PCM frame, paces it within 250 ms of wall time, places the 15 s seek before the long decode, bounds each decode to 60 s and each sample to 120 s, and closes resources on interruption. External cancellation still propagates.",
         "",
-        "| Arm | Runs | First media | 15 s seek | 30 s decode | Position before failure | Failure |",
+        "| Arm | Runs | First media | 15 s seek | 30 s decode | Decoded position | Failure |",
         "|---|---:|---:|---:|---:|---:|---|",
     ]
     for arm in ("baseline", "candidate_entitlement_hypothesis"):
         item = sabr[arm]
+        position = f'{item["decoded_position_ms"]["median"]} ms' if item["decoded_position_ms"]["n"] else "n/a"
         lines.append(
             f'| {arm} | {item["n"]} | {item["first_media_successes"]}/{item["n"]} | '
             f'{item["seek_successes"]}/{item["n"]} | {item["decode_30s_successes"]}/{item["n"]} | '
-            f'{item["decoded_position_ms"]["median"]} ms | `decode-30s:eof:attestation-required` |'
+            f'{position} | {format_sabr_failures(item)} |'
         )
     lines += [
         "",
-        "Both arms selected `WEB_REMIX_SABR__nopo`, itag 251, Opus, 141473 bps, 48 kHz, stereo. Every seek landed at 14,994 ms. Thus the earlier failure was partly obscured by a frozen accelerated clock, but corrected real-time feedback still exposed a shared mid-stream attestation requirement. First-media success is not complete-playback evidence, and no production fix is claimed here.",
+        sabr_detail(sabr),
         "",
         "## Sidecar conclusion",
         "",
@@ -419,8 +480,8 @@ def render_report(summary: dict) -> str:
         "",
         "## Reproducibility and artifacts",
         "",
-        "- `tools/live-evidence/LivePremiumAbBenchmarkTest.kt`: privacy-safe opt-in Metrolist test artifact; sample definitions come from the existing live suite.",
-        "- `tools/live-evidence/prepare-metrolist-checkout.sh`: validates exact revisions, installs the test artifact, and wires the temporary composite checkout.",
+        "- `tools/live-evidence/metrolist-live-benchmark.patch`: privacy-safe opt-in patch compiled only in the host app; InnerTubeX source sets do not reference Metrolist classes.",
+        "- `tools/live-evidence/prepare-metrolist-checkout.sh`: validates exact revisions, applies the host patch, and wires the temporary composite checkout.",
         "- `tools/live-evidence/run-targeted-reruns.sh`: exact balanced run order and bounded serialized Gradle invocation.",
         "- `tools/live-evidence/derive_report.py`: normalizes phases and regenerates all aggregate CSV, JSON, and Markdown outputs.",
         "- `original/`: immutable sanitized source observations from the first worker.",
@@ -433,8 +494,8 @@ def render_report(summary: dict) -> str:
         "",
         "1. Split process-first/process-warm from profile-first/profile-repeat and recomputed repeat-only `n=2` summaries.",
         "2. Replaced SAPISID-plus-HTTP-200 inference with a bounded in-memory authenticated account-menu marker; Premium remains unobserved.",
-        "3. Added clock progression, pacing, deadlines, seek-position validation, cancellation propagation, and cleanup to the harness. The remaining SABR failure is explicitly classified as shared attestation-required behavior.",
-        "4. Preserved a compilable opt-in app harness, exact checkout/fetch instructions, candidate tree identity, full row artifacts, and programmatic derivation.",
+        "3. Added clock progression, pacing, deadlines, seek-position validation, cancellation propagation, and cleanup to the harness. SABR outcomes and failure categories are rendered from the observed rows.",
+        "4. Preserved a compilable opt-in host-app patch, exact checkout/fetch instructions, candidate tree identity, full row artifacts, and programmatic derivation without adding Metrolist dependencies to InnerTubeX.",
         "5. Kept sidecar feasibility separate from production and made no unsupported speed or removability claim.",
     ]
     return "\n".join(lines) + "\n"
@@ -455,6 +516,26 @@ def self_test() -> None:
     assert median([1, 9, 3]) == 3
     assert median([1, 2]) == 1.5
     assert stats([{"x": 4}, {"x": 2}, {"x": None}], "x") == {"n": 2, "median": 3, "min": 2, "max": 4}
+    assert stats([{"x": None}], "x") == {"n": 0, "median": None, "min": None, "max": None}
+    success = {
+        "n": 3,
+        "first_media_successes": 3,
+        "seek_successes": 3,
+        "decode_30s_successes": 3,
+        "failure_categories": {"none": 3},
+    }
+    failure = {
+        **success,
+        "decode_30s_successes": 0,
+        "failure_categories": {"decode-30s:eof:no-progress": 3},
+        "seek_position_ms": {"n": 3, "median": 15_000, "min": 14_990, "max": 15_010},
+        "format_identities": [["TEST_SABR", 251, "opus", 128_000, 48_000, 2]],
+    }
+    assert format_sabr_failures(success) == "none"
+    rendered = sabr_result({"baseline": failure, "candidate": failure})
+    detail = sabr_detail({"baseline": failure, "candidate": failure})
+    assert "no-progress" in rendered and "attestation-required" not in rendered
+    assert "no-progress" in detail and "attestation-required" not in detail
 
 
 def main() -> None:
@@ -481,7 +562,7 @@ def main() -> None:
     write_rows(derived / "original-normalized-rows", original_rows)
     write_rows(derived / "rerun-rows", rerun_rows)
     (derived / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
-    harness = Path(__file__).with_name("LivePremiumAbBenchmarkTest.kt")
+    harness = Path(__file__).with_name("metrolist-live-benchmark.patch")
     (args.root / "provenance.json").write_text(
         json.dumps(build_provenance(documents, harness), indent=2, sort_keys=True) + "\n"
     )

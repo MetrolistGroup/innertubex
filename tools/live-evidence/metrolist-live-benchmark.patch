@@ -1,0 +1,784 @@
+diff --git a/shared/src/desktopTest/kotlin/com/metrolist/shared/youtube/innertube/LivePremiumAbBenchmarkTest.kt b/shared/src/desktopTest/kotlin/com/metrolist/shared/youtube/innertube/LivePremiumAbBenchmarkTest.kt
+new file mode 100644
+--- /dev/null
++++ b/shared/src/desktopTest/kotlin/com/metrolist/shared/youtube/innertube/LivePremiumAbBenchmarkTest.kt
+@@ -0,0 +1,779 @@
++package com.metrolist.shared.youtube.innertube
++
++import com.metrolist.innertubex.InnerTubeLogger
++import com.metrolist.innertubex.bodyAsTextLimited
++import com.metrolist.innertubex.cipher.RemotePlayerConfigStore
++import com.metrolist.innertubex.cipher.YouTubeCipherService
++import com.metrolist.innertubex.extraction.AudioQuality
++import com.metrolist.innertubex.extraction.ContentHints
++import com.metrolist.innertubex.extraction.InnerTubeExtractor
++import com.metrolist.innertubex.extraction.YtConfigParserImpl
++import com.metrolist.innertubex.extraction.strategy.ContentAwareFallbackStrategy
++import com.metrolist.innertubex.models.YouTubeClient
++import com.metrolist.innertubex.sabr.ExperimentalSabrApi
++import com.metrolist.innertubex.sabr.SabrAudioStream
++import com.metrolist.shared.api.parseAccountInfoResponse
++import com.metrolist.shared.playback.ffmpeg.AudioDecoder
++import com.metrolist.shared.playback.ffmpeg.HttpRangeInputStream
++import com.metrolist.shared.playback.ffmpeg.SabrInputStream
++import com.metrolist.shared.youtube.playback.DefaultStreamResolver
++import com.metrolist.shared.youtube.playback.DesktopTokenProvider
++import com.metrolist.shared.youtube.playback.MetrolistPlayerConfigRepository
++import com.metrolist.shared.youtube.playback.PlaybackResource
++import io.ktor.client.HttpClient
++import io.ktor.client.plugins.timeout
++import io.ktor.client.request.header
++import io.ktor.client.request.prepareGet
++import io.ktor.client.statement.bodyAsChannel
++import io.ktor.http.HttpHeaders
++import io.ktor.utils.io.cancel
++import io.ktor.utils.io.readAvailable
++import kotlinx.coroutines.CancellationException
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.flow.first
++import kotlinx.coroutines.runBlocking
++import kotlinx.coroutines.runInterruptible
++import kotlinx.coroutines.withTimeoutOrNull
++import java.io.File
++import java.lang.reflect.Method
++import java.time.Instant
++import kotlin.test.Test
++import kotlin.time.Duration.Companion.milliseconds
++import kotlin.time.TimeSource
++
++@OptIn(ExperimentalSabrApi::class)
++class LivePremiumAbBenchmarkTest {
++    @Test
++    fun runSanitizedPremiumAbBenchmark() =
++        runBlocking {
++            if (!LiveInnerTubeSuite.liveBenchmarksEnabled()) return@runBlocking
++            require(LiveInnerTubeSuite.benchmarkIterations() >= 1) { "Live AB benchmark requires at least one iteration" }
++
++            withLiveInnerTubeClient { httpClient, innerTube ->
++                val label = env("INNERTUBE_BENCHMARK_LABEL", "unknown")
++                val requestedPremiumHint = System.getenv("INNERTUBE_BENCHMARK_PREMIUM_HINT").toBoolean()
++                val forcedProfile = System.getenv("INNERTUBE_BENCHMARK_PROFILE")?.takeIf { it.isNotBlank() }
++                val auth = probeAuthentication(innerTube)
++                val tracker = TransformTracker()
++                val logger = InnerTubeLogger { event -> tracker.observe(event.tag, event.message) }
++                val configStore = RemotePlayerConfigStore(httpClient, MetrolistPlayerConfigRepository, logger)
++                val cipherService = YouTubeCipherService(httpClient, configStore, logger)
++                val tokenProvider = DesktopTokenProvider()
++                val benchmarkExtractor =
++                    InnerTubeExtractor(
++                        configParser = YtConfigParserImpl(httpClient, innerTube, configStore, logger),
++                        cipherService = cipherService,
++                        innerTube = innerTube,
++                        fallbackStrategy = ContentAwareFallbackStrategy(),
++                        tokenProvider = tokenProvider,
++                        logger = logger,
++                    )
++                val iterations = LiveInnerTubeSuite.benchmarkIterations()
++                val decodeEnabled = System.getenv("INNERTUBE_BENCHMARK_DECODE").toBoolean()
++                val decodeEach = System.getenv("INNERTUBE_BENCHMARK_DECODE_EACH").toBoolean()
++                val samples = LiveInnerTubeSuite.liveContentTypes().map { it.name to it.streams.first() }
++                val rows = mutableListOf<Row>()
++                var streamNumber = 0
++                val tokenPrewarmMs =
++                    if (System.getenv("INNERTUBE_BENCHMARK_PREWARM").toBoolean()) {
++                        val start = TimeSource.Monotonic.markNow()
++                        tokenProvider.prewarm(innerTube.sessionSnapshot().cookie)
++                        start.elapsedNow().inWholeMilliseconds
++                    } else {
++                        null
++                    }
++                val extractorPrewarmMs =
++                    if (System.getenv("INNERTUBE_BENCHMARK_PREWARM").toBoolean()) {
++                        val start = TimeSource.Monotonic.markNow()
++                        benchmarkExtractor.prewarm()
++                        start.elapsedNow().inWholeMilliseconds
++                    } else {
++                        null
++                    }
++
++                try {
++                    samples.forEachIndexed { sampleIndex, (type, stream) ->
++                        if (sampleIndex > 0) LiveInnerTubeSuite.pauseBetweenGroups("$type group")
++                        repeat(iterations) { iterationIndex ->
++                            if (streamNumber++ > 0) LiveInnerTubeSuite.pauseBetweenStreams("$type iteration ${iterationIndex + 1}")
++                            val baseHints = forcedProfile?.let { stream.hints.copy(playbackClientOverrideId = it) } ?: stream.hints
++                            val hints = applyPremiumHint(baseHints, requestedPremiumHint)
++                            val resolver = DefaultStreamResolver(benchmarkExtractor, innerTube, tokenProvider = tokenProvider)
++                            val row =
++                                try {
++                                    runOne(
++                                        httpClient = httpClient,
++                                        resolver = resolver,
++                                        tracker = tracker,
++                                        type = type,
++                                        iteration = iterationIndex + 1,
++                                        processPhase = if (sampleIndex == 0 && iterationIndex == 0) "process-first" else "process-warm",
++                                        profilePhase = if (iterationIndex == 0) "profile-first" else "profile-repeat",
++                                        videoId = stream.videoId,
++                                        hints = hints,
++                                        decode = decodeEnabled && (decodeEach || iterationIndex == 0),
++                                    )
++                                } finally {
++                                    resolver.close()
++                                }
++                            rows += row
++                        }
++                    }
++                } finally {
++                    try {
++                        cipherService.dispose()
++                    } finally {
++                        tokenProvider.close()
++                    }
++                }
++
++                val premiumHintApplied =
++                    requestedPremiumHint && samples
++                        .firstOrNull()
++                        ?.second
++                        ?.hints
++                        ?.let { applyPremiumHint(it, true) !== it } == true
++                writeReports(
++                    label = label,
++                    auth = auth,
++                    requestedPremiumHint = requestedPremiumHint,
++                    premiumHintApplied = premiumHintApplied,
++                    forcedProfile = forcedProfile,
++                    iterations = iterations,
++                    tokenPrewarmMs = tokenPrewarmMs,
++                    extractorPrewarmMs = extractorPrewarmMs,
++                    rows = rows,
++                )
++                println(summary(label, auth, requestedPremiumHint, premiumHintApplied, tokenPrewarmMs, extractorPrewarmMs, rows))
++            }
++        }
++
++    private suspend fun runOne(
++        httpClient: HttpClient,
++        resolver: DefaultStreamResolver,
++        tracker: TransformTracker,
++        type: String,
++        iteration: Int,
++        processPhase: String,
++        profilePhase: String,
++        videoId: String,
++        hints: ContentHints,
++        decode: Boolean,
++    ): Row =
++        withTimeoutOrNull(SAMPLE_TIMEOUT_MS) {
++            runOneWithinDeadline(
++                httpClient = httpClient,
++                resolver = resolver,
++                tracker = tracker,
++                type = type,
++                iteration = iteration,
++                processPhase = processPhase,
++                profilePhase = profilePhase,
++                videoId = videoId,
++                hints = hints,
++                decode = decode,
++            )
++        } ?: Row(type, iteration, processPhase, profilePhase, error = "sample:timeout")
++
++    private suspend fun runOneWithinDeadline(
++        httpClient: HttpClient,
++        resolver: DefaultStreamResolver,
++        tracker: TransformTracker,
++        type: String,
++        iteration: Int,
++        processPhase: String,
++        profilePhase: String,
++        videoId: String,
++        hints: ContentHints,
++        decode: Boolean,
++    ): Row {
++        tracker.begin()
++        val started = TimeSource.Monotonic.markNow()
++        var stage = "resolve"
++        return try {
++            val resource =
++                withTimeoutOrNull(RESOLVE_TIMEOUT_MS) { resolver.resolve(videoId, hints, AudioQuality.HIGH) }
++                    ?: error("resolution deadline exceeded")
++            val resolvedMs = started.elapsedNow().inWholeMilliseconds
++            stage = "first-media"
++            val mediaStarted = TimeSource.Monotonic.markNow()
++            val media = probeFirstMedia(httpClient, resource)
++            val firstMediaMs = mediaStarted.elapsedNow().inWholeMilliseconds
++            val totalFirstMediaMs = started.elapsedNow().inWholeMilliseconds
++            stage = "repeat-resolve"
++            val cacheStarted = TimeSource.Monotonic.markNow()
++            checkNotNull(withTimeoutOrNull(RESOLVE_TIMEOUT_MS) { resolver.resolve(videoId, hints, AudioQuality.HIGH) }) {
++                "repeat resolution deadline exceeded"
++            }
++            val cacheMs = cacheStarted.elapsedNow().inWholeMilliseconds
++            stage = "decode"
++            val decoded = if (decode) decodeAudio(httpClient, resource) else DecodeProbe()
++            val attempts =
++                resource.streamDiagnostics
++                    ?.attempts
++                    .orEmpty()
++                    .filterNot { it.outcome.startsWith("selection:") }
++            Row(
++                type = type,
++                iteration = iteration,
++                processPhase = processPhase,
++                profilePhase = profilePhase,
++                resolveMs = resolvedMs,
++                firstMediaMs = firstMediaMs,
++                timeToFirstMediaMs = totalFirstMediaMs,
++                cacheMs = cacheMs,
++                client = resource.clientName,
++                profile = resource.profileId,
++                transport = if (resource.isSabr) "SABR" else "DIRECT",
++                itag = resource.itag,
++                mimeType = resource.mimeType,
++                codecs = resource.codecs,
++                bitrate = resource.bitrate,
++                sampleRate = resource.sampleRate ?: decoded.sampleRate,
++                audioChannels = decoded.channels,
++                mediaStatus = media.status,
++                decodedFirstPcmMs = decoded.firstPcmMs,
++                decoded30sMs = decoded.fullDecodeMs,
++                seekFirstPcmMs = decoded.seekFirstPcmMs,
++                decodedPositionMs = decoded.decodedPositionMs,
++                seekPositionMs = decoded.seekPositionMs,
++                nTransform = tracker.snapshot().nStatus,
++                cipherTransform = tracker.snapshot().cipherStatus,
++                usedPoToken = resource.profileId.endsWith("__po"),
++                authWatch = resource.streamDiagnostics?.usedAuthenticatedWatchPage == true,
++                attempts = attempts.size,
++                hops = (attempts.size - 1).coerceAtLeast(0),
++                error = decoded.error,
++            )
++        } catch (error: CancellationException) {
++            throw error
++        } catch (error: Throwable) {
++            Row(
++                type = type,
++                iteration = iteration,
++                processPhase = processPhase,
++                profilePhase = profilePhase,
++                resolveMs = started.elapsedNow().inWholeMilliseconds,
++                error = "$stage:${error::class.simpleName ?: "Throwable"}",
++            )
++        }
++    }
++
++    private suspend fun probeFirstMedia(
++        httpClient: HttpClient,
++        resource: PlaybackResource,
++    ): MediaProbe =
++        try {
++            withTimeoutOrNull(FIRST_MEDIA_TIMEOUT_MS) {
++                resource.sabrBootstrap?.let { bootstrap ->
++                    var status: Int? = null
++                    val bytes =
++                        SabrAudioStream(
++                            httpClient = httpClient,
++                            bootstrap = bootstrap,
++                            onResponse = { status = it.httpStatus },
++                        ).chunks().first { !it.isInitialization && it.data.isNotEmpty() }.data.size
++                    return@withTimeoutOrNull MediaProbe(status ?: 200, bytes)
++                }
++                httpClient
++                    .prepareGet(resource.url) {
++                        resource.headers.forEach { (name, value) -> header(name, value) }
++                        header(HttpHeaders.Range, "bytes=0-${FIRST_MEDIA_RANGE_BYTES - 1}")
++                        timeout {
++                            requestTimeoutMillis = FIRST_MEDIA_TIMEOUT_MS
++                            connectTimeoutMillis = FIRST_MEDIA_TIMEOUT_MS
++                            socketTimeoutMillis = FIRST_MEDIA_TIMEOUT_MS
++                        }
++                    }.execute { response ->
++                        val channel = response.bodyAsChannel()
++                        val bytes = channel.readAvailable(ByteArray(1))
++                        channel.cancel()
++                        check(response.status.value in 200..299) { "media HTTP ${response.status.value}" }
++                        check(bytes > 0) { "media empty" }
++                        MediaProbe(response.status.value, bytes)
++                    }
++            } ?: error("first-media deadline exceeded")
++        } catch (error: CancellationException) {
++            throw error
++        } catch (error: Throwable) {
++            throw IllegalStateException("first media ${error::class.simpleName}")
++        }
++
++    private suspend fun decodeAudio(
++        httpClient: HttpClient,
++        resource: PlaybackResource,
++    ): DecodeProbe =
++        withTimeoutOrNull(DECODE_TIMEOUT_MS) {
++            runInterruptible(Dispatchers.IO) { decodeAudioBlocking(httpClient, resource) }
++        } ?: DecodeProbe(error = "decode-total:timeout")
++
++    private fun decodeAudioBlocking(
++        httpClient: HttpClient,
++        resource: PlaybackResource,
++    ): DecodeProbe {
++        val started = TimeSource.Monotonic.markNow()
++        val input =
++            resource.sabrBootstrap?.let { bootstrap ->
++                SabrInputStream(resource.contentLengthBytes, streamFactory = { initialPosition, playbackClock ->
++                    SabrAudioStream(
++                        httpClient,
++                        bootstrap,
++                        initialPlayerTimeMs = initialPosition,
++                        playbackPositionMs = playbackClock,
++                    ).chunks()
++                })
++            } ?: HttpRangeInputStream(url = resource.url, requestHeaders = resource.headers, mediaSize = resource.contentLengthBytes ?: 0L)
++        var stage = "open"
++        var sampleRate: Int? = null
++        var channels: Int? = null
++        var firstPcmMs: Long? = null
++        var fullDecodeMs: Long? = null
++        var seekFirstPcmMs: Long? = null
++        var decodedPositionMs: Long? = null
++        var seekPositionMs: Long? = null
++        return try {
++            input.use {
++                val decoder = AudioDecoder(it, 0)
++                try {
++                    stage = "format"
++                    val discoveredSampleRate = decoder.sampleRate
++                    val discoveredChannels = decoder.audioChannels
++                    sampleRate = discoveredSampleRate
++                    channels = discoveredChannels
++                    check(discoveredSampleRate > 0 && discoveredChannels > 0) { "audio format unavailable" }
++                    val targetBytes = discoveredSampleRate.toLong() * discoveredChannels * 2L * DECODE_SECONDS
++                    stage = "first-pcm"
++                    checkNotNull(decoder.readPCMFrame()) { "no PCM" }
++                    firstPcmMs = started.elapsedNow().inWholeMilliseconds
++                    val seekStarted = TimeSource.Monotonic.markNow()
++                    stage = "seek"
++                    decoder.seekTo(SEEK_TARGET_MS)
++                    var decodedBytes = checkNotNull(decoder.readPCMFrame()) { "no seek PCM" }.size.toLong()
++                    seekFirstPcmMs = seekStarted.elapsedNow().inWholeMilliseconds
++                    val observedSeekPositionMs = decoder.getCurrentPosition()
++                    seekPositionMs = observedSeekPositionMs
++                    check(observedSeekPositionMs in MIN_SEEK_POSITION_MS..MAX_SEEK_POSITION_MS) { "seek clock outside tolerance" }
++                    val playbackStartedNanos = System.nanoTime()
++                    val playbackStartedPositionMs = observedSeekPositionMs
++                    decodedPositionMs = observedSeekPositionMs
++                    stage = "decode-${DECODE_SECONDS}s"
++                    while (decodedBytes < targetBytes) {
++                        val frame = decoder.readPCMFrame()
++                        if (frame == null) {
++                            return DecodeProbe(
++                                sampleRate = sampleRate,
++                                channels = channels,
++                                firstPcmMs = firstPcmMs,
++                                seekFirstPcmMs = seekFirstPcmMs,
++                                decodedPositionMs = decodedPositionMs,
++                                seekPositionMs = seekPositionMs,
++                                error = "$stage:eof:${classifyStreamFailure(decoder.streamFailure)}",
++                            )
++                        }
++                        decodedBytes += frame.size
++                        val observedDecodedPositionMs = decoder.getCurrentPosition()
++                        decodedPositionMs = observedDecodedPositionMs
++                        pacePlaybackClock(playbackStartedNanos, observedDecodedPositionMs - playbackStartedPositionMs)
++                    }
++                    check(checkNotNull(decodedPositionMs) >= SEEK_TARGET_MS + MIN_DECODED_POSITION_MS) {
++                        "decoded clock did not reach target"
++                    }
++                    fullDecodeMs = started.elapsedNow().inWholeMilliseconds
++                    DecodeProbe(
++                        sampleRate = sampleRate,
++                        channels = channels,
++                        firstPcmMs = firstPcmMs,
++                        fullDecodeMs = fullDecodeMs,
++                        seekFirstPcmMs = seekFirstPcmMs,
++                        decodedPositionMs = decodedPositionMs,
++                        seekPositionMs = seekPositionMs,
++                    )
++                } finally {
++                    decoder.close()
++                }
++            }
++        } catch (error: Throwable) {
++            if (Thread.currentThread().isInterrupted) throw error
++            DecodeProbe(
++                sampleRate = sampleRate,
++                channels = channels,
++                firstPcmMs = firstPcmMs,
++                fullDecodeMs = fullDecodeMs,
++                seekFirstPcmMs = seekFirstPcmMs,
++                decodedPositionMs = decodedPositionMs,
++                seekPositionMs = seekPositionMs,
++                error = "$stage:${error::class.simpleName ?: "Throwable"}",
++            )
++        }
++    }
++
++    private fun classifyStreamFailure(error: Throwable?): String {
++        var current = error
++        while (current != null) {
++            val message = current.message.orEmpty()
++            when {
++                "made no" in message -> return "no-progress"
++                message.startsWith("Incomplete SABR stream") -> return "incomplete-stream"
++                "attestation" in message -> return "attestation-required"
++                message.startsWith("SABR request failed") -> return "http-failure"
++            }
++            current = current.cause
++        }
++        return error?.javaClass?.simpleName ?: "none"
++    }
++
++    private fun pacePlaybackClock(
++        playbackStartedNanos: Long,
++        positionMs: Long,
++    ) {
++        val elapsedMs = (System.nanoTime() - playbackStartedNanos) / 1_000_000L
++        val sleepMs = positionMs - PLAYBACK_CLOCK_LEAD_MS - elapsedMs
++        if (sleepMs > 0L) Thread.sleep(sleepMs)
++    }
++
++    private fun writeReports(
++        label: String,
++        auth: AuthProbe,
++        requestedPremiumHint: Boolean,
++        premiumHintApplied: Boolean,
++        forcedProfile: String?,
++        iterations: Int,
++        tokenPrewarmMs: Long?,
++        extractorPrewarmMs: Long?,
++        rows: List<Row>,
++    ) {
++        val dir =
++            System
++                .getenv("INNERTUBE_BENCHMARK_REPORT_DIR")
++                ?.takeIf(String::isNotBlank)
++                ?.let(::File)
++                ?.also(File::mkdirs)
++                ?: LiveInnerTubeSuite.benchmarkReportDir().also(File::mkdirs)
++        val safeLabel = label.replace(Regex("[^A-Za-z0-9_-]"), "_")
++        dir.resolve("playback-ab-$safeLabel.csv").writeText(
++            buildString {
++                appendLine(Row.HEADER)
++                rows.forEach { appendLine(it.csv()) }
++            },
++        )
++        dir.resolve("playback-ab-$safeLabel.json").writeText(
++            buildString {
++                appendLine("{")
++                appendLine("  \"implementation\": ${json(label)},")
++                appendLine("  \"measured_at_utc\": ${json(Instant.now().toString())},")
++                appendLine("  \"app_revision\": ${json(env("INNERTUBE_APP_REVISION", "unknown"))},")
++                appendLine("  \"library_revision\": ${json(env("INNERTUBE_LIBRARY_REVISION", "unknown"))},")
++                appendLine("  \"arm\": ${json(env("INNERTUBE_BENCHMARK_ARM", "unknown"))},")
++                appendLine("  \"pair_index\": ${json(env("INNERTUBE_BENCHMARK_PAIR", "unknown"))},")
++                appendLine("  \"order_position\": ${json(env("INNERTUBE_BENCHMARK_ORDER", "unknown"))},")
++                appendLine("  \"audio_quality\": \"HIGH\",")
++                appendLine("  \"iterations\": $iterations,")
++                appendLine("  \"credentials_present\": ${auth.credentialsPresent},")
++                appendLine("  \"authentication_endpoint_status\": ${auth.status ?: "null"},")
++                appendLine("  \"authenticated_account_menu_observed\": ${auth.accountMenuObserved},")
++                appendLine("  \"authentication_verified\": ${auth.verified},")
++                appendLine("  \"premium_entitlement\": \"not_observed\",")
++                appendLine("  \"premium_hint_role\": \"explicit_hypothesis_only\",")
++                appendLine("  \"premium_hint_requested\": $requestedPremiumHint,")
++                appendLine("  \"premium_hint_applied\": $premiumHintApplied,")
++                appendLine("  \"forced_profile\": ${json(forcedProfile)},")
++                appendLine("  \"token_prewarm_ms\": ${tokenPrewarmMs ?: "null"},")
++                appendLine("  \"extractor_prewarm_ms\": ${extractorPrewarmMs ?: "null"},")
++                appendLine("  \"rows\": [")
++                rows.forEachIndexed { index, row ->
++                    append("    ${row.json()}")
++                    appendLine(if (index + 1 == rows.size) "" else ",")
++                }
++                appendLine("  ]")
++                appendLine("}")
++            },
++        )
++    }
++
++    private suspend fun probeAuthentication(innerTube: com.metrolist.innertubex.InnerTube): AuthProbe {
++        val credentialsPresent = innerTube.hasSapCookieAuth()
++        return try {
++            val response = innerTube.accountMenu(YouTubeClient.WEB_REMIX)
++            val status = response.status.value
++            val accountMenuObserved =
++                status in 200..299 && parseAccountInfoResponse(response.bodyAsTextLimited(MAX_ACCOUNT_MENU_BYTES)) != null
++            AuthProbe(credentialsPresent, status, accountMenuObserved)
++        } catch (error: CancellationException) {
++            throw error
++        } catch (_: Throwable) {
++            AuthProbe(credentialsPresent, null, false)
++        }
++    }
++
++    private fun applyPremiumHint(
++        hints: ContentHints,
++        requested: Boolean,
++    ): ContentHints {
++        if (!requested) return hints
++        val method: Method =
++            hints.javaClass.methods.firstOrNull {
++                it.name == "withPremium" &&
++                    it.parameterCount == 1 &&
++                    it.parameterTypes[0] == Boolean::class.javaPrimitiveType
++            } ?: return hints
++        return runCatching { method.invoke(hints, true) as? ContentHints }.getOrNull() ?: hints
++    }
++
++    private fun summary(
++        label: String,
++        auth: AuthProbe,
++        requestedPremiumHint: Boolean,
++        premiumHintApplied: Boolean,
++        tokenPrewarmMs: Long?,
++        extractorPrewarmMs: Long?,
++        rows: List<Row>,
++    ): String =
++        buildString {
++            appendLine(
++                "LIVE_AB implementation=$label quality=HIGH credentialsPresent=${auth.credentialsPresent} " +
++                    "authMenuObserved=${auth.accountMenuObserved} authVerified=${auth.verified} authStatus=${auth.status ?: "unknown"} " +
++                    "premiumEntitlement=not-observed premiumHintRequested=$requestedPremiumHint premiumHintApplied=$premiumHintApplied " +
++                    "tokenPrewarmMs=${tokenPrewarmMs ?: "none"} extractorPrewarmMs=${extractorPrewarmMs ?: "none"}",
++            )
++            rows.forEach { row ->
++                appendLine(
++                    "ROW type=${row.type} iteration=${row.iteration} processPhase=${row.processPhase} " +
++                        "profilePhase=${row.profilePhase} resolve=${row.resolveMs ?: "na"}ms " +
++                        "firstMedia=${row.firstMediaMs ?: "na"}ms total=${row.timeToFirstMediaMs ?: "na"}ms " +
++                        "cache=${row.cacheMs ?: "na"}ms client=${row.client ?: "na"} profile=${row.profile ?: "na"} " +
++                        "transport=${row.transport ?: "na"} itag=${row.itag ?: "na"} bitrate=${row.bitrate ?: "na"} " +
++                        "sampleRate=${row.sampleRate ?: "na"} channels=${row.audioChannels ?: "na"} " +
++                        "n=${row.nTransform} cipher=${row.cipherTransform} po=${row.usedPoToken} " +
++                        "attempts=${row.attempts} hops=${row.hops} decode30=${row.decoded30sMs ?: "na"}ms " +
++                        "decodedPosition=${row.decodedPositionMs ?: "na"}ms seek=${row.seekFirstPcmMs ?: "na"}ms " +
++                        "seekPosition=${row.seekPositionMs ?: "na"}ms error=${row.error ?: "none"}",
++                )
++            }
++        }
++
++    private fun env(
++        name: String,
++        default: String,
++    ): String = System.getenv(name)?.takeIf { it.isNotBlank() } ?: default
++
++    private data class AuthProbe(
++        val credentialsPresent: Boolean,
++        val status: Int?,
++        val accountMenuObserved: Boolean,
++    ) {
++        val verified: Boolean = credentialsPresent && status in 200..299 && accountMenuObserved
++    }
++
++    private data class MediaProbe(
++        val status: Int,
++        val bytes: Int,
++    )
++
++    private data class DecodeProbe(
++        val sampleRate: Int? = null,
++        val channels: Int? = null,
++        val firstPcmMs: Long? = null,
++        val fullDecodeMs: Long? = null,
++        val seekFirstPcmMs: Long? = null,
++        val decodedPositionMs: Long? = null,
++        val seekPositionMs: Long? = null,
++        val error: String? = null,
++    )
++
++    private class TransformTracker {
++        private var cipherFormats = 0
++        private var nFormats = 0
++        private var cipherTransformed = false
++        private var nTransformed = false
++
++        fun begin() {
++            cipherFormats = 0
++            nFormats = 0
++            cipherTransformed = false
++            nTransformed = false
++        }
++
++        fun observe(
++            tag: String,
++            message: String,
++        ) {
++            if (tag != "YouTubeCipherService") return
++            if (message.startsWith("processFormats start")) {
++                cipherFormats = maxOf(cipherFormats, number(message, "cipherFormats"))
++                nFormats = maxOf(nFormats, number(message, "nFormats"))
++            }
++            if (message.startsWith("signature ") && (message.contains("done") || message.contains("reused"))) {
++                cipherTransformed = true
++            }
++            if (message.startsWith("n ") && (message.contains("done") || message.contains("reused"))) {
++                nTransformed = true
++            }
++        }
++
++        fun snapshot(): TransformSnapshot =
++            TransformSnapshot(
++                nStatus =
++                    when {
++                        nFormats == 0 -> "none-observed"
++                        nTransformed -> "transformed"
++                        else -> "observed-unconfirmed"
++                    },
++                cipherStatus =
++                    when {
++                        cipherFormats == 0 -> "none-observed"
++                        cipherTransformed -> "transformed"
++                        else -> "observed-unconfirmed"
++                    },
++            )
++
++        private fun number(
++            message: String,
++            key: String,
++        ): Int =
++            Regex("\\b$key=(\\d+)")
++                .find(message)
++                ?.groupValues
++                ?.get(1)
++                ?.toIntOrNull() ?: 0
++    }
++
++    private data class TransformSnapshot(
++        val nStatus: String,
++        val cipherStatus: String,
++    )
++
++    private data class Row(
++        val type: String,
++        val iteration: Int,
++        val processPhase: String,
++        val profilePhase: String,
++        val resolveMs: Long? = null,
++        val firstMediaMs: Long? = null,
++        val timeToFirstMediaMs: Long? = null,
++        val cacheMs: Long? = null,
++        val client: String? = null,
++        val profile: String? = null,
++        val transport: String? = null,
++        val itag: Int? = null,
++        val mimeType: String? = null,
++        val codecs: String? = null,
++        val bitrate: Int? = null,
++        val sampleRate: Int? = null,
++        val audioChannels: Int? = null,
++        val mediaStatus: Int? = null,
++        val decodedFirstPcmMs: Long? = null,
++        val decoded30sMs: Long? = null,
++        val seekFirstPcmMs: Long? = null,
++        val decodedPositionMs: Long? = null,
++        val seekPositionMs: Long? = null,
++        val nTransform: String = "unknown",
++        val cipherTransform: String = "unknown",
++        val usedPoToken: Boolean = false,
++        val authWatch: Boolean = false,
++        val attempts: Int = 0,
++        val hops: Int = 0,
++        val error: String? = null,
++    ) {
++        fun csv(): String =
++            listOf(
++                type,
++                iteration,
++                processPhase,
++                profilePhase,
++                resolveMs,
++                firstMediaMs,
++                timeToFirstMediaMs,
++                cacheMs,
++                client,
++                profile,
++                transport,
++                itag,
++                mimeType,
++                codecs,
++                bitrate,
++                sampleRate,
++                audioChannels,
++                mediaStatus,
++                decodedFirstPcmMs,
++                decoded30sMs,
++                seekFirstPcmMs,
++                decodedPositionMs,
++                seekPositionMs,
++                nTransform,
++                cipherTransform,
++                usedPoToken,
++                authWatch,
++                attempts,
++                hops,
++                error,
++            ).joinToString(",", transform = { csv(it) })
++
++        fun json(): String =
++            "{" +
++                listOf(
++                    "type" to type,
++                    "iteration" to iteration,
++                    "process_phase" to processPhase,
++                    "profile_phase" to profilePhase,
++                    "resolve_ms" to resolveMs,
++                    "first_media_ms" to firstMediaMs,
++                    "time_to_first_media_ms" to timeToFirstMediaMs,
++                    "cache_ms" to cacheMs,
++                    "client" to client,
++                    "profile" to profile,
++                    "transport" to transport,
++                    "itag" to itag,
++                    "mime_type" to mimeType,
++                    "codecs" to codecs,
++                    "bitrate" to bitrate,
++                    "sample_rate" to sampleRate,
++                    "audio_channels" to audioChannels,
++                    "media_status" to mediaStatus,
++                    "decoded_first_pcm_ms" to decodedFirstPcmMs,
++                    "decoded_30s_ms" to decoded30sMs,
++                    "seek_first_pcm_ms" to seekFirstPcmMs,
++                    "decoded_position_ms" to decodedPositionMs,
++                    "seek_position_ms" to seekPositionMs,
++                    "n_transform" to nTransform,
++                    "cipher_transform" to cipherTransform,
++                    "used_po_token" to usedPoToken,
++                    "auth_watch" to authWatch,
++                    "attempts" to attempts,
++                    "hops" to hops,
++                    "error" to error,
++                ).joinToString(",") { (key, value) -> "${json(key)}:${json(value)}" } + "}"
++
++        companion object {
++            const val HEADER =
++                "type,iteration,process_phase,profile_phase,resolve_ms,first_media_ms,time_to_first_media_ms,cache_ms," +
++                    "client,profile,transport,itag,mime_type,codecs,bitrate,sample_rate,audio_channels,media_status," +
++                    "decoded_first_pcm_ms,decoded_30s_ms,seek_first_pcm_ms,decoded_position_ms,seek_position_ms," +
++                    "n_transform,cipher_transform,used_po_token,auth_watch,attempts,hops,error"
++        }
++    }
++
++    private companion object {
++        const val SAMPLE_TIMEOUT_MS = 120_000L
++        const val RESOLVE_TIMEOUT_MS = 30_000L
++        const val FIRST_MEDIA_TIMEOUT_MS = 30_000L
++        const val DECODE_TIMEOUT_MS = 60_000L
++        const val FIRST_MEDIA_RANGE_BYTES = 64 * 1024L
++        const val MAX_ACCOUNT_MENU_BYTES = 2 * 1024 * 1024
++        const val DECODE_SECONDS = 30L
++        const val SEEK_TARGET_MS = 15_000L
++        const val MIN_DECODED_POSITION_MS = 29_000L
++        const val MIN_SEEK_POSITION_MS = 14_000L
++        const val MAX_SEEK_POSITION_MS = 17_000L
++        const val PLAYBACK_CLOCK_LEAD_MS = 250L
++    }
++}
++
++private fun csv(value: Any?): String =
++    value?.toString()?.replace("\"", "\"\"")?.let { if (it.any { c -> c == ',' || c == '"' || c == '\n' }) "\"$it\"" else it } ?: ""
++
++private fun json(value: Any?): String =
++    when (value) {
++        null -> "null"
++        is Number, is Boolean -> value.toString()
++        else -> "\"${value.toString().replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")}\""
++    }

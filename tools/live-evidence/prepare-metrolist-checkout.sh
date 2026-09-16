@@ -14,6 +14,7 @@ app=$(realpath "$1")
 library=$(realpath "$2")
 test_path=shared/src/desktopTest/kotlin/com/metrolist/shared/youtube/innertube/LivePremiumAbBenchmarkTest.kt
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+patch=$script_dir/metrolist-live-benchmark.patch
 
 [[ $(git -C "$app" rev-parse HEAD) == "$APP_REVISION" ]] || {
     echo "Metrolist checkout is not the measured revision" >&2
@@ -30,7 +31,13 @@ settings=$(git -C "$app" show HEAD:settings.gradle.kts)
     echo "Measured Metrolist settings layout changed" >&2
     exit 1
 }
+git -C "$app" cat-file -e "HEAD:$test_path" 2>/dev/null && {
+    echo "Measured Metrolist revision already contains the benchmark path" >&2
+    exit 1
+}
 printf '%s\n' "${settings/includeBuild(\"..\/innertubex\")/includeBuild(\"$library\")}" >"$app/settings.gradle.kts"
-install -m 0644 "$script_dir/LivePremiumAbBenchmarkTest.kt" "$app/$test_path"
+rm -f "$app/$test_path"
+git -C "$app" apply --check "$patch"
+git -C "$app" apply "$patch"
 
-printf 'Prepared app=%s library=%s\n' "$APP_REVISION" "$library_revision"
+printf 'Prepared host app=%s library=%s\n' "$APP_REVISION" "$library_revision"
