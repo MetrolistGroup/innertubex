@@ -282,7 +282,8 @@ class InnerTubeExtractor internal constructor(
         if (
             hints.playbackClientOverrideId == null && !hints.wantVideo &&
             hints.isExplicit != true && hints.isAgeRestricted != true &&
-            hints.isUploaded != true && hints.isLive != true
+            hints.isUploaded != true && hints.isLive != true &&
+            !innerTube.hasSapCookieAuth()
         ) {
             val directStream =
                 extractWithConfig(
@@ -299,35 +300,43 @@ class InnerTubeExtractor internal constructor(
             if (directStream != null) return directStream
         }
 
-        val cookieFirst = hints.isExplicit == true && innerTube.hasSapCookieAuth()
-        val stream =
-            extractWithCachedConfig(
-                videoId = videoId,
-                hints = hints,
-                excludedClients = excludedClients,
-                clientPlaybackNonce = clientPlaybackNonce,
-                useLoginCookies = cookieFirst,
-                totalStartMs = totalStart,
-                audioQuality = audioQuality,
-                diagnostics = diagnostics,
-                prefetchedPoToken = prefetchedPoToken,
-            )
-        if (stream != null) return stream
-
-        if (!cookieFirst && innerTube.hasSapCookieAuth()) {
-            logger.w(TAG, "authenticated watch page retry", details = mapOf("authenticated" to "true"))
-            val authenticatedStream =
+        suspend fun extractWithWatchConfig(useLoginCookies: Boolean): ExtractedStream? =
+            try {
                 extractWithCachedConfig(
                     videoId = videoId,
                     hints = hints,
                     excludedClients = excludedClients,
                     clientPlaybackNonce = clientPlaybackNonce,
-                    useLoginCookies = true,
+                    useLoginCookies = useLoginCookies,
                     totalStartMs = totalStart,
                     audioQuality = audioQuality,
                     diagnostics = diagnostics,
                     prefetchedPoToken = prefetchedPoToken,
                 )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                if (!useLoginCookies) throw error
+                diagnostics.requestFailures += error
+                logger.w(
+                    TAG,
+                    "authenticated watch config unavailable",
+                    details = mapOf("exceptionType" to (error::class.simpleName ?: "unknown")),
+                )
+                null
+            }
+
+        val cookieFirst = hints.playbackClientOverrideId == null && innerTube.hasSapCookieAuth()
+        val stream = extractWithWatchConfig(useLoginCookies = cookieFirst)
+        if (stream != null) return stream
+
+        if (cookieFirst) {
+            logger.w(TAG, "signed-out watch config fallback")
+            val signedOutConfigStream = extractWithWatchConfig(useLoginCookies = false)
+            if (signedOutConfigStream != null) return signedOutConfigStream
+        } else if (innerTube.hasSapCookieAuth()) {
+            logger.w(TAG, "authenticated watch page retry", details = mapOf("authenticated" to "true"))
+            val authenticatedStream = extractWithWatchConfig(useLoginCookies = true)
             if (authenticatedStream != null) return authenticatedStream
         }
 
@@ -394,13 +403,14 @@ class InnerTubeExtractor internal constructor(
                 nowMs = Clock.System.now().toEpochMilliseconds(),
             )?.config ?: return null
         logger.d(TAG, "kids fallback attempted", details = mapOf("fallback" to "kids"))
+        val fallbackHints =
+            hints.copy(
+                isKidsContent = true,
+                playbackClientOverrideId = WEB_KIDS_ID,
+            )
         return extractWithConfig(
             videoId = videoId,
-            hints =
-                hints.copy(
-                    isKidsContent = true,
-                    playbackClientOverrideId = WEB_KIDS_ID,
-                ),
+            hints = fallbackHints,
             excludedClients = excludedClients,
             clientPlaybackNonce = clientPlaybackNonce,
             playerConfig = config,
@@ -444,16 +454,17 @@ class InnerTubeExtractor internal constructor(
             details =
                 mapOf("elapsedMs" to (Clock.System.now().toEpochMilliseconds() - configStart).toString()),
         )
+        val fallbackHints =
+            hints.copy(
+                isAgeRestricted = true,
+                playbackClientOverrideId =
+                    hints.playbackClientOverrideId?.takeIf { id ->
+                        PlaybackClientCatalog.findManifest(id)?.request?.embedded == true
+                    } ?: WEB_EMBEDDED_PLAYER_ID,
+            )
         return extractWithConfig(
             videoId = videoId,
-            hints =
-                hints.copy(
-                    isAgeRestricted = true,
-                    playbackClientOverrideId =
-                        hints.playbackClientOverrideId?.takeIf { id ->
-                            PlaybackClientCatalog.findManifest(id)?.request?.embedded == true
-                        } ?: WEB_EMBEDDED_PLAYER_ID,
-                ),
+            hints = fallbackHints,
             excludedClients = excludedClients,
             clientPlaybackNonce = clientPlaybackNonce,
             playerConfig = config,
@@ -882,6 +893,20 @@ class InnerTubeExtractor internal constructor(
                         (it.itag in directAudioItags)
                 }
             val directFastPathCandidate = selectBestAudioFormat(directAudioFormats, audioQuality)
+            val bestAvailableAudioFormat =
+                selectBestAudioFormat(
+                    allFormats.filter { format ->
+                        format.isAudio &&
+                            (
+                                !format.url.isNullOrBlank() ||
+                                    !format.signatureCipher.isNullOrBlank() ||
+                                    !format.cipher.isNullOrBlank()
+                            )
+                    },
+                    audioQuality,
+                    requireUrl = false,
+                )
+            val directAudioIsBest = directFastPathCandidate?.itag == bestAvailableAudioFormat?.itag
             val wantVideo = hints.wantVideo
             val directVideoFormats =
                 if (wantVideo) preferredVideoFormats(streamingData, requireUrl = true) else emptyList()
@@ -896,7 +921,7 @@ class InnerTubeExtractor internal constructor(
                         maxHeight = hints.maxVideoHeight ?: 2160,
                     )
                     ?: preferredDirectVideo
-            if (directFastPathCandidate != null && (!wantVideo || directFastPathVideo != null)) {
+            if (directFastPathCandidate != null && directAudioIsBest && (!wantVideo || directFastPathVideo != null)) {
                 val directUrl =
                     appendClientPlaybackNonce(
                         directFastPathCandidate.url.orEmpty().withPoToken(result.streamingDataPoToken),

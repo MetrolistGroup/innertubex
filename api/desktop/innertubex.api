@@ -255,6 +255,7 @@ public final class com/metrolist/innertubex/extraction/ContentHints {
 	public final fun getEndpointParams ()Ljava/lang/String;
 	public final fun getMaxVideoHeight ()Ljava/lang/Integer;
 	public final fun getPlaybackClientOverrideId ()Ljava/lang/String;
+	public final fun getPremium ()Z
 	public final fun getSabrFirst ()Z
 	public final fun getWantVideo ()Z
 	public fun hashCode ()I
@@ -265,6 +266,8 @@ public final class com/metrolist/innertubex/extraction/ContentHints {
 	public final fun isLocal ()Ljava/lang/Boolean;
 	public final fun isUploaded ()Ljava/lang/Boolean;
 	public fun toString ()Ljava/lang/String;
+	public final fun withPremium (Z)Lcom/metrolist/innertubex/extraction/ContentHints;
+	public static synthetic fun withPremium$default (Lcom/metrolist/innertubex/extraction/ContentHints;ZILjava/lang/Object;)Lcom/metrolist/innertubex/extraction/ContentHints;
 	public final fun withStreamCapabilities (ZZZ)Lcom/metrolist/innertubex/extraction/ContentHints;
 	public static synthetic fun withStreamCapabilities$default (Lcom/metrolist/innertubex/extraction/ContentHints;ZZZILjava/lang/Object;)Lcom/metrolist/innertubex/extraction/ContentHints;
 }

@@ -105,7 +105,7 @@ class RemotePlayerConfigStore(
         if (missingHash != null && isKnownHash(missingHash, sourceUrl)) return false
         val reservation = reserveUnknownHashRefresh(sourceUrl) ?: return false
         return try {
-            refresh(sourceUrl, force = true)
+            refresh(sourceUrl, force = true, skipRecentAttempt = missingHash != null)
         } catch (e: CancellationException) {
             withContext(NonCancellable) { releaseUnknownHashRefresh(sourceUrl, reservation) }
             throw e
@@ -178,6 +178,7 @@ class RemotePlayerConfigStore(
     private suspend fun refresh(
         sourceUrl: String,
         force: Boolean,
+        skipRecentAttempt: Boolean = false,
     ): Boolean =
         refreshMutex.withLock refreshLock@{
             if (configuredUrl() != sourceUrl) return@refreshLock false
@@ -186,7 +187,7 @@ class RemotePlayerConfigStore(
                 mutex.withLock { ensureLoadedFromCache(sourceUrl) }
                 return@refreshLock false
             }
-            if (!force && hasRecentRefreshAttempt(sourceUrl, now)) {
+            if ((!force || skipRecentAttempt) && hasRecentRefreshAttempt(sourceUrl, now)) {
                 mutex.withLock { ensureLoadedFromCache(sourceUrl) }
                 return@refreshLock false
             }
