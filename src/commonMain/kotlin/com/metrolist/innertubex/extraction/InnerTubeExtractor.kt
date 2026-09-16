@@ -889,7 +889,14 @@ class InnerTubeExtractor internal constructor(
             val directFastPathCandidate = selectBestAudioFormat(directAudioFormats, audioQuality)
             val bestAvailableAudioFormat =
                 selectBestAudioFormat(
-                    allFormats.filter(PlayerResponse.StreamingData.Format::isAudio),
+                    allFormats.filter { format ->
+                        format.isAudio &&
+                            (
+                                !format.url.isNullOrBlank() ||
+                                    !format.signatureCipher.isNullOrBlank() ||
+                                    !format.cipher.isNullOrBlank()
+                            )
+                    },
                     audioQuality,
                     requireUrl = false,
                 )

@@ -57,6 +57,32 @@ class InnerTubeExtractorTest {
         }
 
     @Test
+    fun directAudioPathIgnoresUnresolvableHigherRankedAudio() =
+        runBlocking {
+            val response =
+                DIRECT_RESPONSE.replace(
+                    "\"bitrate\":128000}]}}",
+                    "\"bitrate\":128000},{\"itag\":141,\"mimeType\":\"audio/mp4\",\"bitrate\":256000}]}}",
+                )
+            val client = jsonClient(response)
+            val parser = CountingParser()
+            try {
+                val stream =
+                    makeExtractor(
+                        client,
+                        InnerTube(client, retryDelay = {}),
+                        parser,
+                    ).extract("video", ContentHints(), audioQuality = AudioQuality.HIGH)
+
+                assertNotNull(stream)
+                assertEquals(251, stream.itag)
+                assertEquals(0, parser.calls)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
     fun transformedNParameterRemainsUsable() =
         runBlocking {
             val client = jsonClient(DIRECT_RESPONSE.replace("expire=9999999999", "expire=9999999999&n=source"))
