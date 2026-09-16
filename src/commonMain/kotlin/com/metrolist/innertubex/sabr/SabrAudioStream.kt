@@ -146,6 +146,7 @@ private class SabrMediaStream(
             var ended = false
             var firstSequenceNumber: Int? = null
             var lastSequenceNumber: Int? = null
+            var seekStartEstablished = false
             var consecutiveTransientFailures = 0
             var transientRetryCount = 0
             var cumulativeMediaBytes = 0L
@@ -331,6 +332,12 @@ private class SabrMediaStream(
                                             requestPlayerTimeMs < pending.checkedEndTimeMs()
                                     }
 
+                            suspend fun emitAvailableMediaSegments() {
+                                val establishSeekStart = canEstablishInitialSeekSequence()
+                                if (establishSeekStart) seekStartEstablished = true
+                                emitReadyMediaSegments(establishFromMinimum = establishSeekStart)
+                            }
+
                             suspend fun processEvent(event: SabrEvent) {
                                 when (event) {
                                     is SabrEvent.MediaHeader -> {
@@ -363,20 +370,24 @@ private class SabrMediaStream(
                                                 send(segment.toChunk())
                                                 initSegmentEmitted = true
                                                 cumulativeStreamBytes += segment.data.size
-                                                emitReadyMediaSegments(canEstablishInitialSeekSequence())
+                                                emitAvailableMediaSegments()
                                             }
                                         } else {
                                             val sequenceNumber = segment.header.sequenceNumber
+                                            val precedesEstablishedSeek =
+                                                seekStartEstablished &&
+                                                    firstSequenceNumber?.let { sequenceNumber < it } == true
                                             val alreadyEmitted =
-                                                lastSequenceNumber?.let { last ->
-                                                    sequenceNumber >= checkNotNull(firstSequenceNumber) && sequenceNumber <= last
-                                                } == true
+                                                precedesEstablishedSeek ||
+                                                    lastSequenceNumber?.let { last ->
+                                                        sequenceNumber >= checkNotNull(firstSequenceNumber) && sequenceNumber <= last
+                                                    } == true
                                             if (!alreadyEmitted) {
                                                 if (pendingMediaBySequence.put(sequenceNumber, segment) != null) {
                                                     throw SabrProtocolException("SABR returned duplicate segment $sequenceNumber")
                                                 }
                                                 if (initSegmentEmitted) {
-                                                    emitReadyMediaSegments(canEstablishInitialSeekSequence())
+                                                    emitAvailableMediaSegments()
                                                 }
                                             }
                                         }

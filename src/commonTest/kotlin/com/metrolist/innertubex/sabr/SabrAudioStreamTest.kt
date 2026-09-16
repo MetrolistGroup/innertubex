@@ -552,6 +552,45 @@ class SabrAudioStreamTest {
         }
 
     @Test
+    fun lateSegmentBeforeEstablishedSeekIsIgnored() =
+        runBlocking {
+            val response =
+                umpPart(UmpPartType.FORMAT_INITIALIZATION_METADATA, initialization(7, durationMs = 61_000)) +
+                    mediaSegment(headerId = 1, itag = 140, lastModified = 100, isInit = true, data = byteArrayOf(1, 2)) +
+                    mediaResponseSegment(
+                        headerId = 2,
+                        sequenceNumber = 7,
+                        startMs = 60_000,
+                        data = byteArrayOf(8, 9, 10),
+                    ) +
+                    mediaResponseSegment(
+                        headerId = 3,
+                        sequenceNumber = 6,
+                        startMs = 59_000,
+                        data = byteArrayOf(5, 6, 7),
+                    ) +
+                    umpPart(UmpPartType.END_OF_TRACK, byteArrayOf())
+            val engine =
+                MockEngine {
+                    respond(
+                        content = response,
+                        status = HttpStatusCode.OK,
+                        headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"),
+                    )
+                }
+
+            val chunks =
+                SabrAudioStream(
+                    httpClient = HttpClient(engine),
+                    bootstrap = bootstrap().copy(durationMs = 61_000),
+                    initialPlayerTimeMs = 60_500,
+                ).chunks().toList()
+
+            assertEquals(listOf(null, 7), chunks.map(SabrChunk::sequenceNumber))
+            assertContentEquals(byteArrayOf(8, 9, 10), chunks.last().data)
+        }
+
+    @Test
     fun protectionPendingWithoutMediaIsTypedAsAttestationFailure() =
         runBlocking {
             val diagnostics = mutableListOf<SabrResponseDiagnostics>()
