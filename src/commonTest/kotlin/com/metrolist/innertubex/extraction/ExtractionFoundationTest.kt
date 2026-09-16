@@ -6,6 +6,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
 
 class ExtractionFoundationTest {
     @Test
@@ -46,6 +47,21 @@ class ExtractionFoundationTest {
 
         assertEquals(false, hints.diagnosticSummary().contains("secret"))
         assertEquals(true, hints.diagnosticSummary().contains("endpointParamsPresent=true"))
+    }
+
+    @Test
+    fun contentHintsCopyRetainsEntitlementAndCapabilities() {
+        val copied =
+            ContentHints()
+                .withPremium()
+                .withStreamCapabilities(allowHls = false, allowSabr = false, allowBoundedRange = false)
+                .copy(wantVideo = true)
+
+        assertTrue(copied.premium)
+        assertTrue(copied.wantVideo)
+        assertFalse(copied.allowHls)
+        assertFalse(copied.allowSabr)
+        assertFalse(copied.allowBoundedRange)
     }
 
     @Test
