@@ -633,6 +633,7 @@ class InnerTubeExtractorTest {
                         useLoginCookies: Boolean,
                     ): PlayerConfig {
                         configModes += useLoginCookies
+                        if (!useLoginCookies) throw IllegalStateException("Synthetic anonymous config failure")
                         return PlayerConfig("https://www.youtube.com/s/player/test/base.js", 123, null, null)
                     }
                 }
@@ -642,7 +643,7 @@ class InnerTubeExtractorTest {
                         .extract("video", ContentHints())
 
                 assertNotNull(stream)
-                assertEquals(listOf(false), configModes)
+                assertEquals(listOf(false, true), configModes)
                 assertEquals(3, playerRequests)
             } finally {
                 client.close()

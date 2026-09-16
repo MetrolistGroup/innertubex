@@ -122,15 +122,14 @@ class RemotePlayerConfigStore private constructor(
         val sourceUrl = configuredUrl() ?: return false
         if (missingHash != null && isKnownHash(missingHash, sourceUrl)) return false
         val reservation = reserveUnknownHashRefresh(sourceUrl) ?: return false
-        val result =
-            try {
-                refresh(sourceUrl, force = true, skipRecentAttempt = missingHash != null)
-            } catch (e: CancellationException) {
-                withContext(NonCancellable) { releaseUnknownHashRefresh(sourceUrl, reservation) }
-                throw e
-            }
-        if (!result.requestAttempted) releaseUnknownHashRefresh(sourceUrl, reservation)
-        return result.changed
+        return try {
+            val result = refresh(sourceUrl, force = true, skipRecentAttempt = missingHash != null)
+            if (!result.requestAttempted) releaseUnknownHashRefresh(sourceUrl, reservation)
+            result.changed
+        } catch (e: CancellationException) {
+            withContext(NonCancellable) { releaseUnknownHashRefresh(sourceUrl, reservation) }
+            throw e
+        }
     }
 
     /**
@@ -142,14 +141,14 @@ class RemotePlayerConfigStore private constructor(
         if (!repository.enabled) return false
         val sourceUrl = configuredUrl() ?: return false
         val reservation = reserveStreamRejectionRefresh(sourceUrl) ?: return false
-        val result =
-            try {
-                refresh(sourceUrl, force = true)
-            } catch (e: CancellationException) {
-                withContext(NonCancellable) { releaseStreamRejectionRefresh(sourceUrl, reservation) }
-                throw e
-            }
-        return result.changed
+        return try {
+            val result = refresh(sourceUrl, force = true)
+            if (!result.requestAttempted) releaseStreamRejectionRefresh(sourceUrl, reservation)
+            result.changed
+        } catch (e: CancellationException) {
+            withContext(NonCancellable) { releaseStreamRejectionRefresh(sourceUrl, reservation) }
+            throw e
+        }
     }
 
     private suspend fun reserveUnknownHashRefresh(sourceUrl: String): Long? =

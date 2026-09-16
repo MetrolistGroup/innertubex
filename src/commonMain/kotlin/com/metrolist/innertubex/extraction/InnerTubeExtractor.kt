@@ -441,13 +441,15 @@ class InnerTubeExtractor internal constructor(
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
-                if (!useLoginCookies) throw error
-                diagnostics.requestFailures += error
-                logger.w(
-                    TAG,
-                    "authenticated watch config unavailable",
-                    details = mapOf("exceptionType" to (error::class.simpleName ?: "unknown")),
-                )
+                if (!useLoginCookies && !innerTube.hasSapCookieAuth()) throw error
+                if (useLoginCookies) {
+                    diagnostics.requestFailures += error
+                    logger.w(
+                        TAG,
+                        "authenticated watch config unavailable",
+                        details = mapOf("exceptionType" to (error::class.simpleName ?: "unknown")),
+                    )
+                }
                 null
             }
 
