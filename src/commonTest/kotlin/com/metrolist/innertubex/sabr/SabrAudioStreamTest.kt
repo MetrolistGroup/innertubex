@@ -591,6 +591,45 @@ class SabrAudioStreamTest {
         }
 
     @Test
+    fun initialSeekWaitsForTargetWhenSequenceZeroArrivesFirst() =
+        runBlocking {
+            val response =
+                umpPart(UmpPartType.FORMAT_INITIALIZATION_METADATA, initialization(6, durationMs = 13_000)) +
+                    mediaSegment(headerId = 1, itag = 140, lastModified = 100, isInit = true, data = byteArrayOf(1, 2)) +
+                    mediaResponseSegment(
+                        headerId = 2,
+                        sequenceNumber = 0,
+                        startMs = 0,
+                        data = byteArrayOf(3, 4, 5),
+                    ) +
+                    mediaResponseSegment(
+                        headerId = 3,
+                        sequenceNumber = 6,
+                        startMs = 12_000,
+                        data = byteArrayOf(8, 9, 10),
+                    ) +
+                    umpPart(UmpPartType.END_OF_TRACK, byteArrayOf())
+            val engine =
+                MockEngine {
+                    respond(
+                        content = response,
+                        status = HttpStatusCode.OK,
+                        headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"),
+                    )
+                }
+
+            val chunks =
+                SabrAudioStream(
+                    httpClient = HttpClient(engine),
+                    bootstrap = bootstrap().copy(durationMs = 13_000),
+                    initialPlayerTimeMs = 12_000,
+                ).chunks().toList()
+
+            assertEquals(listOf(null, 6), chunks.map(SabrChunk::sequenceNumber))
+            assertContentEquals(byteArrayOf(8, 9, 10), chunks.last().data)
+        }
+
+    @Test
     fun initialSeekStartsAtContainingSegmentWhenPredecessorArrivesFirst() =
         runBlocking {
             val response =

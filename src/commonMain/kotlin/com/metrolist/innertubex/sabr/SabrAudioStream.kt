@@ -319,8 +319,12 @@ private class SabrMediaStream(
                                     val firstSequence =
                                         when {
                                             initialSeekSequence != null -> initialSeekSequence
-                                            pendingMediaBySequence.containsKey(0) -> 0
+
+                                            pendingMediaBySequence.containsKey(0) &&
+                                                (requestPlayerTimeMs <= 0L || establishFromMinimum) -> 0
+
                                             establishFromMinimum -> pendingMediaBySequence.keys.minOrNull()
+
                                             else -> null
                                         } ?: return
                                     emitMediaSegment(checkNotNull(pendingMediaBySequence.remove(firstSequence)))
