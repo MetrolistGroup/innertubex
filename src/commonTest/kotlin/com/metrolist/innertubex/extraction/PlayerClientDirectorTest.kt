@@ -28,12 +28,30 @@ import kotlin.test.assertTrue
 
 class PlayerClientDirectorTest {
     @Test
-    fun authenticatedPremiumHintAllowsUntokenizedPlayback() =
+    fun authenticatedPremiumManualOverrideSkipsTokenMinting() =
         runBlocking {
             val client = client { PLAYER_RESPONSE }
-            val innerTube = InnerTube(client, retryDelay = {}).also { it.cookie = "SAPISID=synthetic-session" }
+            val innerTube =
+                InnerTube(client, retryDelay = {}).also {
+                    it.cookie = "SAPISID=synthetic-session"
+                    it.visitorData = "synthetic-visitor"
+                }
             val manifest = checkNotNull(PlaybackClientCatalog.findManifest("WEB_REMIX"))
             var selectionRequest: ClientSelectionRequest? = null
+            var tokenRequests = 0
+            val tokenProvider =
+                object : TokenProvider {
+                    override val capabilities = TokenProviderCapabilities(setOf(PoTokenProviderKind.WEB_BOTGUARD))
+
+                    override suspend fun getPoToken(
+                        videoId: String,
+                        visitorData: String,
+                        cookie: String?,
+                    ): PoTokenResult? {
+                        tokenRequests++
+                        return null
+                    }
+                }
             val director =
                 PlayerClientDirector(
                     innerTube,
@@ -45,7 +63,7 @@ class PlayerClientDirectorTest {
                             return ClientSelectionResult(listOf(SelectedClient(manifest.client, manifest)))
                         }
                     },
-                    NoTokenProvider,
+                    tokenProvider,
                 )
 
             val result =
@@ -56,6 +74,7 @@ class PlayerClientDirectorTest {
                 )
 
             assertTrue(selectionRequest?.premium == true)
+            assertEquals(0, tokenRequests)
             assertEquals("WEB_REMIX", result.playableResponses.single().clientName)
             client.close()
         }

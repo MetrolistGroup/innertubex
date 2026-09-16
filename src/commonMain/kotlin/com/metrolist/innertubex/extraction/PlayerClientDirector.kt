@@ -165,7 +165,11 @@ internal class PlayerClientDirector(
                         ),
                     premiumEntitlement = premiumEntitlement,
                     forcePoToken =
-                        (hints.playbackClientOverrideId != null && selectedClient.canUsePoTokens()) ||
+                        (
+                            hints.playbackClientOverrideId != null &&
+                                selectedClient.canUsePoTokens() &&
+                                !premiumEntitlement
+                        ) ||
                             untokenizedProfileFailed ||
                             (
                                 forceTokenizedTvHtml5 &&
