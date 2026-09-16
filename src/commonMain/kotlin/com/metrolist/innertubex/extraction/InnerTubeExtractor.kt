@@ -300,35 +300,43 @@ class InnerTubeExtractor internal constructor(
             if (directStream != null) return directStream
         }
 
-        val cookieFirst = hints.playbackClientOverrideId == null && innerTube.hasSapCookieAuth()
-        val stream =
-            extractWithCachedConfig(
-                videoId = videoId,
-                hints = hints,
-                excludedClients = excludedClients,
-                clientPlaybackNonce = clientPlaybackNonce,
-                useLoginCookies = cookieFirst,
-                totalStartMs = totalStart,
-                audioQuality = audioQuality,
-                diagnostics = diagnostics,
-                prefetchedPoToken = prefetchedPoToken,
-            )
-        if (stream != null) return stream
-
-        if (!cookieFirst && innerTube.hasSapCookieAuth()) {
-            logger.w(TAG, "authenticated watch page retry", details = mapOf("authenticated" to "true"))
-            val authenticatedStream =
+        suspend fun extractWithWatchConfig(useLoginCookies: Boolean): ExtractedStream? =
+            try {
                 extractWithCachedConfig(
                     videoId = videoId,
                     hints = hints,
                     excludedClients = excludedClients,
                     clientPlaybackNonce = clientPlaybackNonce,
-                    useLoginCookies = true,
+                    useLoginCookies = useLoginCookies,
                     totalStartMs = totalStart,
                     audioQuality = audioQuality,
                     diagnostics = diagnostics,
                     prefetchedPoToken = prefetchedPoToken,
                 )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                if (!useLoginCookies) throw error
+                diagnostics.requestFailures += error
+                logger.w(
+                    TAG,
+                    "authenticated watch config unavailable",
+                    details = mapOf("exceptionType" to (error::class.simpleName ?: "unknown")),
+                )
+                null
+            }
+
+        val cookieFirst = hints.playbackClientOverrideId == null && innerTube.hasSapCookieAuth()
+        val stream = extractWithWatchConfig(useLoginCookies = cookieFirst)
+        if (stream != null) return stream
+
+        if (cookieFirst) {
+            logger.w(TAG, "signed-out watch config fallback")
+            val signedOutConfigStream = extractWithWatchConfig(useLoginCookies = false)
+            if (signedOutConfigStream != null) return signedOutConfigStream
+        } else if (innerTube.hasSapCookieAuth()) {
+            logger.w(TAG, "authenticated watch page retry", details = mapOf("authenticated" to "true"))
+            val authenticatedStream = extractWithWatchConfig(useLoginCookies = true)
             if (authenticatedStream != null) return authenticatedStream
         }
 
@@ -396,11 +404,10 @@ class InnerTubeExtractor internal constructor(
             )?.config ?: return null
         logger.d(TAG, "kids fallback attempted", details = mapOf("fallback" to "kids"))
         val fallbackHints =
-            hints
-                .copy(
-                    isKidsContent = true,
-                    playbackClientOverrideId = WEB_KIDS_ID,
-                ).withPremium(hints.premium)
+            hints.copy(
+                isKidsContent = true,
+                playbackClientOverrideId = WEB_KIDS_ID,
+            )
         return extractWithConfig(
             videoId = videoId,
             hints = fallbackHints,
@@ -448,14 +455,13 @@ class InnerTubeExtractor internal constructor(
                 mapOf("elapsedMs" to (Clock.System.now().toEpochMilliseconds() - configStart).toString()),
         )
         val fallbackHints =
-            hints
-                .copy(
-                    isAgeRestricted = true,
-                    playbackClientOverrideId =
-                        hints.playbackClientOverrideId?.takeIf { id ->
-                            PlaybackClientCatalog.findManifest(id)?.request?.embedded == true
-                        } ?: WEB_EMBEDDED_PLAYER_ID,
-                ).withPremium(hints.premium)
+            hints.copy(
+                isAgeRestricted = true,
+                playbackClientOverrideId =
+                    hints.playbackClientOverrideId?.takeIf { id ->
+                        PlaybackClientCatalog.findManifest(id)?.request?.embedded == true
+                    } ?: WEB_EMBEDDED_PLAYER_ID,
+            )
         return extractWithConfig(
             videoId = videoId,
             hints = fallbackHints,

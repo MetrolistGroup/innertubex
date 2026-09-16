@@ -1,6 +1,7 @@
 package com.metrolist.innertubex.extraction
 
 import com.metrolist.innertubex.InnerTube
+import com.metrolist.innertubex.extraction.strategy.AuthenticationPolicy
 import com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy
 import com.metrolist.innertubex.extraction.strategy.ClientSelectionRequest
 import com.metrolist.innertubex.extraction.strategy.ClientSelectionResult
@@ -27,10 +28,10 @@ import kotlin.test.assertTrue
 
 class PlayerClientDirectorTest {
     @Test
-    fun premiumHintReachesSelectionAndAllowsUntokenizedPlayback() =
+    fun authenticatedPremiumHintAllowsUntokenizedPlayback() =
         runBlocking {
             val client = client { PLAYER_RESPONSE }
-            val innerTube = InnerTube(client, retryDelay = {})
+            val innerTube = InnerTube(client, retryDelay = {}).also { it.cookie = "SAPISID=synthetic-session" }
             val manifest = checkNotNull(PlaybackClientCatalog.findManifest("WEB_REMIX"))
             var selectionRequest: ClientSelectionRequest? = null
             val director =
@@ -56,6 +57,51 @@ class PlayerClientDirectorTest {
 
             assertTrue(selectionRequest?.premium == true)
             assertEquals("WEB_REMIX", result.playableResponses.single().clientName)
+            client.close()
+        }
+
+    @Test
+    fun signedOutPremiumHintStillRequiresPoToken() =
+        runBlocking {
+            val client = client { PLAYER_RESPONSE }
+            val manifest = checkNotNull(PlaybackClientCatalog.findManifest("WEB_REMIX"))
+            val director = PlayerClientDirector(InnerTube(client, retryDelay = {}), fixed(manifest), NoTokenProvider)
+
+            val result =
+                director.fetchPlayerResponses(
+                    "video",
+                    PlayerConfig("player.js", null, null, null),
+                    ContentHints(playbackClientOverrideId = "WEB_REMIX").withPremium(),
+                )
+
+            assertTrue(result.playableResponses.isEmpty())
+            client.close()
+        }
+
+    @Test
+    fun premiumHintDoesNotBypassTokensForAnonymousOnlyClient() =
+        runBlocking {
+            val client = client { PLAYER_RESPONSE }
+            val innerTube = InnerTube(client, retryDelay = {}).also { it.cookie = "SAPISID=synthetic-session" }
+            val anonymousClient = YouTubeClient.VISIONOS_0_1
+            val sourceManifest = checkNotNull(PlaybackClientCatalog.findManifest("WEB_REMIX"))
+            val manifest =
+                sourceManifest.copy(
+                    id = "SYNTHETIC_ANONYMOUS",
+                    client = anonymousClient,
+                    authentication = AuthenticationPolicy.UNSUPPORTED,
+                    request = sourceManifest.request.copy(signatureTimestamp = anonymousClient.useSignatureTimestamp, cookies = false),
+                )
+            val director = PlayerClientDirector(innerTube, fixed(manifest), NoTokenProvider)
+
+            val result =
+                director.fetchPlayerResponses(
+                    "video",
+                    PlayerConfig("player.js", null, null, null),
+                    ContentHints().withPremium(),
+                )
+
+            assertTrue(result.playableResponses.isEmpty())
             client.close()
         }
 

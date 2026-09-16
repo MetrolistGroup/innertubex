@@ -26,7 +26,13 @@ class ContentAwareFallbackStrategy(
         val rejected = mutableListOf<RejectedClient>()
         request.hints.playbackClientOverrideId?.let(catalog::find)?.let { option ->
             val rejectionReasons = hardRejectionReasons(option.manifest, request, checkContentSupport = false)
-            if (!option.isExcluded(request.excludedClients, request.availablePoTokenProviders, request.premium)) {
+            if (
+                !option.isExcluded(
+                    request.excludedClients,
+                    request.availablePoTokenProviders,
+                    option.manifest.hasUsablePremiumEntitlement(request),
+                )
+            ) {
                 return ClientSelectionResult(
                     candidates =
                         listOf(
@@ -48,7 +54,15 @@ class ContentAwareFallbackStrategy(
 
         val candidates = mutableListOf<SelectedClient>()
         catalog.automaticManifests.forEach { manifest ->
-            if (manifest.isExcluded(request.excludedClients, request.availablePoTokenProviders, request.premium)) return@forEach
+            if (
+                manifest.isExcluded(
+                    request.excludedClients,
+                    request.availablePoTokenProviders,
+                    manifest.hasUsablePremiumEntitlement(request),
+                )
+            ) {
+                return@forEach
+            }
             val rejectionReasons = hardRejectionReasons(manifest, request)
             if (rejectionReasons.isNotEmpty()) {
                 rejected += RejectedClient(manifest, rejectionReasons)
@@ -136,7 +150,7 @@ class ContentAwareFallbackStrategy(
                 listOf("player" to manifest.poTokens.player, "GVS" to manifest.poTokens.gvs)
                     .filter { (_, rule) ->
                         rule.requirement == PoTokenRequirement.REQUIRED &&
-                            !(request.premium && rule.premiumMayBypass) &&
+                            !(manifest.hasUsablePremiumEntitlement(request) && rule.premiumMayBypass) &&
                             rule.providers.none { it in request.availablePoTokenProviders }
                     }.map { it.first }
             if (missingTokenRules.isNotEmpty()) {
@@ -147,7 +161,8 @@ class ContentAwareFallbackStrategy(
                 if (manifest.request.signatureTimestamp) add("watch config excluded from fast path")
                 val requiresToken =
                     listOf(manifest.poTokens.player, manifest.poTokens.gvs).any {
-                        it.requirement == PoTokenRequirement.REQUIRED && !(request.premium && it.premiumMayBypass)
+                        it.requirement == PoTokenRequirement.REQUIRED &&
+                            !(manifest.hasUsablePremiumEntitlement(request) && it.premiumMayBypass)
                     }
                 if (requiresToken) add("token generation excluded from fast path")
                 if (manifest.request.signatureCipher == JavaScriptRequirement.REQUIRED) {
@@ -162,13 +177,13 @@ class ContentAwareFallbackStrategy(
     private fun PlaybackClientOption.isExcluded(
         excludedClients: Set<String>,
         availablePoTokenProviders: Set<PoTokenProviderKind>,
-        premium: Boolean,
-    ): Boolean = manifest.isExcluded(excludedClients, availablePoTokenProviders, premium)
+        premiumEntitlement: Boolean,
+    ): Boolean = manifest.isExcluded(excludedClients, availablePoTokenProviders, premiumEntitlement)
 
     private fun PlaybackClientManifest.isExcluded(
         excludedClients: Set<String>,
         availablePoTokenProviders: Set<PoTokenProviderKind>,
-        premium: Boolean,
+        premiumEntitlement: Boolean,
     ): Boolean =
         client.clientName in excludedClients ||
             id in excludedClients ||
@@ -183,12 +198,15 @@ class ContentAwareFallbackStrategy(
                     }
                 val requiresPoTokens =
                     tokenRules.any {
-                        it.requirement == PoTokenRequirement.REQUIRED && !(premium && it.premiumMayBypass)
+                        it.requirement == PoTokenRequirement.REQUIRED && !(premiumEntitlement && it.premiumMayBypass)
                     }
                 (noPoExcluded && poExcluded) ||
                     (!canUsePoTokens && noPoExcluded) ||
                     (requiresPoTokens && poExcluded)
             }
+
+    private fun PlaybackClientManifest.hasUsablePremiumEntitlement(request: ClientSelectionRequest): Boolean =
+        request.premium && request.authenticated && client.loginSupported
 
     private fun score(
         manifest: PlaybackClientManifest,

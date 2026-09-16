@@ -26,7 +26,7 @@ class PlaybackClientStrategyTest {
     }
 
     @Test
-    fun premiumHintAllowsPremiumBypassWithoutInferringFromAuthentication() {
+    fun premiumBypassRequiresCallerHintAndAuthentication() {
         val strategy = ContentAwareFallbackStrategy()
         val withoutPremium =
             strategy.selectClients(
@@ -43,9 +43,18 @@ class PlaybackClientStrategyTest {
                     premium = true,
                 ),
             )
+        val signedOutPremium =
+            strategy.selectClients(
+                ClientSelectionRequest(
+                    hints = ContentHints().withPremium(),
+                    authenticated = false,
+                    premium = true,
+                ),
+            )
 
         assertTrue(withoutPremium.rejected.any { it.manifest.id == "WEB_REMIX" })
         assertTrue(withPremium.candidates.any { it.manifest?.id == "WEB_REMIX" })
+        assertTrue(signedOutPremium.rejected.any { it.manifest.id == "WEB_REMIX" })
     }
 
     @Test

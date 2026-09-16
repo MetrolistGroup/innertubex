@@ -59,17 +59,6 @@ class AudioFormatSelectorTest {
     }
 
     @Test
-    fun highQualityPrefersStereoBeforeBitrate() {
-        val formats =
-            listOf(
-                Format(itag = 251, mimeType = "audio/webm", bitrate = 128_000, audioChannels = 1, url = "https://mono"),
-                Format(itag = 250, mimeType = "audio/webm", bitrate = 96_000, audioChannels = 2, url = "https://stereo"),
-            )
-
-        assertEquals(250, selectBestAudioFormat(formats, AudioQuality.HIGH)?.itag)
-    }
-
-    @Test
     fun highQualityUsesBitrateBeforeContainer() {
         val formats =
             listOf(
@@ -92,6 +81,54 @@ class AudioFormatSelectorTest {
         assertEquals(141, selectBestAudioFormat(formats, AudioQuality.HIGH)?.itag)
         assertEquals(251, selectBestAudioFormat(formats, AudioQuality.AUTO)?.itag)
         assertEquals(141, selectBestAudioFormat(formats, AudioQuality.MP4)?.itag)
+    }
+
+    @Test
+    fun highQualityKeepsHigherBitrateWithUnknownChannelMetadata() {
+        val formats =
+            listOf(
+                Format(
+                    itag = 141,
+                    mimeType = "audio/mp4",
+                    bitrate = 256_000,
+                    audioChannels = null,
+                    url = "https://high.example.test/audio",
+                ),
+                Format(
+                    itag = 251,
+                    mimeType = "audio/webm",
+                    bitrate = 128_000,
+                    audioChannels = 2,
+                    url = "https://stereo.example.test/audio",
+                ),
+            )
+
+        assertEquals(141, selectBestAudioFormat(formats, AudioQuality.HIGH)?.itag)
+    }
+
+    @Test
+    fun highQualityComparatorDoesNotOverflowExtremeMetadata() {
+        val formats =
+            listOf(
+                Format(
+                    itag = 141,
+                    mimeType = "audio/mp4",
+                    bitrate = Int.MAX_VALUE,
+                    audioChannels = null,
+                    audioSampleRate = Int.MAX_VALUE,
+                    url = "https://max.example.test/audio",
+                ),
+                Format(
+                    itag = 251,
+                    mimeType = "audio/webm",
+                    bitrate = Int.MAX_VALUE - 1,
+                    audioChannels = 2,
+                    audioSampleRate = 48_000,
+                    url = "https://bounded.example.test/audio",
+                ),
+            )
+
+        assertEquals(141, selectBestAudioFormat(formats, AudioQuality.HIGH)?.itag)
     }
 
     @Test

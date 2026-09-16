@@ -281,12 +281,135 @@ class InnerTubeExtractorTest {
         }
 
     @Test
-    fun authenticatedExtractionKeepsAccountClientAheadOfAnonymousFastPath() =
+    fun authenticatedConfigFailureFallsBackToSignedOutWatchConfig() =
         runBlocking {
             val configModes = mutableListOf<Boolean>()
+            val playerCookies = mutableListOf<String?>()
             val client =
                 HttpClient(
                     MockEngine { request ->
+                        playerCookies += request.headers["Cookie"]
+                        respond(DIRECT_RESPONSE, HttpStatusCode.OK, headersOf("Content-Type", "application/json"))
+                    },
+                ) {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
+            val innerTube = InnerTube(client, retryDelay = {}).also { it.cookie = "SAPISID=synthetic-session" }
+            val parser =
+                object : YtConfigParser {
+                    override suspend fun fetchConfig(
+                        videoId: String,
+                        useLoginCookies: Boolean,
+                    ): PlayerConfig {
+                        configModes += useLoginCookies
+                        if (useLoginCookies) throw IllegalStateException("Synthetic authenticated config failure")
+                        return PlayerConfig("https://www.youtube.com/s/player/test/base.js", 123, null, null)
+                    }
+                }
+            try {
+                val stream =
+                    makeExtractor(client, innerTube, parser, fallback = WebRemixFallback)
+                        .extract("video", ContentHints())
+
+                assertNotNull(stream)
+                assertEquals(listOf(true, false), configModes)
+                assertEquals(1, playerCookies.size)
+                assertTrue(playerCookies.single()?.contains("synthetic-session") == true)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun authenticatedNoStreamRetriesSignedOutWatchConfigWithoutDroppingPlayerAuth() =
+        runBlocking {
+            val configModes = mutableListOf<Boolean>()
+            val playerCookies = mutableListOf<String?>()
+            val client =
+                HttpClient(
+                    MockEngine { request ->
+                        playerCookies += request.headers["Cookie"]
+                        respond(
+                            if (playerCookies.size == 1) UNPLAYABLE_RESPONSE else DIRECT_RESPONSE,
+                            HttpStatusCode.OK,
+                            headersOf("Content-Type", "application/json"),
+                        )
+                    },
+                ) {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
+            val innerTube = InnerTube(client, retryDelay = {}).also { it.cookie = "SAPISID=synthetic-session" }
+            val parser =
+                object : YtConfigParser {
+                    override suspend fun fetchConfig(
+                        videoId: String,
+                        useLoginCookies: Boolean,
+                    ): PlayerConfig {
+                        configModes += useLoginCookies
+                        return PlayerConfig("https://www.youtube.com/s/player/test/base.js", 123, null, null)
+                    }
+                }
+            try {
+                val stream =
+                    makeExtractor(client, innerTube, parser, fallback = WebRemixFallback)
+                        .extract("video", ContentHints())
+
+                assertNotNull(stream)
+                assertEquals(listOf(true, false), configModes)
+                assertEquals(2, playerCookies.size)
+                assertTrue(playerCookies.all { it?.contains("synthetic-session") == true })
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun authenticatedConfigCancellationDoesNotFallback() =
+        runBlocking {
+            val configModes = mutableListOf<Boolean>()
+            var playerRequests = 0
+            val client =
+                HttpClient(
+                    MockEngine {
+                        playerRequests++
+                        respond(DIRECT_RESPONSE, HttpStatusCode.OK, headersOf("Content-Type", "application/json"))
+                    },
+                ) {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
+            val innerTube = InnerTube(client, retryDelay = {}).also { it.cookie = "SAPISID=synthetic-session" }
+            val parser =
+                object : YtConfigParser {
+                    override suspend fun fetchConfig(
+                        videoId: String,
+                        useLoginCookies: Boolean,
+                    ): PlayerConfig {
+                        configModes += useLoginCookies
+                        if (useLoginCookies) throw CancellationException("Synthetic cancellation")
+                        return PlayerConfig("https://www.youtube.com/s/player/test/base.js", 123, null, null)
+                    }
+                }
+            try {
+                assertFailsWith<CancellationException> {
+                    makeExtractor(client, innerTube, parser, fallback = WebRemixFallback)
+                        .extract("video", ContentHints())
+                }
+                assertEquals(listOf(true), configModes)
+                assertEquals(0, playerRequests)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun authenticatedExtractionKeepsAccountClientAheadOfAnonymousFastPath() =
+        runBlocking {
+            val configModes = mutableListOf<Boolean>()
+            var playerRequests = 0
+            val client =
+                HttpClient(
+                    MockEngine { request ->
+                        playerRequests++
                         val response =
                             if (request.headers["Cookie"]?.contains("synthetic-session") == true) {
                                 HIGH_QUALITY_CIPHER_RESPONSE
@@ -323,6 +446,7 @@ class InnerTubeExtractorTest {
                 assertTrue(stream.clientName != YouTubeClient.VISIONOS.clientName)
                 assertEquals(141, stream.itag)
                 assertEquals(listOf(true), configModes)
+                assertEquals(1, playerRequests)
             } finally {
                 client.close()
             }

@@ -21,7 +21,7 @@ public fun selectBestAudioFormat(
         }
 
         AudioQuality.HIGH -> {
-            validFormats.maxWithOrNull(audioFormatComparator)
+            validFormats.maxWithOrNull(highAudioFormatComparator)
         }
 
         AudioQuality.MP4 -> {
@@ -48,21 +48,30 @@ public fun selectBestVideoFormat(
 }
 
 private val audioFormatComparator =
-    compareBy<Format> {
-        when (it.audioChannels) {
-            2 -> 2
-            null -> 1
-            else -> 0
-        }
-    }.thenBy { it.bitrate }
+    compareBy<Format> { it.audioChannelRank() }
+        .thenBy { it.bitrate }
         .thenBy { (it.audioSampleRate ?: 0).coerceIn(0, 48_000) }
-        .thenBy {
-            when {
-                it.mimeType.contains("audio/webm") -> 2
-                it.mimeType.contains("audio/mp4") -> 1
-                else -> 0
-            }
-        }
+        .thenBy { it.audioContainerRank() }
+
+private val highAudioFormatComparator =
+    compareBy<Format> { it.bitrate }
+        .thenBy { it.audioChannelRank() }
+        .thenBy { (it.audioSampleRate ?: 0).coerceIn(0, 48_000) }
+        .thenBy { it.audioContainerRank() }
+
+private fun Format.audioChannelRank(): Int =
+    when (audioChannels) {
+        2 -> 2
+        null -> 1
+        else -> 0
+    }
+
+private fun Format.audioContainerRank(): Int =
+    when {
+        mimeType.contains("audio/webm") -> 2
+        mimeType.contains("audio/mp4") -> 1
+        else -> 0
+    }
 
 // AVC and VP9 both have broad native decoding support; avoid excess bitrate at the same resolution.
 private val videoFormatComparator =
