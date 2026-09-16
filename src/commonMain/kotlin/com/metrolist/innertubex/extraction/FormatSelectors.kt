@@ -16,8 +16,8 @@ public fun selectBestAudioFormat(
         }
 
         AudioQuality.AUTO -> {
-            validFormats.filter { it.mimeType.contains("audio/webm") }.maxWithOrNull(audioFormatComparator)
-                ?: validFormats.maxWithOrNull(audioFormatComparator)
+            validFormats.filter { it.mimeType.contains("audio/webm") }.maxByOrNull(::audioFormatScore)
+                ?: validFormats.maxByOrNull(::audioFormatScore)
         }
 
         AudioQuality.HIGH -> {
@@ -25,7 +25,7 @@ public fun selectBestAudioFormat(
         }
 
         AudioQuality.MP4 -> {
-            validFormats.filter { it.mimeType.contains("audio/mp4") }.maxWithOrNull(audioFormatComparator)
+            validFormats.filter { it.mimeType.contains("audio/mp4") }.maxByOrNull(::audioFormatScore)
         }
     }
 }
@@ -47,11 +47,24 @@ public fun selectBestVideoFormat(
             ?.maxWithOrNull(videoFormatComparator)
 }
 
-private val audioFormatComparator =
-    compareBy<Format> { it.audioChannelRank() }
-        .thenBy { it.bitrate }
-        .thenBy { (it.audioSampleRate ?: 0).coerceIn(0, 48_000) }
-        .thenBy { it.audioContainerRank() }
+private fun audioFormatScore(format: Format): Long {
+    val codecRank =
+        when {
+            format.mimeType.contains("audio/webm") -> 100
+            format.mimeType.contains("audio/mp4") -> 50
+            else -> 0
+        }
+    val channelBonus =
+        when (format.audioChannels) {
+            2 -> 50_000
+            1 -> 0
+            else -> 25_000
+        }
+    return codecRank * 1_000_000L +
+        channelBonus +
+        format.bitrate.toLong() +
+        (format.audioSampleRate ?: 0).coerceIn(0, 48_000) / 10
+}
 
 private val highAudioFormatComparator =
     compareBy<Format> { it.bitrate }

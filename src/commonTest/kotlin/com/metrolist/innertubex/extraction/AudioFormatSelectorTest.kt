@@ -59,6 +59,70 @@ class AudioFormatSelectorTest {
     }
 
     @Test
+    fun autoAndMp4AllowBitrateToOutweighStereoBonus() {
+        val webmFormats =
+            listOf(
+                Format(
+                    itag = 250,
+                    mimeType = "audio/webm",
+                    bitrate = 32_000,
+                    audioChannels = 2,
+                    url = "https://stereo.example.test/audio",
+                ),
+                Format(
+                    itag = 251,
+                    mimeType = "audio/webm",
+                    bitrate = 256_000,
+                    audioChannels = 1,
+                    url = "https://mono.example.test/audio",
+                ),
+            )
+        val mp4Formats =
+            listOf(
+                Format(
+                    itag = 140,
+                    mimeType = "audio/mp4",
+                    bitrate = 32_000,
+                    audioChannels = 2,
+                    url = "https://stereo.example.test/audio",
+                ),
+                Format(
+                    itag = 141,
+                    mimeType = "audio/mp4",
+                    bitrate = 256_000,
+                    audioChannels = 1,
+                    url = "https://mono.example.test/audio",
+                ),
+            )
+
+        assertEquals(251, selectBestAudioFormat(webmFormats, AudioQuality.AUTO)?.itag)
+        assertEquals(141, selectBestAudioFormat(mp4Formats, AudioQuality.MP4)?.itag)
+    }
+
+    @Test
+    fun weightedAudioRankingDoesNotOverflowExtremeBitrate() {
+        val formats =
+            listOf(
+                Format(
+                    itag = 251,
+                    mimeType = "audio/webm",
+                    bitrate = Int.MAX_VALUE,
+                    audioChannels = 1,
+                    url = "https://max.example.test/audio",
+                ),
+                Format(
+                    itag = 250,
+                    mimeType = "audio/webm",
+                    bitrate = 256_000,
+                    audioChannels = 2,
+                    url = "https://stereo.example.test/audio",
+                ),
+            )
+
+        assertEquals(251, selectBestAudioFormat(formats, AudioQuality.AUTO)?.itag)
+    }
+
+    @Test
     fun highQualityUsesBitrateBeforeContainer() {
         val formats =
             listOf(
