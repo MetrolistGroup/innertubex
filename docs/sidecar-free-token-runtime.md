@@ -11,7 +11,7 @@ A fast, sidecar-free implementation is **plausible but not demonstrated**.
 The best candidate is the KMP `quickjs-kt` runtime that InnerTubeX already ships
 for cipher/EJS work, connected to Metrolist-KMP's existing common page-bound
 BotGuard flow. It could provide one literal execution runtime on Android, iOS,
-Linux, Windows, and macOS without adding another JavaScript engine dependency.
+Linux, Windows, and macOS without packaging a second JavaScript engine.
 
 The hard part is not the token API or the documented request sequence. Those
 are already substantially shared. The hard part is making the opaque,
@@ -44,12 +44,15 @@ There are three different meanings of "shared" here:
 | Literal execution runtime | Not shared. Android uses Android WebView, iOS uses WKWebView, desktop uses ComposeWebView/system web engines and falls back to `bgutil-rs` in a separate process. |
 
 The existing `TokenProvider` boundary is already sufficient for a replacement.
-No extractor redesign is needed. InnerTubeX also already depends on
-`quickjs-kt` 1.0.14 in `commonMain`, and the published Gradle metadata exposes
-that runtime dependency to consumers. Its current `QuickJsEngine` has a 192 MiB
-memory limit, interrupt handling, coroutine confinement, and cross-target
-support. A PO-token prototype should reuse those safety patterns, not expose
-cipher internals or introduce a second engine abstraction.
+No extractor redesign is needed. InnerTubeX depends on `quickjs-kt` 1.0.14 as a
+`commonMain` implementation dependency, so its artifacts resolve transitively
+but its API and internal `QuickJsEngine` are not available to compile an
+app-owned adapter. A Metrolist-KMP prototype should declare the same
+`quickjs-kt` version directly in its common source set. That grants compile
+access without packaging a duplicate engine. It should reproduce the existing
+192 MiB limit, interrupt handling, coroutine confinement, and cross-target
+safety patterns rather than expose cipher internals or add another engine
+abstraction.
 
 ## Current runtime inventory
 
@@ -97,7 +100,7 @@ available across all packaged desktop environments.
 | Candidate | Android/iOS/desktop | One runtime | Removes process | Removes large payload | Finding |
 |---|---:|---:|---:|---:|---|
 | Existing platform WebViews | Yes | No | Yes when usable | Yes | Keep as the proven primary path. It does not guarantee one implementation or eliminate the fallback. |
-| `quickjs-kt` plus the common minter | Yes | Yes | Yes | Likely | **Prototype.** The engine dependency and target binaries already come through InnerTubeX, but browser-integrity compatibility is unproven. |
+| `quickjs-kt` plus the common minter | Yes | Yes | Yes | Likely | **Prototype.** Declare the same version directly in Metrolist-KMP for compile access; the target binaries already resolve transitively, so this need not package a second engine. Browser-integrity compatibility remains unproven. |
 | `bgutil-rs` dynamic library | Desktop only | No | Yes | No | Reject. It embeds the same Deno/V8 stack and has an unsuitable FFI lifecycle. |
 | Original TypeScript bgutil | Desktop only in practice | No | No in server mode | No | Reject. It requires Node or Deno plus JSDOM, canvas, and other packages. |
 | Rustypipe/Deno integration | No supported KMP bridge | No | Potentially | No | Reject. It embeds V8 and Deno web extensions and adds a Rust/native build matrix. |
@@ -111,9 +114,10 @@ available across all packaged desktop environments.
 
 - `quickjs-kt` supports the repository's Android, JVM desktop, iOS, macOS,
   Linux, and MinGW targets.
-- It is already a transitive InnerTubeX dependency. The resolved JVM 1.0.14
-  artifact is about 2.3 MB before packaging, so this route should not add a new
-  engine to Metrolist-KMP.
+- It already resolves transitively through InnerTubeX. Metrolist-KMP still
+  needs a direct declaration for compile access, but using the same version
+  should not package a second engine. The resolved JVM 1.0.14 artifact is about
+  2.3 MB before packaging.
 - It supports promises, pending jobs, and Kotlin sync/async bindings. Network
   requests can remain in bounded Ktor code while JavaScript performs only the
   challenge computations.
@@ -207,8 +211,8 @@ would preserve nearly all packaged bloat. It is not the recommended route.
   desktop target before installer compression.
 - The corresponding in-process `bgutil-rs` library costs 42.2 to 53.0 MB, so
   changing the container format does not materially reduce size.
-- `quickjs-kt-jvm` 1.0.14 resolves to a 2,305,376-byte JAR and is already a
-  published transitive dependency of InnerTubeX 0.6.0.
+- `quickjs-kt-jvm` 1.0.14 resolves to a 2,305,376-byte JAR and already resolves
+  as a transitive runtime dependency of InnerTubeX 0.6.0.
 - The current InnerTubeX QuickJS wrapper permits up to 192 MiB because real EJS
   preprocessing can exceed 128 MiB. That is a safety ceiling, not measured
   steady-state BotGuard memory.
@@ -235,9 +239,13 @@ per-case bitrate.
 | Explicit | 666 ms | 704 ms | 675 ms |
 | Kids | 552 ms | 536 ms | 523 ms |
 
+The table p50 values use all three rows. For normal content, the separate
+warm-only p50 uses the two post-cold rows: 88 ms baseline versus 860 ms with the
+Premium hint, a 772 ms regression. The process-cold rows were 163 ms versus
+5,017 ms, a 4,854 ms regression.
+
 There was **no broad speed gain**. The candidate selected WEB_REMIX instead of
-baseline VISIONOS for normal content, added an attempt and fallback hop, and
-regressed warm total time by 772 ms and process-cold total time by 4,854 ms.
+baseline VISIONOS for normal content and added an attempt and fallback hop.
 The hint changed normal and explicit from `WEB_REMIX__po` to
 `WEB_REMIX__nopo`, but explicit warm total was still 9 ms slower than baseline;
 kids, which used no PO token in any arm, was 29 ms faster. In a separate
@@ -290,8 +298,11 @@ the provider or sidecar by itself.
 Keep this experimental and disabled by default. Do not change production
 provider ordering or remove bundled resources.
 
-1. Add one common `QuickJsPageBoundPoTokenRuntime` implementing the existing
-   page-bound runtime interface. Reuse `quickjs-kt`; add no engine dependency.
+1. Add one common `QuickJsPageBoundPoTokenRuntime` in Metrolist-KMP implementing
+   its existing page-bound runtime interface. Declare `quickjs-kt` 1.0.14
+   directly in the app's common source set; do not access InnerTubeX's internal
+   `QuickJsEngine`. Reusing the same resolved version should not duplicate the
+   packaged native engine.
 2. Bind only the browser facilities observed by a live challenge. Start with
    globals, encoding, timers, crypto/random bytes, and Ktor-backed fetch. Do not
    import a DOM implementation unless a captured failure proves it necessary.
