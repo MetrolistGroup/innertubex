@@ -203,9 +203,9 @@ would preserve nearly all packaged bloat. It is not the recommended route.
 
 ### Measured facts
 
-- The bundled sidecar costs 42.2 to 53.0 MB of raw executable payload per
+- The bundled sidecar costs 43.4 to 54.1 MB of raw executable payload per
   desktop target before installer compression.
-- The corresponding in-process `bgutil-rs` library costs 43.4 to 54.1 MB, so
+- The corresponding in-process `bgutil-rs` library costs 42.2 to 53.0 MB, so
   changing the container format does not materially reduce size.
 - `quickjs-kt-jvm` 1.0.14 resolves to a 2,305,376-byte JAR and is already a
   published transitive dependency of InnerTubeX 0.6.0.
@@ -406,7 +406,7 @@ behavior.
 
 **Next experiment:** implement the minimum QuickJS adapter described above on
 an opt-in branch. It is the only candidate that can plausibly improve startup,
-remove 42 to 53 MB of desktop payload, and use one runtime across every target
+remove 43 to 54 MB of desktop payload, and use one runtime across every target
 without adding another engine.
 
 **Do not pursue:** current `bgutil-rs` FFI, Node/Deno embedding, a pure Kotlin
