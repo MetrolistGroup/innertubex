@@ -24,11 +24,24 @@ import kotlin.time.Clock
  * rejection. Both failure paths are single-flight and rate-limited so a bad
  * player rotation cannot create a request storm.
  */
-class RemotePlayerConfigStore(
+class RemotePlayerConfigStore private constructor(
     private val httpClient: HttpClient,
     internal val repository: PlayerConfigRepository,
-    private val logger: InnerTubeLogger = InnerTubeLogger.NONE,
+    private val logger: InnerTubeLogger,
+    private val nowMs: () -> Long,
 ) {
+    constructor(
+        httpClient: HttpClient,
+        repository: PlayerConfigRepository,
+        logger: InnerTubeLogger = InnerTubeLogger.NONE,
+    ) : this(httpClient, repository, logger, { Clock.System.now().toEpochMilliseconds() })
+
+    internal constructor(
+        httpClient: HttpClient,
+        repository: PlayerConfigRepository,
+        nowMs: () -> Long,
+    ) : this(httpClient, repository, InnerTubeLogger.NONE, nowMs)
+
     private companion object {
         private const val TAG = "RemotePlayerConfigStore"
         private const val REFRESH_TTL_MS = 6 * 60 * 60 * 1000L
@@ -80,9 +93,14 @@ class RemotePlayerConfigStore(
         val fetchedAtMs: Long,
     )
 
+    private data class RefreshResult(
+        val changed: Boolean,
+        val requestAttempted: Boolean,
+    )
+
     internal suspend fun refreshIfStale() {
         if (!repository.enabled) return
-        val now = Clock.System.now().toEpochMilliseconds()
+        val now = nowMs()
         val sourceUrl = configuredUrl() ?: return
         if (hasFreshCache(sourceUrl, now)) {
             mutex.withLock { ensureLoadedFromCache(sourceUrl) }
@@ -104,12 +122,15 @@ class RemotePlayerConfigStore(
         val sourceUrl = configuredUrl() ?: return false
         if (missingHash != null && isKnownHash(missingHash, sourceUrl)) return false
         val reservation = reserveUnknownHashRefresh(sourceUrl) ?: return false
-        return try {
-            refresh(sourceUrl, force = true, skipRecentAttempt = missingHash != null)
-        } catch (e: CancellationException) {
-            withContext(NonCancellable) { releaseUnknownHashRefresh(sourceUrl, reservation) }
-            throw e
-        }
+        val result =
+            try {
+                refresh(sourceUrl, force = true, skipRecentAttempt = missingHash != null)
+            } catch (e: CancellationException) {
+                withContext(NonCancellable) { releaseUnknownHashRefresh(sourceUrl, reservation) }
+                throw e
+            }
+        if (!result.requestAttempted) releaseUnknownHashRefresh(sourceUrl, reservation)
+        return result.changed
     }
 
     /**
@@ -121,17 +142,19 @@ class RemotePlayerConfigStore(
         if (!repository.enabled) return false
         val sourceUrl = configuredUrl() ?: return false
         val reservation = reserveStreamRejectionRefresh(sourceUrl) ?: return false
-        return try {
-            refresh(sourceUrl, force = true)
-        } catch (e: CancellationException) {
-            withContext(NonCancellable) { releaseStreamRejectionRefresh(sourceUrl, reservation) }
-            throw e
-        }
+        val result =
+            try {
+                refresh(sourceUrl, force = true)
+            } catch (e: CancellationException) {
+                withContext(NonCancellable) { releaseStreamRejectionRefresh(sourceUrl, reservation) }
+                throw e
+            }
+        return result.changed
     }
 
     private suspend fun reserveUnknownHashRefresh(sourceUrl: String): Long? =
         mutex.withLock {
-            val now = Clock.System.now().toEpochMilliseconds()
+            val now = nowMs()
             if (withinCooldown(lastUnknownHashRefreshSourceUrl, lastUnknownHashRefreshAtMs, sourceUrl, now)) {
                 return@withLock null
             }
@@ -142,7 +165,7 @@ class RemotePlayerConfigStore(
 
     private suspend fun reserveStreamRejectionRefresh(sourceUrl: String): Long? =
         mutex.withLock {
-            val now = Clock.System.now().toEpochMilliseconds()
+            val now = nowMs()
             if (withinCooldown(lastStreamRejectionRefreshSourceUrl, lastStreamRejectionRefreshAtMs, sourceUrl, now)) {
                 return@withLock null
             }
@@ -179,17 +202,17 @@ class RemotePlayerConfigStore(
         sourceUrl: String,
         force: Boolean,
         skipRecentAttempt: Boolean = false,
-    ): Boolean =
+    ): RefreshResult =
         refreshMutex.withLock refreshLock@{
-            if (configuredUrl() != sourceUrl) return@refreshLock false
-            val now = Clock.System.now().toEpochMilliseconds()
+            if (configuredUrl() != sourceUrl) return@refreshLock RefreshResult(false, false)
+            val now = nowMs()
             if (!force && hasFreshCache(sourceUrl, now)) {
                 mutex.withLock { ensureLoadedFromCache(sourceUrl) }
-                return@refreshLock false
+                return@refreshLock RefreshResult(false, false)
             }
             if ((!force || skipRecentAttempt) && hasRecentRefreshAttempt(sourceUrl, now)) {
                 mutex.withLock { ensureLoadedFromCache(sourceUrl) }
-                return@refreshLock false
+                return@refreshLock RefreshResult(false, false)
             }
 
             val cachedEtag =
@@ -198,7 +221,7 @@ class RemotePlayerConfigStore(
                     ?.takeIf { it.isNotBlank() }
             val response =
                 try {
-                    val validatedSourceUrl = validatedSourceUrlOrNull(sourceUrl) ?: return@refreshLock false
+                    val validatedSourceUrl = validatedSourceUrlOrNull(sourceUrl) ?: return@refreshLock RefreshResult(false, false)
                     httpClient.getTextWithoutRedirects(validatedSourceUrl, MAX_CONFIG_RESPONSE_BYTES) {
                         header(HttpHeaders.UserAgent, OKHTTP_USER_AGENT)
                         header(HttpHeaders.Accept, "application/json")
@@ -217,50 +240,50 @@ class RemotePlayerConfigStore(
                 }
 
             lastRefreshAttemptSourceUrl = sourceUrl
-            lastRefreshAttemptAtMs = Clock.System.now().toEpochMilliseconds()
+            lastRefreshAttemptAtMs = nowMs()
 
             mutex.withLock stateLock@{
-                if (configuredUrl() != sourceUrl) return@stateLock false
+                if (configuredUrl() != sourceUrl) return@stateLock RefreshResult(false, true)
                 if (response == null) {
                     ensureLoadedFromCache(sourceUrl)
-                    return@stateLock false
+                    return@stateLock RefreshResult(false, true)
                 }
 
                 val status = response.status.value
                 val responseEtag = response.headers[HttpHeaders.ETag]
                 if (status == 304) {
-                    val fetchedAt = Clock.System.now().toEpochMilliseconds()
+                    val fetchedAt = nowMs()
                     repository.cachedAtMs = fetchedAt
                     if (!responseEtag.isNullOrBlank()) repository.cachedEtag = responseEtag
                     ensureLoadedFromCache(sourceUrl)
                     logger.d(TAG, "Remote player configs unchanged (304)")
-                    return@stateLock false
+                    return@stateLock RefreshResult(false, true)
                 }
                 if (status !in 200..299) {
                     logger.w(TAG, "Remote player configs HTTP $status")
                     ensureLoadedFromCache(sourceUrl)
-                    return@stateLock false
+                    return@stateLock RefreshResult(false, true)
                 }
 
-                val body = response.body ?: return@stateLock false
+                val body = response.body ?: return@stateLock RefreshResult(false, true)
                 when (val result = RemotePlayerConfigParser.parse(body)) {
                     is RemotePlayerConfigParser.ParseResult.Success -> {
                         val changed = applyConfigs(sourceUrl, result.configs)
                         repository.cachedJson = body
-                        repository.cachedAtMs = Clock.System.now().toEpochMilliseconds()
+                        repository.cachedAtMs = nowMs()
                         repository.cachedSourceUrl = sourceUrl
                         responseEtag?.let { repository.cachedEtag = it }
                         logger.d(
                             TAG,
                             "Remote player configs applied (${result.configs.size} entries) changed=$changed epoch=$configEpoch",
                         )
-                        return@stateLock changed
+                        return@stateLock RefreshResult(changed, true)
                     }
 
                     is RemotePlayerConfigParser.ParseResult.Failure -> {
                         logger.w(TAG, "Remote player configs rejected: ${result.reason}")
                         ensureLoadedFromCache(sourceUrl)
-                        return@stateLock false
+                        return@stateLock RefreshResult(false, true)
                     }
                 }
             }
@@ -340,7 +363,7 @@ class RemotePlayerConfigStore(
         if (!repository.enabled) return null
         val playerHash = RemotePlayerConfigParser.extractPlayerHash(playerUrl) ?: return null
         val url = legacyConfigUrl(playerHash) ?: return null
-        val now = Clock.System.now().toEpochMilliseconds()
+        val now = nowMs()
         mutex.withLock {
             legacyTimestampCache
                 .remove(url)

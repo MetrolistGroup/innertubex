@@ -39,6 +39,41 @@ class PlaybackClientStrategyTest {
         ids.forEach { id ->
             assertNotNull(PlaybackClientCatalog.find(id))
         }
+        val kids = checkNotNull(PlaybackClientCatalog.findBenchmark("ANDROID_KIDS")).client
+        assertEquals("7.36.1", kids.clientVersion)
+        assertEquals("11", kids.osVersion)
+        assertEquals("30", kids.androidSdkVersion)
+        assertEquals("com.google.android.apps.youtube.kids/7.36.1 (Linux; U; Android 11) gzip", kids.userAgent)
+    }
+
+    @Test
+    fun premiumDemotionRequiresHighQualityIntent() {
+        val strategy = ContentAwareFallbackStrategy()
+        val request =
+            ClientSelectionRequest(
+                hints = ContentHints().withPremium(),
+                authenticated = true,
+                premium = true,
+                availablePoTokenProviders = allProviders,
+                webViewAvailable = true,
+            )
+
+        val normal = strategy.selectClients(request, premiumHighQuality = false)
+        val high = strategy.selectClients(request, premiumHighQuality = true)
+
+        assertEquals(
+            "VISIONOS_0_1",
+            normal.candidates
+                .first()
+                .manifest
+                ?.id,
+        )
+        assertTrue(
+            high.candidates
+                .first()
+                .manifest
+                ?.authentication != AuthenticationPolicy.UNSUPPORTED,
+        )
     }
 
     @Test
@@ -58,6 +93,7 @@ class PlaybackClientStrategyTest {
                     authenticated = true,
                     premium = true,
                 ),
+                premiumHighQuality = true,
             )
         val signedOutPremium =
             strategy.selectClients(

@@ -9,6 +9,7 @@ import com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy
 import com.metrolist.innertubex.extraction.strategy.ClientHealthMonitor
 import com.metrolist.innertubex.extraction.strategy.ClientHealthScope
 import com.metrolist.innertubex.extraction.strategy.ClientSelectionRequest
+import com.metrolist.innertubex.extraction.strategy.ContentAwareFallbackStrategy
 import com.metrolist.innertubex.extraction.strategy.PlaybackClientCatalog
 import com.metrolist.innertubex.extraction.strategy.PlaybackTransportPreference
 import com.metrolist.innertubex.extraction.strategy.PoTokenRequirement
@@ -87,6 +88,7 @@ internal class PlayerClientDirector(
         acceptCipherOnlyResponse: Boolean = false,
         directAudioOnlyClients: Boolean = false,
         wantVideo: Boolean = false,
+        premiumHighQuality: Boolean = false,
         requestBudget: PlayerRequestBudget? = null,
         prefetchedPoToken: Deferred<PoTokenResult?>? = null,
         tvBearerCredential: TvBearerCredential? = null,
@@ -99,26 +101,30 @@ internal class PlayerClientDirector(
         val requestSession = initialSession.copy(visitorData = requestVisitorData)
         val authenticated = !requestSession.sapisid.isNullOrBlank()
         val healthScope = ClientHealthScope.from(hints, authenticated)
-        val selection =
-            fallbackStrategy.selectClients(
-                ClientSelectionRequest(
-                    hints = hints,
-                    authenticated = authenticated,
-                    premium = hints.premium,
-                    availablePoTokenProviders = tokenProvider.capabilities.providers,
-                    javaScriptRuntimeAvailable = playerConfig.playerUrl.isNotBlank(),
-                    webViewAvailable = tokenProvider.capabilities.usesWebView,
-                    fastPathOnly = directAudioOnlyClients,
-                    transportPreference =
-                        when {
-                            hints.isLive == true -> PlaybackTransportPreference.HLS
-                            hints.sabrFirst -> PlaybackTransportPreference.SABR
-                            hints.wantVideo -> PlaybackTransportPreference.DIRECT
-                            else -> PlaybackTransportPreference.AUTO
-                        },
-                    excludedClients = excludedClients,
-                ),
+        val selectionRequest =
+            ClientSelectionRequest(
+                hints = hints,
+                authenticated = authenticated,
+                premium = hints.premium,
+                availablePoTokenProviders = tokenProvider.capabilities.providers,
+                javaScriptRuntimeAvailable = playerConfig.playerUrl.isNotBlank(),
+                webViewAvailable = tokenProvider.capabilities.usesWebView,
+                fastPathOnly = directAudioOnlyClients,
+                transportPreference =
+                    when {
+                        hints.isLive == true -> PlaybackTransportPreference.HLS
+                        hints.sabrFirst -> PlaybackTransportPreference.SABR
+                        hints.wantVideo -> PlaybackTransportPreference.DIRECT
+                        else -> PlaybackTransportPreference.AUTO
+                    },
+                excludedClients = excludedClients,
             )
+        val selection =
+            if (fallbackStrategy is ContentAwareFallbackStrategy) {
+                fallbackStrategy.selectClients(selectionRequest, premiumHighQuality)
+            } else {
+                fallbackStrategy.selectClients(selectionRequest)
+            }
         val attempts =
             selection.rejected
                 .mapTo(mutableListOf<StreamAttemptDiagnostic>()) { rejected ->

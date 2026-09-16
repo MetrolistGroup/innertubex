@@ -22,7 +22,12 @@ class ContentAwareFallbackStrategy(
             ),
         ).candidates.map(SelectedClient::client)
 
-    override fun selectClients(request: ClientSelectionRequest): ClientSelectionResult {
+    override fun selectClients(request: ClientSelectionRequest): ClientSelectionResult = selectClients(request, premiumHighQuality = false)
+
+    internal fun selectClients(
+        request: ClientSelectionRequest,
+        premiumHighQuality: Boolean,
+    ): ClientSelectionResult {
         val rejected = mutableListOf<RejectedClient>()
         request.hints.playbackClientOverrideId?.let(catalog::find)?.let { option ->
             val rejectionReasons = hardRejectionReasons(option.manifest, request, checkContentSupport = false)
@@ -95,7 +100,7 @@ class ContentAwareFallbackStrategy(
                     }
                 }.thenBy {
                     if (request.authenticated &&
-                        (request.premium || request.hints.wantVideo) &&
+                        ((premiumHighQuality && request.premium) || request.hints.wantVideo) &&
                         request.hints.isKidsContent != true &&
                         it.manifest?.authentication == AuthenticationPolicy.UNSUPPORTED
                     ) {

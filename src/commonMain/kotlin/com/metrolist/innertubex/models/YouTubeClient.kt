@@ -550,7 +550,7 @@ data class YouTubeClient(
                 clientName = "ANDROID_KIDS",
                 clientVersion = "7.36.1",
                 clientId = "18",
-                userAgent = "com.google.android.apps.youtube.music/7.27.52 (Linux; U; Android 11) gzip",
+                userAgent = "com.google.android.apps.youtube.kids/7.36.1 (Linux; U; Android 11) gzip",
                 osName = "Android",
                 osVersion = "11",
                 androidSdkVersion = "30",

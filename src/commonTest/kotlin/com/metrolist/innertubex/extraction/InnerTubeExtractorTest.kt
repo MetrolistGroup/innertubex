@@ -608,6 +608,48 @@ class InnerTubeExtractorTest {
         }
 
     @Test
+    fun normalDirectFailureTriesAnonymousWatchConfigBeforeAuthenticated() =
+        runBlocking {
+            val configModes = mutableListOf<Boolean>()
+            var playerRequests = 0
+            val client =
+                HttpClient(
+                    MockEngine {
+                        playerRequests++
+                        respond(
+                            if (playerRequests <= 2) UNPLAYABLE_RESPONSE else DIRECT_RESPONSE,
+                            HttpStatusCode.OK,
+                            headersOf("Content-Type", "application/json"),
+                        )
+                    },
+                ) {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
+            val innerTube = InnerTube(client, retryDelay = {}).also { it.cookie = "SAPISID=synthetic-session" }
+            val parser =
+                object : YtConfigParser {
+                    override suspend fun fetchConfig(
+                        videoId: String,
+                        useLoginCookies: Boolean,
+                    ): PlayerConfig {
+                        configModes += useLoginCookies
+                        return PlayerConfig("https://www.youtube.com/s/player/test/base.js", 123, null, null)
+                    }
+                }
+            try {
+                val stream =
+                    makeExtractor(client, innerTube, parser, fallback = ContentAwareFallbackStrategy())
+                        .extract("video", ContentHints())
+
+                assertNotNull(stream)
+                assertEquals(listOf(false), configModes)
+                assertEquals(3, playerRequests)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
     fun authenticatedConfigFailureFallsBackToSignedOutWatchConfig() =
         runBlocking {
             val configModes = mutableListOf<Boolean>()

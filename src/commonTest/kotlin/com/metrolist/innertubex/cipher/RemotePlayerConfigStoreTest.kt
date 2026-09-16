@@ -58,6 +58,34 @@ class RemotePlayerConfigStoreTest {
         }
 
     @Test
+    fun skippedUnknownHashRefreshDoesNotReserveFailureCooldown() =
+        runBlocking {
+            var nowMs = 0L
+            var requests = 0
+            val engine =
+                MockEngine {
+                    requests++
+                    respondOk(
+                        if (requests == 1) {
+                            """{"schemaVersion":1,"players":{"aaaaaaaa":{"sig":"A(1,2,INPUT)","nClass":"B","sts":1}}}"""
+                        } else {
+                            """{"schemaVersion":1,"players":{"deadbeef":{"sig":"A(1,2,INPUT)","nClass":"B","sts":2}}}"""
+                        },
+                    )
+                }
+            val store = RemotePlayerConfigStore(HttpClient(engine), repository()) { nowMs }
+            val playerUrl = "https://www.youtube.com/s/player/deadbeef/player.js"
+
+            assertNull(store.getConfig(playerUrl))
+            assertFalse(store.forceRefresh(missingHash = "deadbeef"))
+
+            nowMs = 60_000L
+            assertTrue(store.forceRefresh(missingHash = "deadbeef"))
+            assertFalse(store.forceRefresh(missingHash = "cafebabe"))
+            assertEquals(2, requests)
+        }
+
+    @Test
     fun concurrentUnknownHashRefreshesMakeOneRequestDuringCooldown() =
         runBlocking {
             val requestStarted = CompletableDeferred<Unit>()

@@ -451,7 +451,16 @@ class InnerTubeExtractor internal constructor(
                 null
             }
 
-        val cookieFirst = hints.playbackClientOverrideId == null && innerTube.hasSapCookieAuth()
+        val cookieFirst =
+            hints.playbackClientOverrideId == null &&
+                innerTube.hasSapCookieAuth() &&
+                (
+                    authenticatedPremiumHighQuality ||
+                        hints.isExplicit == true ||
+                        hints.isAgeRestricted == true ||
+                        hints.isUploaded == true ||
+                        hints.wantVideo
+                )
         val stream = extractWithWatchConfig(useLoginCookies = cookieFirst)
         if (stream != null) return stream
 
@@ -795,6 +804,7 @@ class InnerTubeExtractor internal constructor(
                 acceptCipherOnlyResponse = allowCipherProcessing,
                 directAudioOnlyClients = !allowCipherProcessing && !hints.wantVideo,
                 wantVideo = hints.wantVideo,
+                premiumHighQuality = hints.premium && audioQuality == AudioQuality.HIGH,
                 requestBudget = diagnostics.requestBudget,
                 prefetchedPoToken = prefetchedPoToken,
                 tvBearerCredential = tvBearerCredential,
