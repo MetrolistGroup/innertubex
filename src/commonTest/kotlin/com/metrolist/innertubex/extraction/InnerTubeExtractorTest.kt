@@ -15,6 +15,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
@@ -29,9 +30,109 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Clock
+import kotlin.time.Duration.Companion.hours
 
 class InnerTubeExtractorTest {
+    @Test
+    fun authenticatedTvDiscoveryIsOptionalAndBearerIsIsolated() =
+        runBlocking {
+            var bearerRequests = 0
+            var bearerVisitor: String? = null
+            val bearerResponse =
+                DIRECT_RESPONSE
+                    .replace(
+                        "\"playerConfig\":",
+                        "\"playbackTracking\":{\"videostatsPlaybackUrl\":{\"baseUrl\":\"https://s.youtube.com/api/stats/playback?synthetic=1\"}},\"playerConfig\":",
+                    ).replace("128000", "256000")
+            val client =
+                HttpClient(
+                    MockEngine { request ->
+                        val authorization = request.headers[HttpHeaders.Authorization]
+                        if (authorization != null) {
+                            bearerRequests++
+                            bearerVisitor = request.headers["X-Goog-Visitor-Id"]
+                            assertEquals("Bearer synthetic-bearer", authorization)
+                            assertNull(request.headers[HttpHeaders.Cookie])
+                            respond(bearerResponse, HttpStatusCode.OK, headersOf("Content-Type", "application/json"))
+                        } else {
+                            respond(DIRECT_RESPONSE, HttpStatusCode.OK, headersOf("Content-Type", "application/json"))
+                        }
+                    },
+                )
+            val innerTube =
+                InnerTube(client, retryDelay = {}).also {
+                    it.cookie = "SAPISID=synthetic-cookie"
+                    it.visitorData = "session-visitor"
+                }
+            val extractor = makeExtractor(client, innerTube, CountingParser(), DirectFallback, AudioOnlyCipherService)
+            val generation = innerTube.sessionSnapshot().generation
+            var currentChecks = 0
+            val provider =
+                object : TvBearerCredentialProvider {
+                    override suspend fun getCredential(
+                        videoId: String,
+                        sessionGeneration: Long,
+                    ) = TvBearerCredential(
+                        value = "synthetic-bearer",
+                        profileId = "TVHTML5",
+                        expiresAt = Clock.System.now().plus(1.hours),
+                        sessionGeneration = sessionGeneration,
+                        visitorData = "bearer-visitor",
+                    )
+
+                    override suspend fun isCredentialCurrent(credential: TvBearerCredential): Boolean {
+                        currentChecks++
+                        return true
+                    }
+                }
+
+            val stream =
+                extractor.extractWithAuthenticatedTvDiscovery(
+                    videoId = "video",
+                    confirmedPremium = true,
+                    credentialProvider = provider,
+                    hints = ContentHints(isExplicit = true),
+                )
+
+            assertEquals(generation, innerTube.sessionSnapshot().generation)
+            assertNotNull(stream)
+            assertEquals(256000, stream.bitrate)
+            assertEquals(1, bearerRequests)
+            assertEquals(2, currentChecks)
+            assertEquals("bearer-visitor", bearerVisitor)
+            assertNull(stream.headers[HttpHeaders.Cookie])
+            assertNull(stream.playbackTracking)
+            client.close()
+        }
+
+    @Test
+    fun unauthenticatedTvDiscoveryDoesNotCallCredentialProvider() =
+        runBlocking {
+            val client = jsonClient(DIRECT_RESPONSE)
+            var providerCalls = 0
+            val provider =
+                object : TvBearerCredentialProvider {
+                    override suspend fun getCredential(
+                        videoId: String,
+                        sessionGeneration: Long,
+                    ): TvBearerCredential? {
+                        providerCalls++
+                        return null
+                    }
+
+                    override suspend fun isCredentialCurrent(credential: TvBearerCredential) = true
+                }
+
+            val stream = extractor(client).extractWithAuthenticatedTvDiscovery("video", false, provider)
+
+            assertNotNull(stream)
+            assertEquals(0, providerCalls)
+            client.close()
+        }
+
     @Test
     fun directAudioPathSelectsFormatWithoutRecursiveSelectorWrapper() =
         runBlocking {
@@ -552,11 +653,11 @@ class InnerTubeExtractorTest {
             val innerTube = InnerTube(client, retryDelay = {})
             val parser = CountingParser()
             val extractor = makeExtractor(client, innerTube, parser)
-            assertNotNull(extractor.extract("one", ContentHints(isExplicit = true)))
-            assertNotNull(extractor.extract("two", ContentHints(isExplicit = true)))
+            assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
+            assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
             assertEquals(1, parser.calls)
             innerTube.visitorData = "new-session"
-            assertNotNull(extractor.extract("three", ContentHints(isExplicit = true)))
+            assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
             assertEquals(2, parser.calls)
             client.close()
         }
@@ -581,8 +682,8 @@ class InnerTubeExtractorTest {
             val parser = CountingParser()
             val extractor = makeExtractor(client, InnerTube(client, retryDelay = {}), parser)
             try {
-                assertNotNull(extractor.extract("one", ContentHints(isExplicit = true)))
-                assertNotNull(extractor.extract("two", ContentHints(isExplicit = true)))
+                assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
+                assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
                 assertEquals(2, parser.calls)
                 assertEquals(3, requests)
             } finally {
@@ -613,8 +714,8 @@ class InnerTubeExtractorTest {
                 }
             try {
                 val extractor = makeExtractor(client, InnerTube(client, retryDelay = {}), parser, fallback)
-                assertNotNull(extractor.extract("prime", ContentHints(isExplicit = true)))
-                assertNotNull(extractor.extract("refresh", ContentHints()))
+                assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
+                assertNotNull(extractor.extract("video", ContentHints()))
                 assertEquals(2, parser.calls)
                 assertTrue(requests > PlaybackClientCatalog.automaticManifests.size * 2 + 2)
             } finally {
@@ -723,10 +824,10 @@ class InnerTubeExtractorTest {
                 }
             val extractor = makeExtractor(client, innerTube, parser)
 
-            assertNotNull(extractor.extract("normal-one", ContentHints(playbackClientOverrideId = "VISIONOS_0_1")))
-            assertNotNull(extractor.extract("explicit-one", ContentHints(isExplicit = true)))
-            assertNotNull(extractor.extract("normal-two", ContentHints(playbackClientOverrideId = "VISIONOS_0_1")))
-            assertNotNull(extractor.extract("explicit-two", ContentHints(isExplicit = true)))
+            assertNotNull(extractor.extract("video", ContentHints(playbackClientOverrideId = "VISIONOS_0_1")))
+            assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
+            assertNotNull(extractor.extract("video", ContentHints(playbackClientOverrideId = "VISIONOS_0_1")))
+            assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
 
             assertEquals(listOf(false, true), modes)
             client.close()
@@ -764,9 +865,9 @@ class InnerTubeExtractorTest {
             val extractor = makeExtractor(client, innerTube, parser)
 
             assertFailsWith<CancellationException> {
-                extractor.extract("first", ContentHints(isExplicit = true))
+                extractor.extract("video", ContentHints(isExplicit = true))
             }
-            assertNotNull(extractor.extract("second", ContentHints(isExplicit = true)))
+            assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
             assertEquals(2, calls)
             client.close()
         }

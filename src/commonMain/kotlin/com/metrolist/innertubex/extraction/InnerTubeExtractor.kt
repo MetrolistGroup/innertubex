@@ -86,6 +86,127 @@ class InnerTubeExtractor internal constructor(
     private val playerConfigCache = mutableMapOf<Boolean, CachedPlayerConfig>()
     private val playerConfigFetchMutex = Mutex()
 
+    /**
+     * Optionally compares a fresh, host-authorized TV player response with ordinary playback discovery.
+     * The provider is called once per request; the host owns consent, secure storage, refresh, and revocation.
+     * This is experimental and does not promise that Premium exposes a higher-quality stream.
+     */
+    public suspend fun extractWithAuthenticatedTvDiscovery(
+        videoId: String,
+        confirmedPremium: Boolean,
+        credentialProvider: TvBearerCredentialProvider,
+        hints: ContentHints = ContentHints(),
+        excludedClients: Set<String> = emptySet(),
+        audioQuality: AudioQuality = AudioQuality.HIGH,
+        clientPlaybackNonce: String = generateClientPlaybackNonce(),
+    ): ExtractedStream? {
+        if (
+            !confirmedPremium ||
+            audioQuality != AudioQuality.HIGH ||
+            hints.playbackClientOverrideId != null ||
+            hints.isUploaded == true ||
+            hints.isLive == true
+        ) {
+            return extract(videoId, hints, excludedClients, audioQuality, clientPlaybackNonce)
+        }
+        val baselineHints = hints.withPremium()
+        var baseline: ExtractedStream? = null
+        var baselineFailure: Exception? = null
+        try {
+            baseline = extract(videoId, baselineHints, excludedClients, audioQuality, clientPlaybackNonce)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            baselineFailure = error
+        }
+
+        val generation = innerTube.sessionSnapshot().generation
+        val credential =
+            try {
+                credentialProvider.getCredential(videoId, generation)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                logger.w(
+                    TAG,
+                    "TV bearer credential unavailable",
+                    details = mapOf("exceptionType" to (error::class.simpleName ?: "unknown")),
+                )
+                null
+            }?.takeIf { it.isUsableFor(generation, TV_BEARER_MINIMUM_LIFETIME) }
+        if (credential == null) return baselineOrThrow(baseline, baselineFailure)
+        if (innerTube.sessionSnapshot().generation != generation) return baselineOrThrow(baseline, baselineFailure)
+        if (!isCredentialCurrent(credentialProvider, credential)) return baselineOrThrow(baseline, baselineFailure)
+
+        val candidateDiagnostics = ExtractionDiagnostics(maxPlayerRequests = 1)
+        val candidate =
+            try {
+                extractWithCachedConfig(
+                    videoId = videoId,
+                    hints = baselineHints,
+                    excludedClients = excludedClients,
+                    clientPlaybackNonce = clientPlaybackNonce,
+                    useLoginCookies = false,
+                    totalStartMs = Clock.System.now().toEpochMilliseconds(),
+                    audioQuality = audioQuality,
+                    diagnostics = candidateDiagnostics,
+                    tvBearerCredential = credential,
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                logger.w(TAG, "TV bearer discovery unavailable", details = mapOf("exceptionType" to (error::class.simpleName ?: "unknown")))
+                null
+            }
+        if (candidate != null && isCredentialCurrent(credentialProvider, credential) &&
+            candidate.isStrictlyHigherQualityThan(baseline, hints.wantVideo)
+        ) {
+            return candidate
+        }
+        return baselineOrThrow(baseline, baselineFailure)
+    }
+
+    private fun baselineOrThrow(
+        baseline: ExtractedStream?,
+        failure: Exception?,
+    ): ExtractedStream? {
+        if (baseline != null) return baseline
+        if (failure != null) throw failure
+        return null
+    }
+
+    private suspend fun isCredentialCurrent(
+        provider: TvBearerCredentialProvider,
+        credential: TvBearerCredential,
+    ): Boolean =
+        try {
+            provider.isCredentialCurrent(credential)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            logger.w(TAG, "TV bearer credential revoked", details = mapOf("exceptionType" to (error::class.simpleName ?: "unknown")))
+            false
+        }
+
+    private fun ExtractedStream.isStrictlyHigherQualityThan(
+        baseline: ExtractedStream?,
+        wantVideo: Boolean,
+    ): Boolean {
+        baseline ?: return true
+        val audioComparable = (bitrate ?: 0) > 0 && (baseline.bitrate ?: 0) > 0
+        val audioComparison =
+            if (audioComparable) compareValues(bitrate, baseline.bitrate) else 0
+        if (!wantVideo) return audioComparable && audioComparison > 0
+        val videoComparison =
+            compareValuesBy(
+                videoHeight ?: 0,
+                baseline.videoHeight ?: 0,
+            ).let { heightComparison ->
+                if (heightComparison != 0) heightComparison else compareValues(videoBitrate ?: 0, baseline.videoBitrate ?: 0)
+            }
+        return audioComparison >= 0 && videoComparison >= 0 && (audioComparison > 0 || videoComparison > 0)
+    }
+
     override suspend fun prewarm() {
         val startMs = Clock.System.now().toEpochMilliseconds()
         try {
@@ -523,6 +644,7 @@ class InnerTubeExtractor internal constructor(
         audioQuality: AudioQuality = AudioQuality.AUTO,
         diagnostics: ExtractionDiagnostics,
         prefetchedPoToken: Deferred<PoTokenResult?>? = null,
+        tvBearerCredential: TvBearerCredential? = null,
     ): ExtractedStream? {
         val nowMs = Clock.System.now().toEpochMilliseconds()
         val cachedConfig = getCachedPlayerConfig(useLoginCookies, nowMs)
@@ -550,6 +672,7 @@ class InnerTubeExtractor internal constructor(
                     audioQuality = audioQuality,
                     diagnostics = diagnostics,
                     prefetchedPoToken = prefetchedPoToken,
+                    tvBearerCredential = tvBearerCredential,
                 )
             if (cachedStream != null) return cachedStream
             logger.w(TAG, "watch page cache unusable", details = mapOf("authenticated" to useLoginCookies.toString()))
@@ -596,6 +719,7 @@ class InnerTubeExtractor internal constructor(
             audioQuality = audioQuality,
             diagnostics = diagnostics,
             prefetchedPoToken = prefetchedPoToken,
+            tvBearerCredential = tvBearerCredential,
         )
     }
 
@@ -646,6 +770,7 @@ class InnerTubeExtractor internal constructor(
         audioQuality: AudioQuality = AudioQuality.AUTO,
         diagnostics: ExtractionDiagnostics,
         prefetchedPoToken: Deferred<PoTokenResult?>? = null,
+        tvBearerCredential: TvBearerCredential? = null,
     ): ExtractedStream? {
         if (diagnostics.requestBudget.remaining <= 0) return null
         logger.d(
@@ -670,6 +795,7 @@ class InnerTubeExtractor internal constructor(
                 wantVideo = hints.wantVideo,
                 requestBudget = diagnostics.requestBudget,
                 prefetchedPoToken = prefetchedPoToken,
+                tvBearerCredential = tvBearerCredential,
             )
         diagnostics.failures += batch.failures
         diagnostics.requestFailures += batch.requestFailures
@@ -703,7 +829,9 @@ class InnerTubeExtractor internal constructor(
                 continue
             }
             val playbackTracking =
-                response.playbackTracking.toPlaybackTrackingData(clientPlaybackNonce)
+                response.playbackTracking
+                    .toPlaybackTrackingData(clientPlaybackNonce)
+                    .takeUnless { result.bearerAuthenticated }
 
             val allFormats =
                 (streamingData.formats ?: emptyList()) +
@@ -860,7 +988,13 @@ class InnerTubeExtractor internal constructor(
                     videoId = videoId,
                     audioUrl = hlsManifestUrl,
                     videoUrl = hlsManifestUrl,
-                    headers = buildHeaders(result.clientName, result.userAgent, hlsManifestUrl, hints.isUploaded == true),
+                    headers =
+                        buildHeaders(
+                            result.clientName,
+                            result.userAgent,
+                            hlsManifestUrl,
+                            hints.isUploaded == true && !result.bearerAuthenticated,
+                        ),
                     loudnessDb = response.playerConfig?.audioConfig?.loudnessDb,
                     expiresAt = null,
                     contentLengthBytes = null,
@@ -940,7 +1074,13 @@ class InnerTubeExtractor internal constructor(
                 if (!directUrl.hasNParameter() && directVideoUrl?.hasNParameter() != true) {
                     val expireSeconds = extractExpire(directUrl)
                     val expiresAt = expireSeconds?.let { Instant.fromEpochSeconds(it) }
-                    val directHeaders = buildHeaders(result.clientName, result.userAgent, directUrl, hints.isUploaded == true)
+                    val directHeaders =
+                        buildHeaders(
+                            result.clientName,
+                            result.userAgent,
+                            directUrl,
+                            hints.isUploaded == true && !result.bearerAuthenticated,
+                        )
                     val contentLength =
                         resolveBoundedContentLength(
                             directFastPathCandidate.contentLength,
@@ -1136,7 +1276,13 @@ class InnerTubeExtractor internal constructor(
             }
             val expireSeconds = extractExpire(url)
             val expiresAt = expireSeconds?.let { Instant.fromEpochSeconds(it) }
-            val directHeaders = buildHeaders(result.clientName, result.userAgent, url, hints.isUploaded == true)
+            val directHeaders =
+                buildHeaders(
+                    result.clientName,
+                    result.userAgent,
+                    url,
+                    hints.isUploaded == true && !result.bearerAuthenticated,
+                )
             val contentLength =
                 resolveBoundedContentLength(
                     audioFormat.contentLength,
@@ -1246,7 +1392,9 @@ class InnerTubeExtractor internal constructor(
                     useRangeChunks = false,
                     rangeChunkSizeBytes = mediaRangeChunkSize(fallbackResult.clientName),
                     playbackTracking =
-                        fallbackResult.response.playbackTracking.toPlaybackTrackingData(clientPlaybackNonce),
+                        fallbackResult.response.playbackTracking
+                            .toPlaybackTrackingData(clientPlaybackNonce)
+                            .takeUnless { fallbackResult.bearerAuthenticated },
                     streamDiagnostics = diagnostics.snapshot(),
                 ).withResponseMetadata(fallbackResult.response)
             }
@@ -1271,6 +1419,7 @@ class InnerTubeExtractor internal constructor(
             allowCipherProcessing = allowCipherProcessing,
             audioQuality = audioQuality,
             diagnostics = diagnostics,
+            tvBearerCredential = tvBearerCredential,
         )
     }
 

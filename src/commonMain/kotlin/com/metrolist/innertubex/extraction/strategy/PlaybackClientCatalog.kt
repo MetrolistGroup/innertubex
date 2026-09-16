@@ -31,6 +31,8 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
     private const val SOURCE_ANDROID_SABR_BENCHMARK = "Android SABR benchmark (2026-08-20)"
     private const val SOURCE_YTDLP = "yt-dlp client inventory"
     private const val SOURCE_YOUTUBE_JS = "YouTube.js client constants"
+    private const val SOURCE_HISTORICAL_CLIENTS = "YouTube-Internal-Clients survey (2022)"
+    private const val SOURCE_PYTUBEFIX = "pytubefix innertube.py (b6521f09)"
 
     private val webProviders =
         setOf(PoTokenProviderKind.WEB_BOTGUARD, PoTokenProviderKind.WEBPAGE_ATTESTATION, PoTokenProviderKind.EXTERNAL)
@@ -879,6 +881,54 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
             ),
              */
             manifest(
+                id = "IOS_MUSIC",
+                client = YouTubeClient.IOS_MUSIC,
+                displayName = "iOS Music probe",
+                lifecycle = ClientLifecycle.EXPERIMENTAL,
+                selectionMode = ClientSelectionMode.PROBE_ONLY,
+                priority = 0,
+                transports = setOf(PlaybackTransport.DIRECT),
+                content = unverifiedProbeContent(),
+                evidence = setOf(SOURCE_PYTUBEFIX, SOURCE_HISTORICAL_CLIENTS),
+                notes = "Historical iOS Music identity and app fields; playback and transport support are unverified.",
+            ),
+            manifest(
+                id = "ANDROID_KIDS",
+                client = YouTubeClient.ANDROID_KIDS,
+                displayName = "Android Kids probe",
+                lifecycle = ClientLifecycle.EXPERIMENTAL,
+                selectionMode = ClientSelectionMode.PROBE_ONLY,
+                priority = 0,
+                transports = setOf(PlaybackTransport.DIRECT),
+                content = unverifiedProbeContent(),
+                evidence = setOf(SOURCE_PYTUBEFIX, SOURCE_HISTORICAL_CLIENTS),
+                notes = "Historical Android Kids identity and app fields; playback and transport support are unverified.",
+            ),
+            manifest(
+                id = "ANDROID_PRODUCER",
+                client = YouTubeClient.ANDROID_PRODUCER,
+                displayName = "Android Producer probe",
+                lifecycle = ClientLifecycle.EXPERIMENTAL,
+                selectionMode = ClientSelectionMode.PROBE_ONLY,
+                priority = 0,
+                transports = setOf(PlaybackTransport.DIRECT),
+                content = unverifiedProbeContent(),
+                evidence = setOf(SOURCE_PYTUBEFIX),
+                notes = "Android Producer identity and app fields from the pinned source; playback is unverified.",
+            ),
+            manifest(
+                id = "MEDIA_CONNECT_FRONTEND",
+                client = YouTubeClient.MEDIA_CONNECT_FRONTEND,
+                displayName = "Media Connect Frontend probe",
+                lifecycle = ClientLifecycle.EXPERIMENTAL,
+                selectionMode = ClientSelectionMode.PROBE_ONLY,
+                priority = 0,
+                transports = setOf(PlaybackTransport.DIRECT),
+                content = unverifiedProbeContent(),
+                evidence = setOf(SOURCE_PYTUBEFIX, SOURCE_HISTORICAL_CLIENTS),
+                notes = "Historical Media Connect identity and app fields; playback and transport support are unverified.",
+            ),
+            manifest(
                 id = "WEB",
                 client = YouTubeClient.WEB,
                 displayName = "Web API",
@@ -1017,6 +1067,16 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
             normal = CapabilitySupport.UNSUPPORTED,
             kids = CapabilitySupport.UNSUPPORTED,
             ageRestricted = CapabilitySupport.UNSUPPORTED,
+        )
+
+    private fun unverifiedProbeContent() =
+        ClientContentCapabilities(
+            normal = CapabilitySupport.UNKNOWN,
+            explicit = CapabilitySupport.UNKNOWN,
+            kids = CapabilitySupport.UNKNOWN,
+            ageRestricted = CapabilitySupport.UNKNOWN,
+            live = CapabilitySupport.UNKNOWN,
+            uploads = CapabilitySupport.UNKNOWN,
         )
 
     private fun globallyUnusableContent() =

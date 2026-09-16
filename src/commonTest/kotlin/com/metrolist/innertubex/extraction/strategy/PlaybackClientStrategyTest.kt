@@ -12,7 +12,7 @@ class PlaybackClientStrategyTest {
 
     @Test
     fun catalogProfilesHaveConsistentManifestInvariants() {
-        assertEquals(31, PlaybackClientCatalog.benchmarkOptions.size)
+        assertEquals(35, PlaybackClientCatalog.benchmarkOptions.size)
         assertEquals(
             PlaybackClientCatalog.manifests.size,
             PlaybackClientCatalog.manifests
@@ -23,6 +23,22 @@ class PlaybackClientStrategyTest {
         assertTrue(
             PlaybackClientCatalog.manifests.all { it.client.clientName.isNotBlank() },
         )
+    }
+
+    @Test
+    fun requestedProbeClientsStayExplicitAndConservative() {
+        val ids = setOf("IOS_MUSIC", "ANDROID_KIDS", "ANDROID_PRODUCER", "MEDIA_CONNECT_FRONTEND")
+        val probes = ids.map { checkNotNull(PlaybackClientCatalog.findBenchmark(it)?.manifest) }
+
+        assertTrue(probes.all { it.selectionMode == ClientSelectionMode.PROBE_ONLY })
+        assertTrue(probes.all { it !in PlaybackClientCatalog.automaticManifests })
+        assertTrue(probes.all { it.content.normal == CapabilitySupport.UNKNOWN })
+        assertTrue(probes.all { it.content.explicit == CapabilitySupport.UNKNOWN })
+        assertTrue(probes.all { it.evidence.isNotEmpty() && !it.notes.isNullOrBlank() })
+
+        ids.forEach { id ->
+            assertNotNull(PlaybackClientCatalog.find(id))
+        }
     }
 
     @Test

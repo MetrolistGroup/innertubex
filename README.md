@@ -59,7 +59,7 @@ val configStore = RemotePlayerConfigStore(
     repository = PlayerConfigRepository.disabled(),
 )
 val cipher = YouTubeCipherService(client.httpClient, configStore)
-val extractor: StreamExtractor = InnerTubeExtractor(
+val extractor = InnerTubeExtractor(
     configParser = YtConfigParserImpl(client.httpClient, client, configStore),
     cipherService = cipher,
     innerTube = client,
@@ -71,6 +71,40 @@ val stream = extractor.extract(
     audioQuality = AudioQuality.HIGH,
 )
 ```
+
+### Optional authenticated TV discovery
+
+Hosts with an independently confirmed Premium entitlement may opt into one
+additional, scoped TV comparison:
+
+```kotlin
+val stream = extractor.extractWithAuthenticatedTvDiscovery(
+    videoId = "dQw4w9WgXcQ",
+    confirmedPremium = hostConfirmedPremium,
+    credentialProvider = object : TvBearerCredentialProvider {
+        override suspend fun getCredential(videoId: String, sessionGeneration: Long) =
+            hostAcquireShortLivedTvCredential(sessionGeneration)
+        override suspend fun isCredentialCurrent(credential: TvBearerCredential) =
+            hostCredentialIsStillCurrent(credential)
+    },
+    hints = ContentHints(wantVideo = false),
+    audioQuality = AudioQuality.HIGH,
+)
+```
+
+The provider owns consent, acquisition, secure storage, refresh, and revocation.
+It should return a short-lived credential scoped to the existing `TVHTML5` or
+`TVHTML5_DOWNGRADED` manifest and current session generation. The library calls
+this path only when explicitly requested, isolates the bearer from cookies and
+media requests, and keeps the ordinary result unless the TV result is strictly
+higher quality. This is experimental: Premium does not guarantee a better
+response, and no OAuth or credential harvesting is provided.
+
+The catalog also exposes four explicit, unverified probes through the existing
+`playbackClientOverrideId` hint: `IOS_MUSIC` (26), `ANDROID_KIDS` (18),
+`ANDROID_PRODUCER` (91), and `MEDIA_CONNECT_FRONTEND` (95). They are `PROBE_ONLY`, never
+automatic fallbacks, and their content/transport support remains conservative.
+No DASH playback is implemented by these probe profiles.
 
 Applications can inject `TokenProvider`, `ClientHealthMonitor`,
 `ClientFallbackStrategy`, and `InnerTubeLogger` implementations. Platform token

@@ -67,6 +67,7 @@ internal class PlayerClientDirector(
         wantVideo: Boolean = false,
         requestBudget: PlayerRequestBudget? = null,
         prefetchedPoToken: Deferred<PoTokenResult?>? = null,
+        tvBearerCredential: TvBearerCredential? = null,
     ): PlayerResponseBatch {
         val startTime = Clock.System.now().toEpochMilliseconds()
         val initialSession = innerTube.sessionSnapshot()
@@ -139,6 +140,20 @@ internal class PlayerClientDirector(
         val requestFailures = mutableListOf<Throwable>()
         val effectiveRequestBudget =
             requestBudget ?: PlayerRequestBudget(if (hints.playbackClientOverrideId != null) 1 else maxPlayerRequests)
+        if (tvBearerCredential != null) {
+            return fetchTvBearerResponse(
+                videoId = videoId,
+                playerConfig = playerConfig,
+                excludedClients = excludedClients,
+                wantVideo = wantVideo,
+                requestBudget = effectiveRequestBudget,
+                initialSession = requestSession,
+                credential = tvBearerCredential,
+                attempts = attempts,
+                failures = failures,
+                requestFailures = requestFailures,
+            )
+        }
         var requestsConsumedInBatch = 0
         var forceTokenizedTvHtml5 = false
         val unavailablePoTokenCookieModes = mutableSetOf<Boolean>()
@@ -363,6 +378,129 @@ internal class PlayerClientDirector(
 
         logger.d(TAG, "player response batch completed", details = mapOf("resultCount" to "0", "elapsedMs" to elapsed.toString()))
         return PlayerResponseBatch(emptyList(), failures, requestFailures, attempts)
+    }
+
+    private suspend fun fetchTvBearerResponse(
+        videoId: String,
+        playerConfig: PlayerConfig,
+        excludedClients: Set<String>,
+        wantVideo: Boolean,
+        requestBudget: PlayerRequestBudget,
+        initialSession: InnerTube.SessionSnapshot,
+        credential: TvBearerCredential,
+        attempts: MutableList<StreamAttemptDiagnostic>,
+        failures: MutableList<PlayabilityFailure>,
+        requestFailures: MutableList<Throwable>,
+    ): PlayerResponseBatch {
+        val manifest =
+            PlaybackClientCatalog
+                .findManifest(credential.profileId)
+                ?.takeIf { it.client.clientName == "TVHTML5" && it.client.loginSupported }
+                ?: return PlayerResponseBatch(emptyList(), failures, requestFailures, attempts)
+        val bearerProfileId = "${manifest.id}__bearer"
+        if (
+            credential.profileId in excludedClients ||
+            manifest.client.clientName in excludedClients ||
+            bearerProfileId in excludedClients ||
+            !credential.isUsableFor(initialSession.generation, TV_BEARER_MINIMUM_LIFETIME) ||
+            requestBudget.remaining <= 0
+        ) {
+            return PlayerResponseBatch(emptyList(), failures, requestFailures, attempts)
+        }
+        val bearerSession =
+            initialSession.copy(
+                visitorData = credential.visitorData?.takeIf(String::isNotBlank),
+                dataSyncId = null,
+                authUser = "0",
+                cookie = null,
+                sapisid = null,
+                useLoginForBrowse = false,
+            )
+        val attemptResult =
+            try {
+                tryTvBearerPlayer(
+                    client = manifest.client,
+                    videoId = videoId,
+                    playerConfig = playerConfig,
+                    requestSession = bearerSession,
+                    requestBudget = requestBudget,
+                    credential = credential,
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                ClientAttemptResult(attempt = null, failure = null, requestFailure = error)
+            }
+        val attempt = attemptResult.attempt
+        attempts +=
+            StreamAttemptDiagnostic(
+                clientName = manifest.client.clientName,
+                profileId = bearerProfileId,
+                userAgent = manifest.client.userAgent,
+                outcome =
+                    when {
+                        attempt != null -> "playable_response"
+                        attemptResult.requestFailure != null -> "request:${attemptResult.requestFailure::class.simpleName ?: "unknown"}"
+                        else -> "no_playable_response"
+                    },
+            )
+        if (attempt == null) {
+            attemptResult.failure?.let(failures::add)
+            attemptResult.requestFailure?.let(requestFailures::add)
+            return PlayerResponseBatch(emptyList(), failures, requestFailures, attempts)
+        }
+        if (wantVideo && !hasUsableVideoTransport(attempt.response)) {
+            return PlayerResponseBatch(emptyList(), failures, requestFailures, attempts)
+        }
+        return PlayerResponseBatch(
+            listOf(
+                ClientResult(
+                    clientName = manifest.client.clientName,
+                    profileId = bearerProfileId,
+                    userAgent = manifest.client.userAgent,
+                    response = attempt.response,
+                    clientId = manifest.client.clientId.toIntOrNull() ?: 0,
+                    clientVersion = manifest.client.clientVersion,
+                    bearerAuthenticated = true,
+                ),
+            ),
+            failures,
+            requestFailures,
+            attempts,
+        )
+    }
+
+    private suspend fun tryTvBearerPlayer(
+        client: YouTubeClient,
+        videoId: String,
+        playerConfig: PlayerConfig,
+        requestSession: InnerTube.SessionSnapshot,
+        requestBudget: PlayerRequestBudget,
+        credential: TvBearerCredential,
+    ): ClientAttemptResult {
+        val response =
+            requestPlayer(
+                client = client,
+                videoId = videoId,
+                signatureTimestamp = playerConfig.signatureTimestamp,
+                poToken = null,
+                requestSession = requestSession,
+                encryptedHostFlags = null,
+                requestBudget = requestBudget,
+                bearerToken = credential.bearerValue(),
+            ) ?: return ClientAttemptResult(null, null)
+        return if (isPlayable(response, client)) {
+            ClientAttemptResult(ClientAttempt(response, usedPoToken = false), null)
+        } else {
+            ClientAttemptResult(
+                attempt = null,
+                failure =
+                    PlayabilityFailure(
+                        status = response.playabilityStatus.status,
+                        reason = response.playabilityStatus.reason,
+                    ),
+            )
+        }
     }
 
     private suspend fun tryPlayer(
@@ -621,6 +759,7 @@ internal class PlayerClientDirector(
         requestSession: InnerTube.SessionSnapshot,
         encryptedHostFlags: String?,
         requestBudget: PlayerRequestBudget,
+        bearerToken: String? = null,
     ): PlayerResponse? =
         try {
             requestBudget.consume()
@@ -632,6 +771,7 @@ internal class PlayerClientDirector(
                     poToken = poToken,
                     requestSession = requestSession,
                     encryptedHostFlags = encryptedHostFlags,
+                    bearerToken = bearerToken,
                 )
             }
         } catch (error: TimeoutCancellationException) {
@@ -645,62 +785,64 @@ internal class PlayerClientDirector(
         poToken: String?,
         requestSession: InnerTube.SessionSnapshot,
         encryptedHostFlags: String?,
+        bearerToken: String? = null,
     ): PlayerResponse? {
         val startTime = Clock.System.now().toEpochMilliseconds()
-        val httpResponse =
-            innerTube.playerWithSessionBound(
-                client = client,
-                videoId = videoId,
-                playlistId = null,
-                signatureTimestamp = signatureTimestamp,
-                poToken = poToken,
-                requestVisitorData = requestSession.visitorData,
-                requestSession = requestSession,
-                encryptedHostFlags = encryptedHostFlags,
-            )
-        if (!httpResponse.status.isSuccess()) {
-            httpResponse.bodyAsTextLimited(MAX_PLAYER_RESPONSE_BYTES)
-            return null
-        }
-        val payload = httpResponse.bodyAsTextLimited(MAX_PLAYER_RESPONSE_BYTES)
+        val payload =
+            if (bearerToken != null) {
+                innerTube.playerWithTvBearerSessionBound(
+                    client = client,
+                    videoId = videoId,
+                    signatureTimestamp = signatureTimestamp,
+                    requestSession = requestSession,
+                    bearerToken = bearerToken,
+                ) ?: return null
+            } else {
+                val httpResponse =
+                    innerTube.playerWithSessionBound(
+                        client = client,
+                        videoId = videoId,
+                        playlistId = null,
+                        signatureTimestamp = signatureTimestamp,
+                        poToken = poToken,
+                        requestVisitorData = requestSession.visitorData,
+                        requestSession = requestSession,
+                        encryptedHostFlags = encryptedHostFlags,
+                    )
+                if (!httpResponse.status.isSuccess()) {
+                    httpResponse.bodyAsTextLimited(MAX_PLAYER_RESPONSE_BYTES)
+                    return null
+                }
+                httpResponse.bodyAsTextLimited(MAX_PLAYER_RESPONSE_BYTES)
+            }
+        return parsePlayerResponse(payload, videoId, client, startTime)
+    }
+
+    private fun parsePlayerResponse(
+        payload: String,
+        videoId: String,
+        client: YouTubeClient,
+        startTime: Long,
+    ): PlayerResponse? {
         val response = runCatching { json.decodeFromString<PlayerResponse>(payload) }.getOrNull()
         if (response == null) {
             val root = runCatching { json.parseToJsonElement(payload).jsonObject }.getOrNull()
             val elapsed = Clock.System.now().toEpochMilliseconds() - startTime
-            if (root == null) {
-                logger.w(
-                    TAG,
-                    "invalid player response",
-                    details =
-                        mapOf(
-                            "client" to client.clientName,
-                            "httpStatus" to httpResponse.status.value.toString(),
-                            "elapsedMs" to elapsed.toString(),
-                        ),
+            val details =
+                mapOf(
+                    "client" to client.clientName,
+                    "httpStatus" to "200",
+                    "elapsedMs" to elapsed.toString(),
                 )
-            } else if ("playabilityStatus" !in root) {
-                logger.d(
-                    TAG,
-                    "player response missing status",
-                    details =
-                        mapOf(
-                            "client" to client.clientName,
-                            "httpStatus" to httpResponse.status.value.toString(),
-                            "elapsedMs" to elapsed.toString(),
-                        ),
-                )
-            } else {
-                logger.w(
-                    TAG,
-                    "player response decode failed",
-                    details =
-                        mapOf(
-                            "client" to client.clientName,
-                            "httpStatus" to httpResponse.status.value.toString(),
-                            "elapsedMs" to elapsed.toString(),
-                        ),
-                )
+            when {
+                root == null -> logger.w(TAG, "invalid player response", details = details)
+                "playabilityStatus" !in root -> logger.d(TAG, "player response missing status", details = details)
+                else -> logger.w(TAG, "player response decode failed", details = details)
             }
+            return null
+        }
+        if (!response.matchesRequestedVideo(videoId)) {
+            logger.w(TAG, "player response rejected", details = mapOf("client" to client.clientName, "reason" to "video_identity"))
             return null
         }
 
@@ -725,6 +867,9 @@ internal class PlayerClientDirector(
         if (formatCount > MAX_PLAYER_FORMATS) return null
         return response
     }
+
+    private fun PlayerResponse.matchesRequestedVideo(videoId: String): Boolean =
+        videoDetails?.videoId?.takeIf(String::isNotBlank)?.let { it == videoId } ?: true
 
     private fun isPlayable(
         response: PlayerResponse,
