@@ -1,0 +1,18 @@
+{
+  "implementation": "baseline_forced_sabr",
+  "audio_quality": "HIGH",
+  "iterations": 3,
+  "authenticated_cookie_accepted": true,
+  "authentication_endpoint_status": 200,
+  "premium_capability": "unavailable_in_existing_account_api",
+  "premium_hint_requested": false,
+  "premium_hint_applied": false,
+  "forced_profile": "WEB_REMIX_SABR",
+  "token_prewarm_ms": null,
+  "extractor_prewarm_ms": null,
+  "rows": [
+    {"type":"normal","iteration":1,"phase":"process-cold","resolve_ms":4456,"first_media_ms":46,"time_to_first_media_ms":4504,"cache_ms":1,"client":"WEB_REMIX","profile":"WEB_REMIX_SABR__nopo","transport":"SABR","itag":251,"mime_type":"audio/webm","codecs":"opus","bitrate":141473,"sample_rate":48000,"audio_channels":2,"media_status":200,"decoded_first_pcm_ms":90,"decoded_30s_ms":null,"seek_first_pcm_ms":null,"n_transform":"transformed","cipher_transform":"none-observed","used_po_token":false,"auth_watch":false,"attempts":1,"hops":0,"error":"decode-30s:IllegalStateException"},
+    {"type":"normal","iteration":2,"phase":"extractor-warm","resolve_ms":926,"first_media_ms":11,"time_to_first_media_ms":937,"cache_ms":0,"client":"WEB_REMIX","profile":"WEB_REMIX_SABR__nopo","transport":"SABR","itag":251,"mime_type":"audio/webm","codecs":"opus","bitrate":141473,"sample_rate":48000,"audio_channels":null,"media_status":200,"decoded_first_pcm_ms":null,"decoded_30s_ms":null,"seek_first_pcm_ms":null,"n_transform":"transformed","cipher_transform":"none-observed","used_po_token":false,"auth_watch":false,"attempts":1,"hops":0,"error":null},
+    {"type":"normal","iteration":3,"phase":"extractor-warm","resolve_ms":701,"first_media_ms":11,"time_to_first_media_ms":713,"cache_ms":0,"client":"WEB_REMIX","profile":"WEB_REMIX_SABR__nopo","transport":"SABR","itag":251,"mime_type":"audio/webm","codecs":"opus","bitrate":141473,"sample_rate":48000,"audio_channels":null,"media_status":200,"decoded_first_pcm_ms":null,"decoded_30s_ms":null,"seek_first_pcm_ms":null,"n_transform":"transformed","cipher_transform":"none-observed","used_po_token":false,"auth_watch":false,"attempts":1,"hops":0,"error":null}
+  ]
+}

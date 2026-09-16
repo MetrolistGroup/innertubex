@@ -1,0 +1,17 @@
+{
+  "implementation": "baseline_prewarm",
+  "audio_quality": "HIGH",
+  "iterations": 3,
+  "authenticated_cookie_accepted": true,
+  "authentication_endpoint_status": 200,
+  "premium_capability": "unavailable_in_existing_account_api",
+  "premium_hint_requested": false,
+  "premium_hint_applied": false,
+  "token_prewarm_ms": 474,
+  "extractor_prewarm_ms": 5918,
+  "rows": [
+    {"type":"normal","iteration":1,"phase":"process-cold","resolve_ms":108,"first_media_ms":20,"time_to_first_media_ms":128,"cache_ms":1,"client":"VISIONOS","profile":"VISIONOS_0_1__nopo","transport":"DIRECT","itag":251,"mime_type":"audio/webm","codecs":"opus","bitrate":141473,"sample_rate":48000,"audio_channels":null,"media_status":206,"decoded_first_pcm_ms":null,"decoded_30s_ms":null,"seek_first_pcm_ms":null,"n_transform":"none-observed","cipher_transform":"none-observed","used_po_token":false,"auth_watch":false,"attempts":1,"hops":0,"error":null},
+    {"type":"normal","iteration":2,"phase":"extractor-warm","resolve_ms":82,"first_media_ms":4,"time_to_first_media_ms":87,"cache_ms":0,"client":"VISIONOS","profile":"VISIONOS_0_1__nopo","transport":"DIRECT","itag":251,"mime_type":"audio/webm","codecs":"opus","bitrate":141473,"sample_rate":48000,"audio_channels":null,"media_status":206,"decoded_first_pcm_ms":null,"decoded_30s_ms":null,"seek_first_pcm_ms":null,"n_transform":"none-observed","cipher_transform":"none-observed","used_po_token":false,"auth_watch":false,"attempts":1,"hops":0,"error":null},
+    {"type":"normal","iteration":3,"phase":"extractor-warm","resolve_ms":73,"first_media_ms":4,"time_to_first_media_ms":77,"cache_ms":0,"client":"VISIONOS","profile":"VISIONOS_0_1__nopo","transport":"DIRECT","itag":251,"mime_type":"audio/webm","codecs":"opus","bitrate":141473,"sample_rate":48000,"audio_channels":null,"media_status":206,"decoded_first_pcm_ms":null,"decoded_30s_ms":null,"seek_first_pcm_ms":null,"n_transform":"none-observed","cipher_transform":"none-observed","used_po_token":false,"auth_watch":false,"attempts":1,"hops":0,"error":null}
+  ]
+}

@@ -1,0 +1,4 @@
+type,iteration,phase,resolve_ms,first_media_ms,time_to_first_media_ms,cache_ms,client,profile,transport,itag,mime_type,codecs,bitrate,sample_rate,audio_channels,media_status,decoded_first_pcm_ms,decoded_30s_ms,seek_first_pcm_ms,n_transform,cipher_transform,used_po_token,auth_watch,attempts,hops,error
+normal,1,process-cold,4456,46,4504,1,WEB_REMIX,WEB_REMIX_SABR__nopo,SABR,251,audio/webm,opus,141473,48000,2,200,90,,,transformed,none-observed,false,false,1,0,decode-30s:IllegalStateException
+normal,2,extractor-warm,926,11,937,0,WEB_REMIX,WEB_REMIX_SABR__nopo,SABR,251,audio/webm,opus,141473,48000,,200,,,,transformed,none-observed,false,false,1,0,
+normal,3,extractor-warm,701,11,713,0,WEB_REMIX,WEB_REMIX_SABR__nopo,SABR,251,audio/webm,opus,141473,48000,,200,,,,transformed,none-observed,false,false,1,0,
