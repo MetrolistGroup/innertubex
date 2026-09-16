@@ -94,7 +94,9 @@ class ContentAwareFallbackStrategy(
                         }
                     }
                 }.thenBy {
-                    if (request.authenticated && request.hints.isKidsContent != true &&
+                    if (request.authenticated &&
+                        (request.premium || request.hints.wantVideo) &&
+                        request.hints.isKidsContent != true &&
                         it.manifest?.authentication == AuthenticationPolicy.UNSUPPORTED
                     ) {
                         1

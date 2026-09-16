@@ -279,11 +279,13 @@ class InnerTubeExtractor internal constructor(
             throwExtractionFailure(hints, diagnostics)
         }
 
+        val authenticatedPremiumHighQuality =
+            hints.premium && audioQuality == AudioQuality.HIGH && innerTube.hasSapCookieAuth()
         if (
             hints.playbackClientOverrideId == null && !hints.wantVideo &&
             hints.isExplicit != true && hints.isAgeRestricted != true &&
             hints.isUploaded != true && hints.isLive != true &&
-            !innerTube.hasSapCookieAuth()
+            !authenticatedPremiumHighQuality
         ) {
             val directStream =
                 extractWithConfig(

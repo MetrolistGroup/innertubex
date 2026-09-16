@@ -281,6 +281,46 @@ class InnerTubeExtractorTest {
         }
 
     @Test
+    fun authenticatedNonPremiumNormalPlaybackKeepsVisionosFastPath() =
+        runBlocking {
+            val client = jsonClient(DIRECT_RESPONSE)
+            val innerTube = InnerTube(client, retryDelay = {}).also { it.cookie = "SAPISID=synthetic-session" }
+            val parser = CountingParser()
+            try {
+                val stream =
+                    makeExtractor(client, innerTube, parser, fallback = ContentAwareFallbackStrategy())
+                        .extract("video", ContentHints())
+
+                assertNotNull(stream)
+                assertEquals("VISIONOS", stream.clientName)
+                assertEquals("VISIONOS_0_1__nopo", stream.profileId)
+                assertEquals(0, parser.calls)
+                assertEquals(null, stream.headers["Cookie"])
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun signedOutPremiumHintStillKeepsVisionosFastPath() =
+        runBlocking {
+            val client = jsonClient(DIRECT_RESPONSE)
+            val parser = CountingParser()
+            try {
+                val stream =
+                    makeExtractor(client, InnerTube(client, retryDelay = {}), parser, fallback = ContentAwareFallbackStrategy())
+                        .extract("video", ContentHints().withPremium())
+
+                assertNotNull(stream)
+                assertEquals("VISIONOS", stream.clientName)
+                assertEquals("VISIONOS_0_1__nopo", stream.profileId)
+                assertEquals(0, parser.calls)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
     fun authenticatedConfigFailureFallsBackToSignedOutWatchConfig() =
         runBlocking {
             val configModes = mutableListOf<Boolean>()
@@ -309,7 +349,7 @@ class InnerTubeExtractorTest {
             try {
                 val stream =
                     makeExtractor(client, innerTube, parser, fallback = WebRemixFallback)
-                        .extract("video", ContentHints())
+                        .extract("video", ContentHints(isExplicit = true))
 
                 assertNotNull(stream)
                 assertEquals(listOf(true, false), configModes)
@@ -352,7 +392,7 @@ class InnerTubeExtractorTest {
             try {
                 val stream =
                     makeExtractor(client, innerTube, parser, fallback = WebRemixFallback)
-                        .extract("video", ContentHints())
+                        .extract("video", ContentHints(isExplicit = true))
 
                 assertNotNull(stream)
                 assertEquals(listOf(true, false), configModes)
@@ -392,7 +432,7 @@ class InnerTubeExtractorTest {
             try {
                 assertFailsWith<CancellationException> {
                     makeExtractor(client, innerTube, parser, fallback = WebRemixFallback)
-                        .extract("video", ContentHints())
+                        .extract("video", ContentHints(isExplicit = true))
                 }
                 assertEquals(listOf(true), configModes)
                 assertEquals(0, playerRequests)
@@ -402,7 +442,7 @@ class InnerTubeExtractorTest {
         }
 
     @Test
-    fun authenticatedExtractionKeepsAccountClientAheadOfAnonymousFastPath() =
+    fun authenticatedPremiumHighQualityInspectsAuthenticatedFormats() =
         runBlocking {
             val configModes = mutableListOf<Boolean>()
             var playerRequests = 0

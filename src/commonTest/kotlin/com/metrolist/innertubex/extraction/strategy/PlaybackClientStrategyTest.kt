@@ -53,12 +53,24 @@ class PlaybackClientStrategyTest {
             )
 
         assertTrue(withoutPremium.rejected.any { it.manifest.id == "WEB_REMIX" })
-        assertTrue(withPremium.candidates.any { it.manifest?.id == "WEB_REMIX" })
+        assertTrue(
+            withPremium.candidates
+                .first()
+                .manifest
+                ?.authentication != AuthenticationPolicy.UNSUPPORTED,
+        )
         assertTrue(signedOutPremium.rejected.any { it.manifest.id == "WEB_REMIX" })
+        assertEquals(
+            "VISIONOS_0_1",
+            signedOutPremium.candidates
+                .first()
+                .manifest
+                ?.id,
+        )
     }
 
     @Test
-    fun authenticatedSelectionDoesNotPreferAnonymousNormalClient() {
+    fun authenticatedNonPremiumSelectionKeepsAnonymousNormalClientFirst() {
         val candidates =
             ContentAwareFallbackStrategy()
                 .selectClients(
@@ -71,7 +83,7 @@ class PlaybackClientStrategyTest {
                 ).candidates
 
         assertTrue(candidates.isNotEmpty())
-        assertTrue(candidates.first().manifest?.authentication != AuthenticationPolicy.UNSUPPORTED)
+        assertEquals("VISIONOS_0_1", candidates.first().manifest?.id)
     }
 
     @Test
@@ -206,6 +218,23 @@ class PlaybackClientStrategyTest {
                 .reasons
                 .any { it.startsWith("ignored:") },
         )
+    }
+
+    @Test
+    fun excludedAnonymousProfileFallsBackToAnotherAutomaticClient() {
+        val result =
+            ContentAwareFallbackStrategy().selectClients(
+                ClientSelectionRequest(
+                    hints = ContentHints(),
+                    authenticated = true,
+                    availablePoTokenProviders = allProviders,
+                    webViewAvailable = true,
+                    excludedClients = setOf("VISIONOS_0_1__nopo"),
+                ),
+            )
+
+        assertTrue(result.candidates.none { it.manifest?.id == "VISIONOS_0_1" })
+        assertTrue(result.candidates.isNotEmpty())
     }
 
     @Test
