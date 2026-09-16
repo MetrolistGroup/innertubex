@@ -3,7 +3,7 @@
 Measured 2026-09-16 against exact local InnerTubeX revisions:
 
 - Baseline: `13f8e4d36d249024cfe356c9cd67cd7fd8ee6493`
-- Candidate: `68ba2a9627c7c85ec04968ef1d1649c2547a64f2` (`fix/mu3d1odh-1-verified-premium-playback`)
+- Candidate source snapshot (reachable in this checkout): `cbfd76d98d0fd0f6017c84f8b3400ad1afe572ed`
 
 ## Result
 
@@ -100,7 +100,7 @@ Prewarm timing is separate from playback timing. The sidecar readiness path was 
 This template contains the cookie **file path only**. Run one Gradle command at a time under the shared lock:
 
 ```sh
-flock -x /tmp/metrolist-gradle.lock timeout 1800s env RUN_LIVE_INNERTUBE_CLIENT_BENCHMARKS=true INNERTUBE_TOKEN_FILE=/home/nyx/projects/innertubex/innertube_cookie.txt INNERTUBE_BENCHMARK_LABEL=<label> INNERTUBE_BENCHMARK_ITERATIONS=3 INNERTUBE_BENCHMARK_DECODE=true INNERTUBE_BENCHMARK_PREMIUM_HINT=<true-or-false> ./gradlew :shared:desktopTest --tests com.metrolist.shared.youtube.innertube.LivePremiumAbBenchmarkTest.runSanitizedPremiumAbBenchmark -PuseLocalInnerTubeX --no-daemon --no-configuration-cache --max-workers=2 --no-parallel -DinnerTubeTokenFile=/home/nyx/projects/innertubex/innertube_cookie.txt -Dorg.gradle.jvmargs='-Xmx2048m -XX:MaxMetaspaceSize=512m' -Pkotlin.compiler.execution.strategy=in-process -DliveInnerTubeBenchmarkReportDir=<report-dir> --console=plain
+flock -x /tmp/metrolist-gradle.lock timeout 1800s env RUN_LIVE_INNERTUBE_CLIENT_BENCHMARKS=true INNERTUBE_TOKEN_FILE=<cookie-file-path> INNERTUBE_BENCHMARK_LABEL=<label> INNERTUBE_BENCHMARK_ITERATIONS=3 INNERTUBE_BENCHMARK_DECODE=true INNERTUBE_BENCHMARK_PREMIUM_HINT=<true-or-false> ./gradlew :shared:desktopTest --tests com.metrolist.shared.youtube.innertube.LivePremiumAbBenchmarkTest.runSanitizedPremiumAbBenchmark -PuseLocalInnerTubeX --no-daemon --no-configuration-cache --max-workers=2 --no-parallel -DinnerTubeTokenFile=<cookie-file-path> -Dorg.gradle.jvmargs='-Xmx2048m -XX:MaxMetaspaceSize=512m' -Pkotlin.compiler.execution.strategy=in-process -DliveInnerTubeBenchmarkReportDir=<report-dir> --console=plain
 ```
 
 For the forced SABR probe, add `INNERTUBE_BENCHMARK_PROFILE=WEB_REMIX_SABR INNERTUBE_CONTENT_TYPE_FILTER=normal` to the `env` list and use `INNERTUBE_BENCHMARK_PREMIUM_HINT=false` for baseline or `true` for the candidate hypothesis.
