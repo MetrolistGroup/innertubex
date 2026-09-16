@@ -26,6 +26,10 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -55,6 +59,24 @@ internal class PlayerClientDirector(
         private const val MAX_PLAYER_RESPONSE_BYTES = 4 * 1024 * 1024
         private const val MAX_PLAYER_FORMATS = 2048
         private val DYNAMIC_WEB_VERSION_CLIENT_NAMES = setOf("WEB", "WEB_EMBEDDED_PLAYER")
+        private val TRANSPORT_PROBE_CLIENT_NAMES =
+            setOf("IOS_MUSIC", "ANDROID_KIDS", "ANDROID_PRODUCER", "MEDIA_CONNECT_FRONTEND")
+        private val KNOWN_DRM_KEYS =
+            setOf(
+                "contentprotection",
+                "contentprotectionids",
+                "drmfamilies",
+                "drmfamily",
+                "drmparameters",
+                "drmparams",
+                "drmtracktype",
+                "fairplay",
+                "licenseinfo",
+                "licenseinfos",
+                "licenseurl",
+                "playready",
+                "widevine",
+            )
     }
 
     internal suspend fun fetchPlayerResponses(
@@ -216,8 +238,16 @@ internal class PlayerClientDirector(
                     userAgent = client.userAgent,
                     outcome =
                         when {
+                            attempt != null && client.clientName in TRANSPORT_PROBE_CLIENT_NAMES -> {
+                                responseTransportOutcome(attempt.response)
+                            }
+
                             attempt != null -> {
                                 "playable_response"
+                            }
+
+                            attemptResult.observedResponse != null && client.clientName in TRANSPORT_PROBE_CLIENT_NAMES -> {
+                                responseTransportOutcome(attemptResult.observedResponse)
                             }
 
                             attemptResult.tokenUnavailable -> {
@@ -577,6 +607,7 @@ internal class PlayerClientDirector(
                     attempt = null,
                     failure = initialFailure.takeUnless { initialPlayable },
                     tokenUnavailable = initialPlayable,
+                    observedResponse = initialResponse,
                 )
             }
             // Zemer-style recovery: restricted and uploaded media can return a non-OK
@@ -588,7 +619,7 @@ internal class PlayerClientDirector(
                     (hints.isUploaded == true || hints.isAgeRestricted == true)
             if (!initialPlayable && !retryRestrictedWithPoToken) {
                 logger.d(TAG, "token fetch skipped", details = mapOf("client" to client.clientName, "playable" to "false"))
-                return ClientAttemptResult(null, initialFailure)
+                return ClientAttemptResult(null, initialFailure, observedResponse = initialResponse)
             }
             if (retryRestrictedWithPoToken) {
                 logger.d(TAG, "token fetch retried", details = mapOf("client" to client.clientName, "restrictedContent" to "true"))
@@ -815,7 +846,7 @@ internal class PlayerClientDirector(
                 }
                 httpResponse.bodyAsTextLimited(MAX_PLAYER_RESPONSE_BYTES)
             }
-        return parsePlayerResponse(payload, videoId, client, startTime)
+        return parsePlayerResponse(payload, videoId, client, startTime, bearerToken != null)
     }
 
     private fun parsePlayerResponse(
@@ -823,10 +854,21 @@ internal class PlayerClientDirector(
         videoId: String,
         client: YouTubeClient,
         startTime: Long,
+        bearerAuthenticated: Boolean = false,
     ): PlayerResponse? {
+        val parsedRoot =
+            if (bearerAuthenticated) {
+                runCatching { json.parseToJsonElement(payload).jsonObject }.getOrNull()
+            } else {
+                null
+            }
+        if (bearerAuthenticated && parsedRoot?.let(::containsKnownDrmMarker) == true) {
+            logger.w(TAG, "bearer player response rejected", details = mapOf("client" to client.clientName, "reason" to "drm"))
+            return null
+        }
         val response = runCatching { json.decodeFromString<PlayerResponse>(payload) }.getOrNull()
         if (response == null) {
-            val root = runCatching { json.parseToJsonElement(payload).jsonObject }.getOrNull()
+            val root = parsedRoot ?: runCatching { json.parseToJsonElement(payload).jsonObject }.getOrNull()
             val elapsed = Clock.System.now().toEpochMilliseconds() - startTime
             val details =
                 mapOf(
@@ -853,6 +895,34 @@ internal class PlayerClientDirector(
                     ?.adaptiveFormats
                     .orEmpty()
                     .size
+        val transportDiagnostics =
+            if (client.clientName in TRANSPORT_PROBE_CLIENT_NAMES) {
+                val adaptiveFormats = response.streamingData?.adaptiveFormats.orEmpty()
+                val progressiveFormats = response.streamingData?.formats.orEmpty()
+                mapOf(
+                    "adaptiveFormatCount" to adaptiveFormats.size.toString(),
+                    "adaptiveDirectCount" to adaptiveFormats.count { it.url?.isNotBlank() == true }.toString(),
+                    "adaptiveCipherCount" to
+                        adaptiveFormats.count { !it.signatureCipher.isNullOrBlank() || !it.cipher.isNullOrBlank() }.toString(),
+                    "progressiveFormatCount" to progressiveFormats.size.toString(),
+                    "progressiveDirectCount" to progressiveFormats.count { it.url?.isNotBlank() == true }.toString(),
+                    "progressiveCipherCount" to
+                        progressiveFormats.count { !it.signatureCipher.isNullOrBlank() || !it.cipher.isNullOrBlank() }.toString(),
+                    "hlsPresent" to (!response.streamingData?.hlsManifestUrl.isNullOrBlank()).toString(),
+                    "dashPresent" to (!response.streamingData?.dashManifestUrl.isNullOrBlank()).toString(),
+                    "sabrPresent" to (!response.streamingData?.serverAbrStreamingUrl.isNullOrBlank()).toString(),
+                    "sabrConfigPresent" to
+                        (
+                            !response.playerConfig
+                                ?.mediaCommonConfig
+                                ?.mediaUstreamerRequestConfig
+                                ?.videoPlaybackUstreamerConfig
+                                .isNullOrBlank()
+                        ).toString(),
+                )
+            } else {
+                emptyMap()
+            }
         logger.d(
             TAG,
             "player response decoded",
@@ -862,11 +932,48 @@ internal class PlayerClientDirector(
                     "streamingPresent" to (response.streamingData != null).toString(),
                     "formatCount" to formatCount.toString(),
                     "elapsedMs" to elapsed.toString(),
-                ),
+                ) + transportDiagnostics,
         )
         if (formatCount > MAX_PLAYER_FORMATS) return null
         return response
     }
+
+    private fun containsKnownDrmMarker(root: JsonObject): Boolean {
+        val streamingData = root["streamingData"] as? JsonObject ?: return false
+        if (KNOWN_DRM_KEYS.any { key -> knownDrmValue(streamingData, key)?.let(::hasDrmValue) == true }) return true
+        return listOf("formats", "adaptiveFormats").any { key ->
+            (streamingData[key] as? JsonArray).orEmpty().any { format ->
+                (format as? JsonObject)?.let { item ->
+                    KNOWN_DRM_KEYS.any { marker -> knownDrmValue(item, marker)?.let(::hasDrmValue) == true }
+                } == true
+            }
+        }
+    }
+
+    private fun knownDrmValue(
+        objectValue: JsonObject,
+        key: String,
+    ): JsonElement? = objectValue.entries.firstOrNull { it.key.lowercase() == key }?.value
+
+    private fun hasDrmValue(element: JsonElement): Boolean =
+        when (element) {
+            is JsonObject -> {
+                element.isNotEmpty()
+            }
+
+            is JsonArray -> {
+                element.any { value ->
+                    when (value) {
+                        is JsonObject, is JsonArray -> true
+                        is JsonPrimitive -> value.contentOrNull?.let { it.isNotBlank() && it != "false" && it != "0" } == true
+                    }
+                }
+            }
+
+            is JsonPrimitive -> {
+                element.contentOrNull?.let { it.isNotBlank() && it != "false" && it != "0" } == true
+            }
+        }
 
     private fun PlayerResponse.matchesRequestedVideo(videoId: String): Boolean =
         videoDetails?.videoId?.takeIf(String::isNotBlank)?.let { it == videoId } ?: true
@@ -1058,7 +1165,42 @@ internal class PlayerClientDirector(
         val requestFailure: Throwable? = null,
         val tokenUnavailable: Boolean = false,
         val tokenFetchUnavailable: Boolean = false,
+        val observedResponse: PlayerResponse? = null,
     )
+
+    private fun responseTransportOutcome(response: PlayerResponse): String {
+        val adaptiveFormats = response.streamingData?.adaptiveFormats.orEmpty()
+        val progressiveFormats = response.streamingData?.formats.orEmpty()
+        return buildString {
+            append("response_shape:")
+            append("adaptive_direct=")
+            append(if (adaptiveFormats.any { it.url?.isNotBlank() == true }) "present" else "absent")
+            append(",adaptive_cipher=")
+            append(
+                if (adaptiveFormats.any { !it.signatureCipher.isNullOrBlank() || !it.cipher.isNullOrBlank() }) {
+                    "present"
+                } else {
+                    "absent"
+                },
+            )
+            append(",progressive_direct=")
+            append(if (progressiveFormats.any { it.url?.isNotBlank() == true }) "present" else "absent")
+            append(",progressive_cipher=")
+            append(
+                if (progressiveFormats.any { !it.signatureCipher.isNullOrBlank() || !it.cipher.isNullOrBlank() }) {
+                    "present"
+                } else {
+                    "absent"
+                },
+            )
+            append(",hls=")
+            append(if (!response.streamingData?.hlsManifestUrl.isNullOrBlank()) "present" else "absent")
+            append(",dash=")
+            append(if (!response.streamingData?.dashManifestUrl.isNullOrBlank()) "present" else "absent")
+            append(",sabr=")
+            append(if (!response.streamingData?.serverAbrStreamingUrl.isNullOrBlank()) "present" else "absent")
+        }
+    }
 
     private class PlayerRequestTimeoutException(
         clientName: String,

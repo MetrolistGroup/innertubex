@@ -34,6 +34,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Instant
 
 class InnerTubeExtractorTest {
     @Test
@@ -127,6 +129,190 @@ class InnerTubeExtractorTest {
                 }
 
             val stream = extractor(client).extractWithAuthenticatedTvDiscovery("video", false, provider)
+
+            assertNotNull(stream)
+            assertEquals(0, providerCalls)
+            client.close()
+        }
+
+    @Test
+    fun tvBearerProviderTimeoutFallsBackToBaseline() =
+        runBlocking {
+            val client = jsonClient(DIRECT_RESPONSE)
+            val innerTube = InnerTube(client, retryDelay = {})
+            val extractor =
+                makeExtractor(
+                    client,
+                    innerTube,
+                    CountingParser(),
+                    DirectFallback,
+                    AudioOnlyCipherService,
+                    tvBearerProviderTimeoutMs = 10,
+                )
+            var providerCalls = 0
+            val provider =
+                object : TvBearerCredentialProvider {
+                    override suspend fun getCredential(
+                        videoId: String,
+                        sessionGeneration: Long,
+                    ): TvBearerCredential? {
+                        providerCalls++
+                        delay(100)
+                        return null
+                    }
+
+                    override suspend fun isCredentialCurrent(credential: TvBearerCredential) = true
+                }
+
+            val stream =
+                extractor.extractWithAuthenticatedTvDiscovery(
+                    "video",
+                    confirmedPremium = true,
+                    credentialProvider = provider,
+                    hints = ContentHints(isExplicit = true),
+                )
+
+            assertNotNull(stream)
+            assertEquals(1, providerCalls)
+            client.close()
+        }
+
+    @Test
+    fun sessionChangeDuringBaselineNeverReturnsOldStream() =
+        runBlocking {
+            val client = jsonClient(HIGH_QUALITY_CIPHER_RESPONSE)
+            val innerTube = InnerTube(client, retryDelay = {})
+            var providerCalls = 0
+            val cipher =
+                object : ExtractionCipherService {
+                    override suspend fun initialize() {}
+
+                    override suspend fun preloadPlayerCode(playerUrl: String) {}
+
+                    override suspend fun prewarmEjs() {}
+
+                    override suspend fun processFormats(
+                        playerUrl: String,
+                        formats: List<PlayerResponse.StreamingData.Format>,
+                    ): List<PlayerResponse.StreamingData.Format> {
+                        innerTube.visitorData = "changed-session"
+                        return formats.map { it.copy(url = "https://r.googlevideo.com/videoplayback") }
+                    }
+                }
+            val provider =
+                object : TvBearerCredentialProvider {
+                    override suspend fun getCredential(
+                        videoId: String,
+                        sessionGeneration: Long,
+                    ): TvBearerCredential? {
+                        providerCalls++
+                        return null
+                    }
+
+                    override suspend fun isCredentialCurrent(credential: TvBearerCredential) = true
+                }
+            val extractor = makeExtractor(client, innerTube, CountingParser(), DirectFallback, cipher)
+
+            assertFailsWith<CancellationException> {
+                extractor.extractWithAuthenticatedTvDiscovery(
+                    "video",
+                    confirmedPremium = true,
+                    credentialProvider = provider,
+                    hints = ContentHints(isExplicit = true),
+                )
+            }
+            assertEquals(0, providerCalls)
+            client.close()
+        }
+
+    @Test
+    fun expiredTvCredentialAfterCandidateKeepsBaseline() =
+        runBlocking {
+            var bearerRequests = 0
+            val client =
+                HttpClient(
+                    MockEngine { request ->
+                        if (request.headers[HttpHeaders.Authorization] != null) {
+                            bearerRequests++
+                            respond(
+                                DIRECT_RESPONSE.replace("128000", "256000"),
+                                HttpStatusCode.OK,
+                                headersOf("Content-Type", "application/json"),
+                            )
+                        } else {
+                            respond(DIRECT_RESPONSE, HttpStatusCode.OK, headersOf("Content-Type", "application/json"))
+                        }
+                    },
+                ) {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
+            val innerTube = InnerTube(client, retryDelay = {})
+            var fakeNow = Clock.System.now()
+            val expiresAt = fakeNow.plus(9.seconds)
+            var currentChecks = 0
+            val provider =
+                object : TvBearerCredentialProvider {
+                    override suspend fun getCredential(
+                        videoId: String,
+                        sessionGeneration: Long,
+                    ) = TvBearerCredential("synthetic-bearer", "TVHTML5", expiresAt, sessionGeneration)
+
+                    override suspend fun isCredentialCurrent(credential: TvBearerCredential): Boolean {
+                        currentChecks++
+                        if (currentChecks == 2) fakeNow = expiresAt.plus(1.seconds)
+                        return true
+                    }
+                }
+            val extractor =
+                makeExtractor(
+                    client,
+                    innerTube,
+                    CountingParser(),
+                    DirectFallback,
+                    AudioOnlyCipherService,
+                    now = { fakeNow },
+                )
+
+            val stream =
+                extractor.extractWithAuthenticatedTvDiscovery(
+                    "video",
+                    confirmedPremium = true,
+                    credentialProvider = provider,
+                    hints = ContentHints(isExplicit = true),
+                )
+
+            assertNotNull(stream)
+            assertEquals(128000, stream.bitrate)
+            assertEquals(1, bearerRequests)
+            assertEquals(2, currentChecks)
+            client.close()
+        }
+
+    @Test
+    fun authenticatedTvDiscoveryDelegatesVideoRequests() =
+        runBlocking {
+            val client = jsonClient(VIDEO_RESPONSE)
+            var providerCalls = 0
+            val provider =
+                object : TvBearerCredentialProvider {
+                    override suspend fun getCredential(
+                        videoId: String,
+                        sessionGeneration: Long,
+                    ): TvBearerCredential? {
+                        providerCalls++
+                        return null
+                    }
+
+                    override suspend fun isCredentialCurrent(credential: TvBearerCredential) = true
+                }
+
+            val stream =
+                extractor(client).extractWithAuthenticatedTvDiscovery(
+                    videoId = "video",
+                    confirmedPremium = true,
+                    credentialProvider = provider,
+                    hints = ContentHints(wantVideo = true),
+                )
 
             assertNotNull(stream)
             assertEquals(0, providerCalls)
@@ -1280,12 +1466,16 @@ class InnerTubeExtractorTest {
         parser: YtConfigParser,
         fallback: com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy = DirectFallback,
         cipherService: ExtractionCipherService = DefaultExtractionCipherService(YouTubeCipherService(client)),
+        tvBearerProviderTimeoutMs: Long = 8_000,
+        now: () -> Instant = { Clock.System.now() },
     ): InnerTubeExtractor =
         InnerTubeExtractor(
             configParser = parser,
             clientDirector = PlayerClientDirector(innerTube, fallback, NoTokenProvider),
             cipherService = cipherService,
             innerTube = innerTube,
+            tvBearerProviderTimeoutMs = tvBearerProviderTimeoutMs,
+            now = now,
         )
 
     private fun jsonClient(body: String) =

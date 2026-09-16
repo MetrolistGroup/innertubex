@@ -96,8 +96,9 @@ The provider owns consent, acquisition, secure storage, refresh, and revocation.
 It should return a short-lived credential scoped to the existing `TVHTML5` or
 `TVHTML5_DOWNGRADED` manifest and current session generation. The library calls
 this path only when explicitly requested, isolates the bearer from cookies and
-media requests, and keeps the ordinary result unless the TV result is strictly
-higher quality. This is experimental: Premium does not guarantee a better
+media requests, and keeps the ordinary result unless the TV audio result is
+strictly higher quality. This is experimental and audio-only: video requests
+use ordinary extraction, and Premium does not guarantee a better
 response, and no OAuth or credential harvesting is provided.
 
 The catalog also exposes four explicit, unverified probes through the existing

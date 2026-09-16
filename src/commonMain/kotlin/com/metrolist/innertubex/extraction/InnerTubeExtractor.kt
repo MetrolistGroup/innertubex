@@ -38,6 +38,8 @@ class InnerTubeExtractor internal constructor(
     private val innerTube: InnerTube,
     private val tokenProvider: TokenProvider = UnavailableTokenProvider,
     private val logger: InnerTubeLogger = InnerTubeLogger.NONE,
+    private val tvBearerProviderTimeoutMs: Long = TV_BEARER_PROVIDER_TIMEOUT_MS,
+    private val now: () -> Instant = { Clock.System.now() },
 ) : StreamExtractor {
     constructor(
         configParser: YtConfigParser,
@@ -71,6 +73,7 @@ class InnerTubeExtractor internal constructor(
         private const val WEB_EMBEDDED_PLAYER_ID = "WEB_EMBEDDED_PLAYER"
         private const val WEB_KIDS_ID = "WEB_KIDS"
         private val PO_TOKEN_PREFETCH_TIMEOUT = 18.seconds
+        private const val TV_BEARER_PROVIDER_TIMEOUT_MS = 8_000L
 
         // Allow a cached-config pass and a fresh-config pass, plus native probes.
         private val MAX_PLAYER_REQUESTS_PER_EXTRACTION = PlaybackClientCatalog.automaticManifests.size * 4 + 2
@@ -89,7 +92,7 @@ class InnerTubeExtractor internal constructor(
     /**
      * Optionally compares a fresh, host-authorized TV player response with ordinary playback discovery.
      * The provider is called once per request; the host owns consent, secure storage, refresh, and revocation.
-     * This is experimental and does not promise that Premium exposes a higher-quality stream.
+     * This is experimental, audio-only, and does not promise that Premium exposes a higher-quality stream.
      */
     public suspend fun extractWithAuthenticatedTvDiscovery(
         videoId: String,
@@ -104,12 +107,14 @@ class InnerTubeExtractor internal constructor(
             !confirmedPremium ||
             audioQuality != AudioQuality.HIGH ||
             hints.playbackClientOverrideId != null ||
+            hints.wantVideo ||
             hints.isUploaded == true ||
             hints.isLive == true
         ) {
             return extract(videoId, hints, excludedClients, audioQuality, clientPlaybackNonce)
         }
         val baselineHints = hints.withPremium()
+        val baselineGeneration = innerTube.sessionSnapshot().generation
         var baseline: ExtractedStream? = null
         var baselineFailure: Exception? = null
         try {
@@ -119,24 +124,19 @@ class InnerTubeExtractor internal constructor(
         } catch (error: Exception) {
             baselineFailure = error
         }
+        ensureSessionGeneration(baselineGeneration)
 
-        val generation = innerTube.sessionSnapshot().generation
         val credential =
-            try {
-                credentialProvider.getCredential(videoId, generation)
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Exception) {
-                logger.w(
-                    TAG,
-                    "TV bearer credential unavailable",
-                    details = mapOf("exceptionType" to (error::class.simpleName ?: "unknown")),
-                )
-                null
-            }?.takeIf { it.isUsableFor(generation, TV_BEARER_MINIMUM_LIFETIME) }
+            withTvBearerProviderTimeout {
+                credentialProvider.getCredential(videoId, baselineGeneration)
+            }?.takeIf { it.isUsableFor(baselineGeneration, TV_BEARER_MINIMUM_LIFETIME, now()) }
+        ensureSessionGeneration(baselineGeneration)
         if (credential == null) return baselineOrThrow(baseline, baselineFailure)
-        if (innerTube.sessionSnapshot().generation != generation) return baselineOrThrow(baseline, baselineFailure)
-        if (!isCredentialCurrent(credentialProvider, credential)) return baselineOrThrow(baseline, baselineFailure)
+        if (!isCredentialCurrent(credentialProvider, credential)) {
+            ensureSessionGeneration(baselineGeneration)
+            return baselineOrThrow(baseline, baselineFailure)
+        }
+        ensureSessionGeneration(baselineGeneration)
 
         val candidateDiagnostics = ExtractionDiagnostics(maxPlayerRequests = 1)
         val candidate =
@@ -158,10 +158,17 @@ class InnerTubeExtractor internal constructor(
                 logger.w(TAG, "TV bearer discovery unavailable", details = mapOf("exceptionType" to (error::class.simpleName ?: "unknown")))
                 null
             }
-        if (candidate != null && isCredentialCurrent(credentialProvider, credential) &&
-            candidate.isStrictlyHigherQualityThan(baseline, hints.wantVideo)
-        ) {
-            return candidate
+        ensureSessionGeneration(baselineGeneration)
+        if (candidate != null) {
+            if (!isCredentialCurrent(credentialProvider, credential)) {
+                ensureSessionGeneration(baselineGeneration)
+                return baselineOrThrow(baseline, baselineFailure)
+            }
+            ensureSessionGeneration(baselineGeneration)
+            if (!credential.isUsableFor(baselineGeneration, TV_BEARER_MINIMUM_LIFETIME, now())) {
+                return baselineOrThrow(baseline, baselineFailure)
+            }
+            if (candidate.isStrictlyHigherQualityThan(baseline)) return candidate
         }
         return baselineOrThrow(baseline, baselineFailure)
     }
@@ -178,33 +185,28 @@ class InnerTubeExtractor internal constructor(
     private suspend fun isCredentialCurrent(
         provider: TvBearerCredentialProvider,
         credential: TvBearerCredential,
-    ): Boolean =
+    ): Boolean = withTvBearerProviderTimeout { provider.isCredentialCurrent(credential) } == true
+
+    private suspend fun <T> withTvBearerProviderTimeout(block: suspend () -> T): T? =
         try {
-            provider.isCredentialCurrent(credential)
+            withTimeoutOrNull(tvBearerProviderTimeoutMs) { block() }
         } catch (error: CancellationException) {
             throw error
-        } catch (error: Exception) {
-            logger.w(TAG, "TV bearer credential revoked", details = mapOf("exceptionType" to (error::class.simpleName ?: "unknown")))
-            false
+        } catch (_: Exception) {
+            null
         }
 
-    private fun ExtractedStream.isStrictlyHigherQualityThan(
-        baseline: ExtractedStream?,
-        wantVideo: Boolean,
-    ): Boolean {
+    private fun ensureSessionGeneration(generation: Long) {
+        if (innerTube.sessionSnapshot().generation != generation) {
+            throw CancellationException("InnerTube session changed during TV discovery")
+        }
+    }
+
+    private fun ExtractedStream.isStrictlyHigherQualityThan(baseline: ExtractedStream?): Boolean {
         baseline ?: return true
-        val audioComparable = (bitrate ?: 0) > 0 && (baseline.bitrate ?: 0) > 0
-        val audioComparison =
-            if (audioComparable) compareValues(bitrate, baseline.bitrate) else 0
-        if (!wantVideo) return audioComparable && audioComparison > 0
-        val videoComparison =
-            compareValuesBy(
-                videoHeight ?: 0,
-                baseline.videoHeight ?: 0,
-            ).let { heightComparison ->
-                if (heightComparison != 0) heightComparison else compareValues(videoBitrate ?: 0, baseline.videoBitrate ?: 0)
-            }
-        return audioComparison >= 0 && videoComparison >= 0 && (audioComparison > 0 || videoComparison > 0)
+        val audioBitrate = bitrate?.takeIf { it > 0 } ?: return false
+        val baselineBitrate = baseline.bitrate?.takeIf { it > 0 } ?: return false
+        return audioBitrate > baselineBitrate
     }
 
     override suspend fun prewarm() {

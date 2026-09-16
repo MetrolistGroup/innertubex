@@ -1,6 +1,7 @@
 package com.metrolist.innertubex.extraction
 
 import com.metrolist.innertubex.InnerTube
+import com.metrolist.innertubex.InnerTubeLogger
 import com.metrolist.innertubex.extraction.strategy.AuthenticationPolicy
 import com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy
 import com.metrolist.innertubex.extraction.strategy.ClientSelectionRequest
@@ -26,6 +27,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.time.Clock
+import kotlin.time.Duration.Companion.hours
 
 class PlayerClientDirectorTest {
     @Test
@@ -331,7 +333,7 @@ class PlayerClientDirectorTest {
         runBlocking {
             val response =
                 """
-                {"playabilityStatus":{"status":"OK"},"videoDetails":{},"streamingData":{"adaptiveFormats":[{"itag":251,"url":"https://r.googlevideo.com/videoplayback","mimeType":"audio/webm","bitrate":128000}]}}
+                {"playabilityStatus":{"status":"OK"},"streamingData":{"adaptiveFormats":[{"itag":251,"url":"https://r.googlevideo.com/videoplayback","mimeType":"audio/webm","bitrate":128000}]}}
                 """.trimIndent()
             val client = client { response }
             val director =
@@ -379,6 +381,128 @@ class PlayerClientDirectorTest {
 
             assertTrue(batch.playableResponses.isEmpty())
             client.close()
+        }
+
+    @Test
+    fun playerDiagnosticsClassifyObservedTransportFields() =
+        runBlocking {
+            val observedResponse =
+                """
+                {"playabilityStatus":{"status":"UNPLAYABLE"},"videoDetails":{"videoId":"video"},"streamingData":{"formats":[{"itag":22,"mimeType":"video/mp4","width":1280,"height":720}],"adaptiveFormats":[{"itag":140,"mimeType":"audio/mp4","bitrate":128000}],"hlsManifestUrl":"https://video.google.com/live.m3u8","dashManifestUrl":"https://video.google.com/video.mpd","serverAbrStreamingUrl":"https://r.googlevideo.com/videoplayback"},"playerConfig":{"mediaCommonConfig":{"mediaUstreamerRequestConfig":{"videoPlaybackUstreamerConfig":"AQID"}}}}
+                """.trimIndent()
+            val client = client { observedResponse }
+            val transportLogs = mutableListOf<Map<String, String>>()
+            val logger =
+                InnerTubeLogger { event ->
+                    if (event.message == "player response decoded") transportLogs += event.details
+                }
+            val manifest = checkNotNull(PlaybackClientCatalog.findManifest("IOS_MUSIC"))
+            val director = PlayerClientDirector(InnerTube(client, retryDelay = {}), fixed(manifest), NoTokenProvider, logger = logger)
+
+            val batch =
+                director.fetchPlayerResponses(
+                    "video",
+                    PlayerConfig("player.js", null, null, null),
+                    ContentHints(playbackClientOverrideId = "IOS_MUSIC"),
+                )
+
+            assertTrue(batch.playableResponses.isEmpty())
+            val details = transportLogs.single()
+            assertEquals("1", details["adaptiveFormatCount"])
+            assertEquals("0", details["adaptiveDirectCount"])
+            assertEquals("0", details["adaptiveCipherCount"])
+            assertEquals("1", details["progressiveFormatCount"])
+            assertEquals("0", details["progressiveDirectCount"])
+            assertEquals("0", details["progressiveCipherCount"])
+            assertEquals("true", details["hlsPresent"])
+            assertEquals("true", details["dashPresent"])
+            assertEquals("true", details["sabrPresent"])
+            assertEquals("true", details["sabrConfigPresent"])
+            assertEquals(
+                "response_shape:adaptive_direct=absent,adaptive_cipher=absent,progressive_direct=absent,progressive_cipher=absent,hls=present,dash=present,sabr=present",
+                batch.attempts.single().outcome,
+            )
+            client.close()
+        }
+
+    @Test
+    fun bearerDrmMarkerRejectsCandidateBeforeFormatSelection() =
+        runBlocking {
+            val drmResponses =
+                listOf(
+                    PLAYER_RESPONSE.replace(
+                        "\"adaptiveFormats\":[{\"itag\":251",
+                        "\"adaptiveFormats\":[{\"drmFamilies\":[\"WIDEVINE\"],\"itag\":251",
+                    ),
+                    PLAYER_RESPONSE.replace(
+                        "\"streamingData\":{\"adaptiveFormats\"",
+                        "\"streamingData\":{\"licenseInfos\":[{\"type\":\"WIDEVINE\"}],\"adaptiveFormats\"",
+                    ),
+                )
+            for (drmResponse in drmResponses) {
+                val client = client { drmResponse }
+                val innerTube = InnerTube(client, retryDelay = {})
+                val manifest = checkNotNull(PlaybackClientCatalog.findManifest("TVHTML5"))
+                val credential =
+                    TvBearerCredential(
+                        "synthetic-bearer",
+                        manifest.id,
+                        Clock.System.now().plus(1.hours),
+                        innerTube.sessionSnapshot().generation,
+                    )
+                val director = PlayerClientDirector(innerTube, fixed(manifest), NoTokenProvider)
+
+                val batch =
+                    director.fetchPlayerResponses(
+                        "video",
+                        PlayerConfig("player.js", null, null, null),
+                        ContentHints(),
+                        tvBearerCredential = credential,
+                    )
+
+                assertTrue(batch.playableResponses.isEmpty())
+                client.close()
+            }
+        }
+
+    @Test
+    fun bearerEmptyDrmMarkersRemainClearCandidates() =
+        runBlocking {
+            val clearResponses =
+                listOf(
+                    PLAYER_RESPONSE.replace(
+                        "\"streamingData\":{\"adaptiveFormats\"",
+                        "\"streamingData\":{\"licenseInfos\":null,\"drmFamilies\":[],\"adaptiveFormats\"",
+                    ),
+                    PLAYER_RESPONSE.replace(
+                        "\"itag\":251",
+                        "\"drmFamilies\":null,\"drmTrackType\":\"\",\"itag\":251",
+                    ),
+                )
+            for (clearResponse in clearResponses) {
+                val client = client { clearResponse }
+                val innerTube = InnerTube(client, retryDelay = {})
+                val manifest = checkNotNull(PlaybackClientCatalog.findManifest("TVHTML5"))
+                val credential =
+                    TvBearerCredential(
+                        "synthetic-bearer",
+                        manifest.id,
+                        Clock.System.now().plus(1.hours),
+                        innerTube.sessionSnapshot().generation,
+                    )
+                val director = PlayerClientDirector(innerTube, fixed(manifest), NoTokenProvider)
+
+                val batch =
+                    director.fetchPlayerResponses(
+                        "video",
+                        PlayerConfig("player.js", null, null, null),
+                        ContentHints(),
+                        tvBearerCredential = credential,
+                    )
+
+                assertEquals(1, batch.playableResponses.size)
+                client.close()
+            }
         }
 
     @Test
