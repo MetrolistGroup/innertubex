@@ -1,0 +1,10 @@
+type,iteration,phase,resolve_ms,first_media_ms,time_to_first_media_ms,cache_ms,client,profile,transport,itag,mime_type,codecs,bitrate,sample_rate,audio_channels,media_status,decoded_first_pcm_ms,decoded_30s_ms,seek_first_pcm_ms,n_transform,cipher_transform,used_po_token,auth_watch,attempts,hops,error
+normal,1,process-cold,5374,22,5397,1,WEB_REMIX,WEB_REMIX__po,DIRECT,251,audio/webm,opus,141473,48000,2,206,119,196,15,none-observed,transformed,true,true,2,1,
+normal,2,extractor-warm,758,4,762,0,WEB_REMIX,WEB_REMIX__po,DIRECT,251,audio/webm,opus,141473,48000,,206,,,,none-observed,transformed,true,true,2,1,
+normal,3,extractor-warm,812,4,817,0,WEB_REMIX,WEB_REMIX__po,DIRECT,251,audio/webm,opus,141473,48000,,206,,,,none-observed,transformed,true,true,2,1,
+explicit,1,extractor-warm,689,15,704,0,WEB_REMIX,WEB_REMIX__po,DIRECT,251,audio/webm,opus,151216,48000,2,206,12,78,14,none-observed,transformed,true,true,1,0,
+explicit,2,extractor-warm,671,13,684,0,WEB_REMIX,WEB_REMIX__po,DIRECT,251,audio/webm,opus,151216,48000,,206,,,,none-observed,transformed,true,true,1,0,
+explicit,3,extractor-warm,750,13,763,0,WEB_REMIX,WEB_REMIX__po,DIRECT,251,audio/webm,opus,151216,48000,,206,,,,none-observed,transformed,true,true,1,0,
+kids,1,extractor-warm,523,13,536,0,WEB_KIDS,WEB_KIDS__nopo,DIRECT,251,audio/webm,opus,148600,48000,2,206,16,79,12,none-observed,transformed,false,true,1,0,
+kids,2,extractor-warm,539,12,552,0,WEB_KIDS,WEB_KIDS__nopo,DIRECT,251,audio/webm,opus,148600,48000,,206,,,,none-observed,transformed,false,true,1,0,
+kids,3,extractor-warm,496,12,509,0,WEB_KIDS,WEB_KIDS__nopo,DIRECT,251,audio/webm,opus,148600,48000,,206,,,,none-observed,transformed,false,true,1,0,

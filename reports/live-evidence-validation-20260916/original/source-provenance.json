@@ -1,0 +1,54 @@
+{
+  "measured_at_utc": "2026-09-16T10:21:41Z",
+  "baseline_revision": "13f8e4d36d249024cfe356c9cd67cd7fd8ee6493",
+  "candidate_revision": "cbfd76d98d0fd0f6017c84f8b3400ad1afe572ed",
+  "candidate_revision_note": "Reachable source snapshot whose src/ and api/ trees match the measured candidate content.",
+  "authentication": {
+    "cookie_file": "<cookie-file-path>",
+    "accepted_boolean_baseline": true,
+    "accepted_boolean_candidate_control": true,
+    "accepted_boolean_candidate_premium_hint": true,
+    "account_endpoint_status": 200,
+    "premium_entitlement": "not_observable_in_existing_account_capability_api"
+  },
+  "settings": {
+    "audio_quality": "HIGH",
+    "iterations_per_case": 3,
+    "cases": ["normal", "explicit", "kids"],
+    "forced_sabr_profile": "WEB_REMIX_SABR",
+    "transport_preference": "automatic; plus forced WEB_REMIX_SABR probe",
+    "decode_seconds": 30,
+    "seek_target_ms": 15000,
+    "stream_delay_seconds": 10,
+    "group_delay_seconds": 20,
+    "gradle_workers": 2,
+    "gradle_parallel": false,
+    "token_runtime": "DesktopTokenProvider",
+    "premium_hint_arm": "candidate_premium_hint_only; caller_confirmed_hypothesis"
+  },
+  "forced_sabr_reports": {
+    "baseline": "playback-ab-baseline_forced_sabr.json",
+    "candidate_premium_hint": "playback-ab-candidate_forced_sabr_premium.json"
+  },
+  "primary_reports": {
+    "baseline": "playback-ab-baseline_primary_balanced.json",
+    "candidate_control": "playback-ab-candidate_primary_control.json",
+    "candidate_premium_hint": "playback-ab-candidate_primary_balanced.json"
+  },
+  "prewarm_reports": {
+    "baseline": "playback-ab-baseline_prewarm.json",
+    "candidate_control": "playback-ab-candidate_prewarm_control.json",
+    "candidate_premium_hint": "playback-ab-candidate_prewarm.json"
+  },
+  "commands": {
+    "primary_template": "flock -x /tmp/metrolist-gradle.lock timeout 1800s env RUN_LIVE_INNERTUBE_CLIENT_BENCHMARKS=true INNERTUBE_TOKEN_FILE=<cookie-file-path> INNERTUBE_BENCHMARK_LABEL=<label> INNERTUBE_BENCHMARK_ITERATIONS=3 INNERTUBE_BENCHMARK_DECODE=true INNERTUBE_BENCHMARK_PREMIUM_HINT=<true-or-false> ./gradlew :shared:desktopTest --tests com.metrolist.shared.youtube.innertube.LivePremiumAbBenchmarkTest.runSanitizedPremiumAbBenchmark -PuseLocalInnerTubeX --no-daemon --no-configuration-cache --max-workers=2 --no-parallel -DinnerTubeTokenFile=<cookie-file-path> -Dorg.gradle.jvmargs='-Xmx2048m -XX:MaxMetaspaceSize=512m' -Pkotlin.compiler.execution.strategy=in-process -DliveInnerTubeBenchmarkReportDir=<report-dir> --console=plain",
+    "primary_order": "candidate_premium_hint_then_baseline; candidate_no_hint_control_separate",
+    "forced_sabr_variant": "same_template with INNERTUBE_BENCHMARK_PROFILE=WEB_REMIX_SABR, INNERTUBE_CONTENT_TYPE_FILTER=normal, and candidate premium hint true",
+    "prewarm_variant": "same_template with INNERTUBE_BENCHMARK_PREWARM=true and INNERTUBE_CONTENT_TYPE_FILTER=normal"
+  },
+  "harness": {
+    "source": "temporary detached Metrolist-KMP worktrees; no Metrolist checkout changes",
+    "test": "LivePremiumAbBenchmarkTest",
+    "report_policy": "row-level output excludes media identifiers, titles, URLs, headers, cookies, account data, and raw responses"
+  }
+}

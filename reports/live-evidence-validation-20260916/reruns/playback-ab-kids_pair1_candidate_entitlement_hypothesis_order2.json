@@ -1,0 +1,27 @@
+{
+  "implementation": "kids_pair1_candidate_entitlement_hypothesis_order2",
+  "measured_at_utc": "2026-09-16T11:27:31.252706727Z",
+  "app_revision": "8835a0c374cf1c6efbb0e1f1150434db4672d5f3",
+  "library_revision": "68ba2a9627c7c85ec04968ef1d1649c2547a64f2",
+  "arm": "candidate_entitlement_hypothesis",
+  "pair_index": "1",
+  "order_position": "2",
+  "audio_quality": "HIGH",
+  "iterations": 3,
+  "credentials_present": true,
+  "authentication_endpoint_status": 200,
+  "authenticated_account_menu_observed": true,
+  "authentication_verified": true,
+  "premium_entitlement": "not_observed",
+  "premium_hint_role": "explicit_hypothesis_only",
+  "premium_hint_requested": true,
+  "premium_hint_applied": true,
+  "forced_profile": null,
+  "token_prewarm_ms": null,
+  "extractor_prewarm_ms": null,
+  "rows": [
+    {"type":"kids","iteration":1,"process_phase":"process-first","profile_phase":"profile-first","resolve_ms":4721,"first_media_ms":26,"time_to_first_media_ms":4747,"cache_ms":1,"client":"WEB_KIDS","profile":"WEB_KIDS__nopo","transport":"DIRECT","itag":251,"mime_type":"audio/webm","codecs":"opus","bitrate":148600,"sample_rate":48000,"audio_channels":null,"media_status":206,"decoded_first_pcm_ms":null,"decoded_30s_ms":null,"seek_first_pcm_ms":null,"decoded_position_ms":null,"seek_position_ms":null,"n_transform":"none-observed","cipher_transform":"transformed","used_po_token":false,"auth_watch":true,"attempts":1,"hops":0,"error":null},
+    {"type":"kids","iteration":2,"process_phase":"process-warm","profile_phase":"profile-repeat","resolve_ms":528,"first_media_ms":5,"time_to_first_media_ms":534,"cache_ms":0,"client":"WEB_KIDS","profile":"WEB_KIDS__nopo","transport":"DIRECT","itag":251,"mime_type":"audio/webm","codecs":"opus","bitrate":148600,"sample_rate":48000,"audio_channels":null,"media_status":206,"decoded_first_pcm_ms":null,"decoded_30s_ms":null,"seek_first_pcm_ms":null,"decoded_position_ms":null,"seek_position_ms":null,"n_transform":"none-observed","cipher_transform":"transformed","used_po_token":false,"auth_watch":true,"attempts":1,"hops":0,"error":null},
+    {"type":"kids","iteration":3,"process_phase":"process-warm","profile_phase":"profile-repeat","resolve_ms":497,"first_media_ms":15,"time_to_first_media_ms":513,"cache_ms":0,"client":"WEB_KIDS","profile":"WEB_KIDS__nopo","transport":"DIRECT","itag":251,"mime_type":"audio/webm","codecs":"opus","bitrate":148600,"sample_rate":48000,"audio_channels":null,"media_status":206,"decoded_first_pcm_ms":null,"decoded_30s_ms":null,"seek_first_pcm_ms":null,"decoded_position_ms":null,"seek_position_ms":null,"n_transform":"none-observed","cipher_transform":"transformed","used_po_token":false,"auth_watch":true,"attempts":1,"hops":0,"error":null}
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "implementation": "sabr_pair2_candidate_entitlement_hypothesis_order1",
+  "measured_at_utc": "2026-09-16T11:32:25.085879891Z",
+  "app_revision": "8835a0c374cf1c6efbb0e1f1150434db4672d5f3",
+  "library_revision": "68ba2a9627c7c85ec04968ef1d1649c2547a64f2",
+  "arm": "candidate_entitlement_hypothesis",
+  "pair_index": "2",
+  "order_position": "1",
+  "audio_quality": "HIGH",
+  "iterations": 1,
+  "credentials_present": true,
+  "authentication_endpoint_status": 200,
+  "authenticated_account_menu_observed": true,
+  "authentication_verified": true,
+  "premium_entitlement": "not_observed",
+  "premium_hint_role": "explicit_hypothesis_only",
+  "premium_hint_requested": true,
+  "premium_hint_applied": true,
+  "forced_profile": "WEB_REMIX_SABR",
+  "token_prewarm_ms": null,
+  "extractor_prewarm_ms": null,
+  "rows": [
+    {"type":"normal","iteration":1,"process_phase":"process-first","profile_phase":"profile-first","resolve_ms":4748,"first_media_ms":49,"time_to_first_media_ms":4798,"cache_ms":1,"client":"WEB_REMIX","profile":"WEB_REMIX_SABR__nopo","transport":"SABR","itag":251,"mime_type":"audio/webm","codecs":"opus","bitrate":141473,"sample_rate":48000,"audio_channels":2,"media_status":200,"decoded_first_pcm_ms":96,"decoded_30s_ms":null,"seek_first_pcm_ms":8,"decoded_position_ms":19974,"seek_position_ms":14994,"n_transform":"transformed","cipher_transform":"none-observed","used_po_token":false,"auth_watch":false,"attempts":1,"hops":0,"error":"decode-30s:eof:attestation-required"}
+  ]
+}

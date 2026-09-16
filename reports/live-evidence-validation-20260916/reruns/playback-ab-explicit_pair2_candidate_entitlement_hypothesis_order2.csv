@@ -1,0 +1,4 @@
+type,iteration,process_phase,profile_phase,resolve_ms,first_media_ms,time_to_first_media_ms,cache_ms,client,profile,transport,itag,mime_type,codecs,bitrate,sample_rate,audio_channels,media_status,decoded_first_pcm_ms,decoded_30s_ms,seek_first_pcm_ms,decoded_position_ms,seek_position_ms,n_transform,cipher_transform,used_po_token,auth_watch,attempts,hops,error
+explicit,1,process-first,profile-first,4526,21,4547,1,WEB_REMIX,WEB_REMIX__nopo,DIRECT,251,audio/webm,opus,151216,48000,,206,,,,,,none-observed,transformed,false,true,1,0,
+explicit,2,process-warm,profile-repeat,673,15,688,0,WEB_REMIX,WEB_REMIX__nopo,DIRECT,251,audio/webm,opus,151216,48000,,206,,,,,,none-observed,transformed,false,true,1,0,
+explicit,3,process-warm,profile-repeat,687,4,691,0,WEB_REMIX,WEB_REMIX__nopo,DIRECT,251,audio/webm,opus,151216,48000,,206,,,,,,none-observed,transformed,false,true,1,0,

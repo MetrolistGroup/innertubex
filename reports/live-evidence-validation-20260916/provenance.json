@@ -1,0 +1,291 @@
+{
+  "harness": {
+    "account_menu_body_limit_bytes": 2097152,
+    "artifact": "tools/live-evidence/LivePremiumAbBenchmarkTest.kt",
+    "decode_seconds": 30,
+    "decode_timeout_ms": 60000,
+    "first_media_timeout_ms": 30000,
+    "opt_in": true,
+    "playback_clock_lead_ms": 250,
+    "post_run_changes": "ktlint-only formatting and equivalent constant concatenation",
+    "production_changes": false,
+    "resolve_timeout_ms": 30000,
+    "sample_timeout_ms": 120000,
+    "seek_target_ms": 15000,
+    "sha256": "d790792c164c360c466180ca96a6c3db2dbf8e09867084a2f78fbbcf7b2e35fd"
+  },
+  "measured_at_utc": {
+    "first": "2026-09-16T11:16:52.102037462Z",
+    "last": "2026-09-16T11:33:54.385030709Z"
+  },
+  "method": {
+    "audio_quality": "HIGH",
+    "candidate_arm": "explicit entitlement hypothesis",
+    "direct_cases": [
+      "normal",
+      "explicit",
+      "kids"
+    ],
+    "forced_sabr_pairs": 3,
+    "forced_sabr_profile": "WEB_REMIX_SABR",
+    "group_delay_seconds_minimum": 20,
+    "order": "alternating baseline and candidate by case and pair",
+    "premium_entitlement": "not observed",
+    "profile_first_rows_per_arm_case": 3,
+    "profile_iterations_per_process": 3,
+    "profile_pairs_per_case": 3,
+    "profile_repeat_rows_per_arm_case": 6,
+    "stream_delay_seconds_minimum": 10
+  },
+  "original_observations": {
+    "authentication_boolean_is_not_reused": true,
+    "row_commit": "fef23f327344186f262c9da0f7b9145895da95dd",
+    "sanitized_provenance_commit": "3d0fe40ca1e30f758f60e847d13602d2cabfe756"
+  },
+  "reproduction": {
+    "candidate_fetch": "git fetch origin pull/11/head:test/pr-11-original",
+    "cookie_file": "<cookie-file-path>",
+    "gradle_flags": "--no-daemon --no-configuration-cache --max-workers=2 --no-parallel -Dorg.gradle.jvmargs='-Xmx2048m -XX:MaxMetaspaceSize=512m' -Pkotlin.compiler.execution.strategy=in-process",
+    "gradle_lock": "/tmp/metrolist-gradle.lock",
+    "runner": "INNERTUBE_TOKEN_FILE=<cookie-file-path> tools/live-evidence/run-targeted-reruns.sh <baseline-app> <baseline-library> <candidate-app> <candidate-library> <report-dir>"
+  },
+  "revisions": {
+    "baseline": "13f8e4d36d249024cfe356c9cd67cd7fd8ee6493",
+    "measured_candidate_snapshot": "cbfd76d98d0fd0f6017c84f8b3400ad1afe572ed",
+    "metrolist_kmp": "8835a0c374cf1c6efbb0e1f1150434db4672d5f3",
+    "original_pr_11_candidate": "68ba2a9627c7c85ec04968ef1d1649c2547a64f2",
+    "unmeasured_later_pr_12_head": "59da579d6d8452f80ad4f8dbf57343b8b260a0c2"
+  },
+  "run_order": [
+    {
+      "arm": "baseline",
+      "implementation": "normal_pair1_baseline_order1",
+      "library_revision": "13f8e4d36d249024cfe356c9cd67cd7fd8ee6493",
+      "measured_at_utc": "2026-09-16T11:16:52.102037462Z",
+      "order_position": "1",
+      "pair_index": "1"
+    },
+    {
+      "arm": "candidate_entitlement_hypothesis",
+      "implementation": "normal_pair1_candidate_entitlement_hypothesis_order2",
+      "library_revision": "68ba2a9627c7c85ec04968ef1d1649c2547a64f2",
+      "measured_at_utc": "2026-09-16T11:17:44.650390280Z",
+      "order_position": "2",
+      "pair_index": "1"
+    },
+    {
+      "arm": "candidate_entitlement_hypothesis",
+      "implementation": "normal_pair2_candidate_entitlement_hypothesis_order1",
+      "library_revision": "68ba2a9627c7c85ec04968ef1d1649c2547a64f2",
+      "measured_at_utc": "2026-09-16T11:18:31.415694679Z",
+      "order_position": "1",
+      "pair_index": "2"
+    },
+    {
+      "arm": "baseline",
+      "implementation": "normal_pair2_baseline_order2",
+      "library_revision": "13f8e4d36d249024cfe356c9cd67cd7fd8ee6493",
+      "measured_at_utc": "2026-09-16T11:19:12.160400319Z",
+      "order_position": "2",
+      "pair_index": "2"
+    },
+    {
+      "arm": "baseline",
+      "implementation": "normal_pair3_baseline_order1",
+      "library_revision": "13f8e4d36d249024cfe356c9cd67cd7fd8ee6493",
+      "measured_at_utc": "2026-09-16T11:19:53.376000104Z",
+      "order_position": "1",
+      "pair_index": "3"
+    },
+    {
+      "arm": "candidate_entitlement_hypothesis",
+      "implementation": "normal_pair3_candidate_entitlement_hypothesis_order2",
+      "library_revision": "68ba2a9627c7c85ec04968ef1d1649c2547a64f2",
+      "measured_at_utc": "2026-09-16T11:20:40.983025480Z",
+      "order_position": "2",
+      "pair_index": "3"
+    },
+    {
+      "arm": "candidate_entitlement_hypothesis",
+      "implementation": "explicit_pair1_candidate_entitlement_hypothesis_order1",
+      "library_revision": "68ba2a9627c7c85ec04968ef1d1649c2547a64f2",
+      "measured_at_utc": "2026-09-16T11:21:47.559118079Z",
+      "order_position": "1",
+      "pair_index": "1"
+    },
+    {
+      "arm": "baseline",
+      "implementation": "explicit_pair1_baseline_order2",
+      "library_revision": "13f8e4d36d249024cfe356c9cd67cd7fd8ee6493",
+      "measured_at_utc": "2026-09-16T11:22:34.243327603Z",
+      "order_position": "2",
+      "pair_index": "1"
+    },
+    {
+      "arm": "baseline",
+      "implementation": "explicit_pair2_baseline_order1",
+      "library_revision": "13f8e4d36d249024cfe356c9cd67cd7fd8ee6493",
+      "measured_at_utc": "2026-09-16T11:23:20.399092839Z",
+      "order_position": "1",
+      "pair_index": "2"
+    },
+    {
+      "arm": "candidate_entitlement_hypothesis",
+      "implementation": "explicit_pair2_candidate_entitlement_hypothesis_order2",
+      "library_revision": "68ba2a9627c7c85ec04968ef1d1649c2547a64f2",
+      "measured_at_utc": "2026-09-16T11:24:06.592987052Z",
+      "order_position": "2",
+      "pair_index": "2"
+    },
+    {
+      "arm": "candidate_entitlement_hypothesis",
+      "implementation": "explicit_pair3_candidate_entitlement_hypothesis_order1",
+      "library_revision": "68ba2a9627c7c85ec04968ef1d1649c2547a64f2",
+      "measured_at_utc": "2026-09-16T11:24:52.973153215Z",
+      "order_position": "1",
+      "pair_index": "3"
+    },
+    {
+      "arm": "baseline",
+      "implementation": "explicit_pair3_baseline_order2",
+      "library_revision": "13f8e4d36d249024cfe356c9cd67cd7fd8ee6493",
+      "measured_at_utc": "2026-09-16T11:25:39.069319508Z",
+      "order_position": "2",
+      "pair_index": "3"
+    },
+    {
+      "arm": "baseline",
+      "implementation": "kids_pair1_baseline_order1",
+      "library_revision": "13f8e4d36d249024cfe356c9cd67cd7fd8ee6493",
+      "measured_at_utc": "2026-09-16T11:26:45.005231438Z",
+      "order_position": "1",
+      "pair_index": "1"
+    },
+    {
+      "arm": "candidate_entitlement_hypothesis",
+      "implementation": "kids_pair1_candidate_entitlement_hypothesis_order2",
+      "library_revision": "68ba2a9627c7c85ec04968ef1d1649c2547a64f2",
+      "measured_at_utc": "2026-09-16T11:27:31.252706727Z",
+      "order_position": "2",
+      "pair_index": "1"
+    },
+    {
+      "arm": "candidate_entitlement_hypothesis",
+      "implementation": "kids_pair2_candidate_entitlement_hypothesis_order1",
+      "library_revision": "68ba2a9627c7c85ec04968ef1d1649c2547a64f2",
+      "measured_at_utc": "2026-09-16T11:28:17.289428446Z",
+      "order_position": "1",
+      "pair_index": "2"
+    },
+    {
+      "arm": "baseline",
+      "implementation": "kids_pair2_baseline_order2",
+      "library_revision": "13f8e4d36d249024cfe356c9cd67cd7fd8ee6493",
+      "measured_at_utc": "2026-09-16T11:29:03.209058684Z",
+      "order_position": "2",
+      "pair_index": "2"
+    },
+    {
+      "arm": "baseline",
+      "implementation": "kids_pair3_baseline_order1",
+      "library_revision": "13f8e4d36d249024cfe356c9cd67cd7fd8ee6493",
+      "measured_at_utc": "2026-09-16T11:29:49.120148936Z",
+      "order_position": "1",
+      "pair_index": "3"
+    },
+    {
+      "arm": "candidate_entitlement_hypothesis",
+      "implementation": "kids_pair3_candidate_entitlement_hypothesis_order2",
+      "library_revision": "68ba2a9627c7c85ec04968ef1d1649c2547a64f2",
+      "measured_at_utc": "2026-09-16T11:30:35.095453021Z",
+      "order_position": "2",
+      "pair_index": "3"
+    },
+    {
+      "arm": "baseline",
+      "implementation": "sabr_pair1_baseline_order1",
+      "library_revision": "13f8e4d36d249024cfe356c9cd67cd7fd8ee6493",
+      "measured_at_utc": "2026-09-16T11:31:25.483326136Z",
+      "order_position": "1",
+      "pair_index": "1"
+    },
+    {
+      "arm": "candidate_entitlement_hypothesis",
+      "implementation": "sabr_pair1_candidate_entitlement_hypothesis_order2",
+      "library_revision": "68ba2a9627c7c85ec04968ef1d1649c2547a64f2",
+      "measured_at_utc": "2026-09-16T11:31:55.184422093Z",
+      "order_position": "2",
+      "pair_index": "1"
+    },
+    {
+      "arm": "candidate_entitlement_hypothesis",
+      "implementation": "sabr_pair2_candidate_entitlement_hypothesis_order1",
+      "library_revision": "68ba2a9627c7c85ec04968ef1d1649c2547a64f2",
+      "measured_at_utc": "2026-09-16T11:32:25.085879891Z",
+      "order_position": "1",
+      "pair_index": "2"
+    },
+    {
+      "arm": "baseline",
+      "implementation": "sabr_pair2_baseline_order2",
+      "library_revision": "13f8e4d36d249024cfe356c9cd67cd7fd8ee6493",
+      "measured_at_utc": "2026-09-16T11:32:54.905296878Z",
+      "order_position": "2",
+      "pair_index": "2"
+    },
+    {
+      "arm": "baseline",
+      "implementation": "sabr_pair3_baseline_order1",
+      "library_revision": "13f8e4d36d249024cfe356c9cd67cd7fd8ee6493",
+      "measured_at_utc": "2026-09-16T11:33:24.588836027Z",
+      "order_position": "1",
+      "pair_index": "3"
+    },
+    {
+      "arm": "candidate_entitlement_hypothesis",
+      "implementation": "sabr_pair3_candidate_entitlement_hypothesis_order2",
+      "library_revision": "68ba2a9627c7c85ec04968ef1d1649c2547a64f2",
+      "measured_at_utc": "2026-09-16T11:33:54.385030709Z",
+      "order_position": "2",
+      "pair_index": "3"
+    }
+  ],
+  "sanitization": {
+    "excluded": [
+      "cookie",
+      "account fields",
+      "media identifiers",
+      "titles",
+      "request headers",
+      "PO tokens",
+      "signed URLs",
+      "raw responses"
+    ],
+    "private_logs_committed": false,
+    "retained": [
+      "boolean authentication evidence",
+      "HTTP status",
+      "aggregate timing",
+      "format identity",
+      "failure category"
+    ]
+  },
+  "tree_identity": {
+    "baseline": {
+      "api": "b04a3d599560cdbf7f65f1645c7a3854a2814a70",
+      "src": "db670237f791fcb132ab2c178e29056f802e263c"
+    },
+    "later_pr_12_head": {
+      "api": "e9a5c5097aaca69bfbf7151603cbc3cb32449871",
+      "src": "2312ea1fadb49deba78f0427764fa3a3972b3c27"
+    },
+    "measured_candidate_snapshot": {
+      "api": "e9a5c5097aaca69bfbf7151603cbc3cb32449871",
+      "src": "c31020cbf5a567b65bb98fe86d9b51d90d748066"
+    },
+    "original_pr_11_candidate": {
+      "api": "e9a5c5097aaca69bfbf7151603cbc3cb32449871",
+      "src": "c31020cbf5a567b65bb98fe86d9b51d90d748066"
+    }
+  }
+}
