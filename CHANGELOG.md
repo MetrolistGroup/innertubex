@@ -6,6 +6,36 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-18
+
+### Added
+
+- Add optional persistent caching for preprocessed EJS player scripts.
+- Add explicit authenticated Premium TV discovery with scoped, short-lived
+  bearer credentials and strict request isolation.
+- Add four explicit probe-only client identities without promoting them into
+  automatic fallback.
+
+### Changed
+
+- Preserve VISIONOS-first ordinary playback while reducing unnecessary player
+  configuration and token work for eligible native audio.
+- Process selected audio and video cipher challenges together and reduce
+  QuickJS and SABR allocation overhead.
+- Improve kids-client ordering and native video format selection while keeping
+  validated progressive video as a bounded fallback.
+- Start SABR seeks from the segment containing the requested time while
+  preserving initialization and sequence ordering.
+
+### Fixed
+
+- Refresh failed cached player configurations without losing concurrent token
+  minting or the extraction request budget.
+- Validate requested and returned video identity before accepting playback
+  responses.
+- Use anonymous-first watch configuration for ordinary signed-in playback.
+- Recognize quoted player timestamps and reject incomplete SABR sequence gaps.
+
 ## [0.6.0] - 2026-09-07
 
 ### Added
