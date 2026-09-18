@@ -6,6 +6,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
+import kotlin.time.Clock
+import kotlin.time.Duration.Companion.hours
 
 class ExtractionFoundationTest {
     @Test
@@ -49,6 +52,21 @@ class ExtractionFoundationTest {
     }
 
     @Test
+    fun contentHintsCopyRetainsEntitlementAndCapabilities() {
+        val copied =
+            ContentHints()
+                .withPremium()
+                .withStreamCapabilities(allowHls = false, allowSabr = false, allowBoundedRange = false)
+                .copy(wantVideo = true)
+
+        assertTrue(copied.premium)
+        assertTrue(copied.wantVideo)
+        assertFalse(copied.allowHls)
+        assertFalse(copied.allowSabr)
+        assertFalse(copied.allowBoundedRange)
+    }
+
+    @Test
     fun invalidAudioSelectionReturnsNull() {
         assertNull(selectBestAudioFormat(emptyList()))
         val format = Format(itag = 1, url = "https://example.test", mimeType = "audio/mp4", bitrate = 1)
@@ -60,10 +78,12 @@ class ExtractionFoundationTest {
         val config = PlayerConfig("https://www.youtube.com/s/player/hash/base.js", 12345, "visitor-secret", "1.0")
         val token = PoTokenResult("player-secret", "stream-secret", "visitor-secret")
         val tracking = PlaybackTrackingData("nonce-secret", "https://stats.test/playback", "https://stats.test/watch", null, null, 1)
+        val bearer = TvBearerCredential("bearer-secret", "TVHTML5", Clock.System.now().plus(1.hours), 0, "visitor-secret")
 
         assertFalse(config.toString().contains("visitor-secret"))
         assertFalse(token.toString().contains("player-secret"))
         assertFalse(token.toString().contains("stream-secret"))
+        assertFalse(bearer.toString().contains("bearer-secret"))
         assertFalse(tracking.toString().contains("stats.test"))
         assertFalse(tracking.toString().contains("nonce-secret"))
     }

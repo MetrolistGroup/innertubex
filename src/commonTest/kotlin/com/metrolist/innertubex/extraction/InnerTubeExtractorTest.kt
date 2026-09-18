@@ -5,6 +5,7 @@ import com.metrolist.innertubex.cipher.YouTubeCipherService
 import com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy
 import com.metrolist.innertubex.extraction.strategy.ClientSelectionRequest
 import com.metrolist.innertubex.extraction.strategy.ClientSelectionResult
+import com.metrolist.innertubex.extraction.strategy.ContentAwareFallbackStrategy
 import com.metrolist.innertubex.extraction.strategy.PlaybackClientCatalog
 import com.metrolist.innertubex.extraction.strategy.PoTokenProviderKind
 import com.metrolist.innertubex.extraction.strategy.SelectedClient
@@ -14,6 +15,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
@@ -28,9 +30,295 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Clock
+import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Instant
 
 class InnerTubeExtractorTest {
+    @Test
+    fun authenticatedTvDiscoveryIsOptionalAndBearerIsIsolated() =
+        runBlocking {
+            var bearerRequests = 0
+            var bearerVisitor: String? = null
+            val bearerResponse =
+                DIRECT_RESPONSE
+                    .replace(
+                        "\"playerConfig\":",
+                        "\"playbackTracking\":{\"videostatsPlaybackUrl\":{\"baseUrl\":\"https://s.youtube.com/api/stats/playback?synthetic=1\"}},\"playerConfig\":",
+                    ).replace("128000", "256000")
+            val client =
+                HttpClient(
+                    MockEngine { request ->
+                        val authorization = request.headers[HttpHeaders.Authorization]
+                        if (authorization != null) {
+                            bearerRequests++
+                            bearerVisitor = request.headers["X-Goog-Visitor-Id"]
+                            assertEquals("Bearer synthetic-bearer", authorization)
+                            assertNull(request.headers[HttpHeaders.Cookie])
+                            respond(bearerResponse, HttpStatusCode.OK, headersOf("Content-Type", "application/json"))
+                        } else {
+                            respond(DIRECT_RESPONSE, HttpStatusCode.OK, headersOf("Content-Type", "application/json"))
+                        }
+                    },
+                )
+            val innerTube =
+                InnerTube(client, retryDelay = {}).also {
+                    it.cookie = "SAPISID=synthetic-cookie"
+                    it.visitorData = "session-visitor"
+                }
+            val extractor = makeExtractor(client, innerTube, CountingParser(), DirectFallback, AudioOnlyCipherService)
+            val generation = innerTube.sessionSnapshot().generation
+            var currentChecks = 0
+            val provider =
+                object : TvBearerCredentialProvider {
+                    override suspend fun getCredential(
+                        videoId: String,
+                        sessionGeneration: Long,
+                    ) = TvBearerCredential(
+                        value = "synthetic-bearer",
+                        profileId = "TVHTML5",
+                        expiresAt = Clock.System.now().plus(1.hours),
+                        sessionGeneration = sessionGeneration,
+                        visitorData = "bearer-visitor",
+                    )
+
+                    override suspend fun isCredentialCurrent(credential: TvBearerCredential): Boolean {
+                        currentChecks++
+                        return true
+                    }
+                }
+
+            val stream =
+                extractor.extractWithAuthenticatedTvDiscovery(
+                    videoId = "video",
+                    confirmedPremium = true,
+                    credentialProvider = provider,
+                    hints = ContentHints(isExplicit = true),
+                )
+
+            assertEquals(generation, innerTube.sessionSnapshot().generation)
+            assertNotNull(stream)
+            assertEquals(256000, stream.bitrate)
+            assertEquals(1, bearerRequests)
+            assertEquals(2, currentChecks)
+            assertEquals("bearer-visitor", bearerVisitor)
+            assertNull(stream.headers[HttpHeaders.Cookie])
+            assertNull(stream.playbackTracking)
+            client.close()
+        }
+
+    @Test
+    fun unauthenticatedTvDiscoveryDoesNotCallCredentialProvider() =
+        runBlocking {
+            val client = jsonClient(DIRECT_RESPONSE)
+            var providerCalls = 0
+            val provider =
+                object : TvBearerCredentialProvider {
+                    override suspend fun getCredential(
+                        videoId: String,
+                        sessionGeneration: Long,
+                    ): TvBearerCredential? {
+                        providerCalls++
+                        return null
+                    }
+
+                    override suspend fun isCredentialCurrent(credential: TvBearerCredential) = true
+                }
+
+            val stream = extractor(client).extractWithAuthenticatedTvDiscovery("video", false, provider)
+
+            assertNotNull(stream)
+            assertEquals(0, providerCalls)
+            client.close()
+        }
+
+    @Test
+    fun tvBearerProviderTimeoutFallsBackToBaseline() =
+        runBlocking {
+            val client = jsonClient(DIRECT_RESPONSE)
+            val innerTube = InnerTube(client, retryDelay = {})
+            val extractor =
+                makeExtractor(
+                    client,
+                    innerTube,
+                    CountingParser(),
+                    DirectFallback,
+                    AudioOnlyCipherService,
+                    tvBearerProviderTimeoutMs = 10,
+                )
+            var providerCalls = 0
+            val provider =
+                object : TvBearerCredentialProvider {
+                    override suspend fun getCredential(
+                        videoId: String,
+                        sessionGeneration: Long,
+                    ): TvBearerCredential? {
+                        providerCalls++
+                        delay(100)
+                        return null
+                    }
+
+                    override suspend fun isCredentialCurrent(credential: TvBearerCredential) = true
+                }
+
+            val stream =
+                extractor.extractWithAuthenticatedTvDiscovery(
+                    "video",
+                    confirmedPremium = true,
+                    credentialProvider = provider,
+                    hints = ContentHints(isExplicit = true),
+                )
+
+            assertNotNull(stream)
+            assertEquals(1, providerCalls)
+            client.close()
+        }
+
+    @Test
+    fun sessionChangeDuringBaselineNeverReturnsOldStream() =
+        runBlocking {
+            val client = jsonClient(HIGH_QUALITY_CIPHER_RESPONSE)
+            val innerTube = InnerTube(client, retryDelay = {})
+            var providerCalls = 0
+            val cipher =
+                object : ExtractionCipherService {
+                    override suspend fun initialize() {}
+
+                    override suspend fun preloadPlayerCode(playerUrl: String) {}
+
+                    override suspend fun prewarmEjs() {}
+
+                    override suspend fun processFormats(
+                        playerUrl: String,
+                        formats: List<PlayerResponse.StreamingData.Format>,
+                    ): List<PlayerResponse.StreamingData.Format> {
+                        innerTube.visitorData = "changed-session"
+                        return formats.map { it.copy(url = "https://r.googlevideo.com/videoplayback") }
+                    }
+                }
+            val provider =
+                object : TvBearerCredentialProvider {
+                    override suspend fun getCredential(
+                        videoId: String,
+                        sessionGeneration: Long,
+                    ): TvBearerCredential? {
+                        providerCalls++
+                        return null
+                    }
+
+                    override suspend fun isCredentialCurrent(credential: TvBearerCredential) = true
+                }
+            val extractor = makeExtractor(client, innerTube, CountingParser(), DirectFallback, cipher)
+
+            assertFailsWith<CancellationException> {
+                extractor.extractWithAuthenticatedTvDiscovery(
+                    "video",
+                    confirmedPremium = true,
+                    credentialProvider = provider,
+                    hints = ContentHints(isExplicit = true),
+                )
+            }
+            assertEquals(0, providerCalls)
+            client.close()
+        }
+
+    @Test
+    fun expiredTvCredentialAfterCandidateKeepsBaseline() =
+        runBlocking {
+            var bearerRequests = 0
+            val client =
+                HttpClient(
+                    MockEngine { request ->
+                        if (request.headers[HttpHeaders.Authorization] != null) {
+                            bearerRequests++
+                            respond(
+                                DIRECT_RESPONSE.replace("128000", "256000"),
+                                HttpStatusCode.OK,
+                                headersOf("Content-Type", "application/json"),
+                            )
+                        } else {
+                            respond(DIRECT_RESPONSE, HttpStatusCode.OK, headersOf("Content-Type", "application/json"))
+                        }
+                    },
+                ) {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
+            val innerTube = InnerTube(client, retryDelay = {})
+            var fakeNow = Clock.System.now()
+            val expiresAt = fakeNow.plus(9.seconds)
+            var currentChecks = 0
+            val provider =
+                object : TvBearerCredentialProvider {
+                    override suspend fun getCredential(
+                        videoId: String,
+                        sessionGeneration: Long,
+                    ) = TvBearerCredential("synthetic-bearer", "TVHTML5", expiresAt, sessionGeneration)
+
+                    override suspend fun isCredentialCurrent(credential: TvBearerCredential): Boolean {
+                        currentChecks++
+                        if (currentChecks == 2) fakeNow = expiresAt.plus(1.seconds)
+                        return true
+                    }
+                }
+            val extractor =
+                makeExtractor(
+                    client,
+                    innerTube,
+                    CountingParser(),
+                    DirectFallback,
+                    AudioOnlyCipherService,
+                    now = { fakeNow },
+                )
+
+            val stream =
+                extractor.extractWithAuthenticatedTvDiscovery(
+                    "video",
+                    confirmedPremium = true,
+                    credentialProvider = provider,
+                    hints = ContentHints(isExplicit = true),
+                )
+
+            assertNotNull(stream)
+            assertEquals(128000, stream.bitrate)
+            assertEquals(1, bearerRequests)
+            assertEquals(2, currentChecks)
+            client.close()
+        }
+
+    @Test
+    fun authenticatedTvDiscoveryDelegatesVideoRequests() =
+        runBlocking {
+            val client = jsonClient(VIDEO_RESPONSE)
+            var providerCalls = 0
+            val provider =
+                object : TvBearerCredentialProvider {
+                    override suspend fun getCredential(
+                        videoId: String,
+                        sessionGeneration: Long,
+                    ): TvBearerCredential? {
+                        providerCalls++
+                        return null
+                    }
+
+                    override suspend fun isCredentialCurrent(credential: TvBearerCredential) = true
+                }
+
+            val stream =
+                extractor(client).extractWithAuthenticatedTvDiscovery(
+                    videoId = "video",
+                    confirmedPremium = true,
+                    credentialProvider = provider,
+                    hints = ContentHints(wantVideo = true),
+                )
+
+            assertNotNull(stream)
+            assertEquals(0, providerCalls)
+            client.close()
+        }
+
     @Test
     fun directAudioPathSelectsFormatWithoutRecursiveSelectorWrapper() =
         runBlocking {
@@ -53,6 +341,32 @@ class InnerTubeExtractorTest {
             assertEquals(-8.5, stream.perceptualLoudnessDb)
             assertTrue(!stream.toString().contains("Track title"))
             client.close()
+        }
+
+    @Test
+    fun directAudioPathIgnoresUnresolvableHigherRankedAudio() =
+        runBlocking {
+            val response =
+                DIRECT_RESPONSE.replace(
+                    "\"bitrate\":128000}]}}",
+                    "\"bitrate\":128000},{\"itag\":141,\"mimeType\":\"audio/mp4\",\"bitrate\":256000}]}}",
+                )
+            val client = jsonClient(response)
+            val parser = CountingParser()
+            try {
+                val stream =
+                    makeExtractor(
+                        client,
+                        InnerTube(client, retryDelay = {}),
+                        parser,
+                    ).extract("video", ContentHints(), audioQuality = AudioQuality.HIGH)
+
+                assertNotNull(stream)
+                assertEquals(251, stream.itag)
+                assertEquals(0, parser.calls)
+            } finally {
+                client.close()
+            }
         }
 
     @Test
@@ -254,6 +568,299 @@ class InnerTubeExtractorTest {
         }
 
     @Test
+    fun authenticatedNonPremiumNormalPlaybackKeepsVisionosFastPath() =
+        runBlocking {
+            val client = jsonClient(DIRECT_RESPONSE)
+            val innerTube = InnerTube(client, retryDelay = {}).also { it.cookie = "SAPISID=synthetic-session" }
+            val parser = CountingParser()
+            try {
+                val stream =
+                    makeExtractor(client, innerTube, parser, fallback = ContentAwareFallbackStrategy())
+                        .extract("video", ContentHints())
+
+                assertNotNull(stream)
+                assertEquals("VISIONOS", stream.clientName)
+                assertEquals("VISIONOS_0_1__nopo", stream.profileId)
+                assertEquals(0, parser.calls)
+                assertEquals(null, stream.headers["Cookie"])
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun signedOutPremiumHintStillKeepsVisionosFastPath() =
+        runBlocking {
+            val client = jsonClient(DIRECT_RESPONSE)
+            val parser = CountingParser()
+            try {
+                val stream =
+                    makeExtractor(client, InnerTube(client, retryDelay = {}), parser, fallback = ContentAwareFallbackStrategy())
+                        .extract("video", ContentHints().withPremium())
+
+                assertNotNull(stream)
+                assertEquals("VISIONOS", stream.clientName)
+                assertEquals("VISIONOS_0_1__nopo", stream.profileId)
+                assertEquals(0, parser.calls)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun normalDirectFailureTriesAnonymousWatchConfigBeforeAuthenticated() =
+        runBlocking {
+            val configModes = mutableListOf<Boolean>()
+            var playerRequests = 0
+            val client =
+                HttpClient(
+                    MockEngine {
+                        playerRequests++
+                        respond(
+                            if (playerRequests <= 2) UNPLAYABLE_RESPONSE else DIRECT_RESPONSE,
+                            HttpStatusCode.OK,
+                            headersOf("Content-Type", "application/json"),
+                        )
+                    },
+                ) {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
+            val innerTube = InnerTube(client, retryDelay = {}).also { it.cookie = "SAPISID=synthetic-session" }
+            val parser =
+                object : YtConfigParser {
+                    override suspend fun fetchConfig(
+                        videoId: String,
+                        useLoginCookies: Boolean,
+                    ): PlayerConfig {
+                        configModes += useLoginCookies
+                        if (!useLoginCookies) throw IllegalStateException("Synthetic anonymous config failure")
+                        return PlayerConfig("https://www.youtube.com/s/player/test/base.js", 123, null, null)
+                    }
+                }
+            try {
+                val stream =
+                    makeExtractor(client, innerTube, parser, fallback = ContentAwareFallbackStrategy())
+                        .extract("video", ContentHints())
+
+                assertNotNull(stream)
+                assertEquals(listOf(false, true), configModes)
+                assertEquals(3, playerRequests)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun authenticatedConfigFailureFallsBackToSignedOutWatchConfig() =
+        runBlocking {
+            val configModes = mutableListOf<Boolean>()
+            val playerCookies = mutableListOf<String?>()
+            val client =
+                HttpClient(
+                    MockEngine { request ->
+                        playerCookies += request.headers["Cookie"]
+                        respond(DIRECT_RESPONSE, HttpStatusCode.OK, headersOf("Content-Type", "application/json"))
+                    },
+                ) {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
+            val innerTube = InnerTube(client, retryDelay = {}).also { it.cookie = "SAPISID=synthetic-session" }
+            val parser =
+                object : YtConfigParser {
+                    override suspend fun fetchConfig(
+                        videoId: String,
+                        useLoginCookies: Boolean,
+                    ): PlayerConfig {
+                        configModes += useLoginCookies
+                        if (useLoginCookies) throw IllegalStateException("Synthetic authenticated config failure")
+                        return PlayerConfig("https://www.youtube.com/s/player/test/base.js", 123, null, null)
+                    }
+                }
+            try {
+                val stream =
+                    makeExtractor(client, innerTube, parser, fallback = WebRemixFallback)
+                        .extract("video", ContentHints(isExplicit = true))
+
+                assertNotNull(stream)
+                assertEquals(listOf(true, false), configModes)
+                assertEquals(1, playerCookies.size)
+                assertTrue(playerCookies.single()?.contains("synthetic-session") == true)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun authenticatedNoStreamRetriesSignedOutWatchConfigWithoutDroppingPlayerAuth() =
+        runBlocking {
+            val configModes = mutableListOf<Boolean>()
+            val playerCookies = mutableListOf<String?>()
+            val client =
+                HttpClient(
+                    MockEngine { request ->
+                        playerCookies += request.headers["Cookie"]
+                        respond(
+                            if (playerCookies.size == 1) UNPLAYABLE_RESPONSE else DIRECT_RESPONSE,
+                            HttpStatusCode.OK,
+                            headersOf("Content-Type", "application/json"),
+                        )
+                    },
+                ) {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
+            val innerTube = InnerTube(client, retryDelay = {}).also { it.cookie = "SAPISID=synthetic-session" }
+            val parser =
+                object : YtConfigParser {
+                    override suspend fun fetchConfig(
+                        videoId: String,
+                        useLoginCookies: Boolean,
+                    ): PlayerConfig {
+                        configModes += useLoginCookies
+                        return PlayerConfig("https://www.youtube.com/s/player/test/base.js", 123, null, null)
+                    }
+                }
+            try {
+                val stream =
+                    makeExtractor(client, innerTube, parser, fallback = WebRemixFallback)
+                        .extract("video", ContentHints(isExplicit = true))
+
+                assertNotNull(stream)
+                assertEquals(listOf(true, false), configModes)
+                assertEquals(2, playerCookies.size)
+                assertTrue(playerCookies.all { it?.contains("synthetic-session") == true })
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun authenticatedConfigCancellationDoesNotFallback() =
+        runBlocking {
+            val configModes = mutableListOf<Boolean>()
+            var playerRequests = 0
+            val client =
+                HttpClient(
+                    MockEngine {
+                        playerRequests++
+                        respond(DIRECT_RESPONSE, HttpStatusCode.OK, headersOf("Content-Type", "application/json"))
+                    },
+                ) {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
+            val innerTube = InnerTube(client, retryDelay = {}).also { it.cookie = "SAPISID=synthetic-session" }
+            val parser =
+                object : YtConfigParser {
+                    override suspend fun fetchConfig(
+                        videoId: String,
+                        useLoginCookies: Boolean,
+                    ): PlayerConfig {
+                        configModes += useLoginCookies
+                        if (useLoginCookies) throw CancellationException("Synthetic cancellation")
+                        return PlayerConfig("https://www.youtube.com/s/player/test/base.js", 123, null, null)
+                    }
+                }
+            try {
+                assertFailsWith<CancellationException> {
+                    makeExtractor(client, innerTube, parser, fallback = WebRemixFallback)
+                        .extract("video", ContentHints(isExplicit = true))
+                }
+                assertEquals(listOf(true), configModes)
+                assertEquals(0, playerRequests)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun authenticatedPremiumHighQualityInspectsAuthenticatedFormats() =
+        runBlocking {
+            val configModes = mutableListOf<Boolean>()
+            var playerRequests = 0
+            val client =
+                HttpClient(
+                    MockEngine { request ->
+                        playerRequests++
+                        val response =
+                            if (request.headers["Cookie"]?.contains("synthetic-session") == true) {
+                                HIGH_QUALITY_CIPHER_RESPONSE
+                            } else {
+                                DIRECT_RESPONSE
+                            }
+                        respond(response, HttpStatusCode.OK, headersOf("Content-Type", "application/json"))
+                    },
+                ) {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
+            val innerTube = InnerTube(client, retryDelay = {}).also { it.cookie = "SAPISID=synthetic-session" }
+            val parser =
+                object : YtConfigParser {
+                    override suspend fun fetchConfig(
+                        videoId: String,
+                        useLoginCookies: Boolean,
+                    ): PlayerConfig {
+                        configModes += useLoginCookies
+                        return PlayerConfig("https://www.youtube.com/s/player/test/base.js", 123, null, null)
+                    }
+                }
+            try {
+                val stream =
+                    makeExtractor(
+                        client,
+                        innerTube,
+                        parser,
+                        fallback = ContentAwareFallbackStrategy(),
+                        cipherService = RecordingCipherService(),
+                    ).extract("video", ContentHints().withPremium(), audioQuality = AudioQuality.HIGH)
+
+                assertNotNull(stream)
+                assertTrue(stream.clientName != YouTubeClient.VISIONOS.clientName)
+                assertEquals(141, stream.itag)
+                assertEquals(listOf(true), configModes)
+                assertEquals(1, playerRequests)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun highQualityDoesNotFastPathPastHigherCipherFormat() =
+        runBlocking {
+            var playerRequests = 0
+            val client =
+                HttpClient(
+                    MockEngine {
+                        playerRequests++
+                        respond(
+                            HIGH_QUALITY_CIPHER_RESPONSE,
+                            HttpStatusCode.OK,
+                            headersOf("Content-Type", "application/json"),
+                        )
+                    },
+                ) {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
+            val parser = CountingParser()
+            val cipher = RecordingCipherService()
+            try {
+                val stream =
+                    makeExtractor(
+                        client,
+                        InnerTube(client, retryDelay = {}),
+                        parser,
+                        cipherService = cipher,
+                    ).extract("video", ContentHints(), audioQuality = AudioQuality.HIGH)
+
+                assertNotNull(stream)
+                assertEquals(141, stream.itag)
+                assertEquals(1, parser.calls)
+                assertEquals(2, playerRequests)
+                assertEquals(listOf(listOf(141)), cipher.calls)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
     fun configFreeResponseNeedingCipherFallsBackToWatchConfig() =
         runBlocking {
             val client = jsonClient(DIRECT_RESPONSE.replace("expire=9999999999", "expire=9999999999&n=source"))
@@ -275,11 +882,11 @@ class InnerTubeExtractorTest {
             val innerTube = InnerTube(client, retryDelay = {})
             val parser = CountingParser()
             val extractor = makeExtractor(client, innerTube, parser)
-            assertNotNull(extractor.extract("one", ContentHints(isExplicit = true)))
-            assertNotNull(extractor.extract("two", ContentHints(isExplicit = true)))
+            assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
+            assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
             assertEquals(1, parser.calls)
             innerTube.visitorData = "new-session"
-            assertNotNull(extractor.extract("three", ContentHints(isExplicit = true)))
+            assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
             assertEquals(2, parser.calls)
             client.close()
         }
@@ -304,8 +911,8 @@ class InnerTubeExtractorTest {
             val parser = CountingParser()
             val extractor = makeExtractor(client, InnerTube(client, retryDelay = {}), parser)
             try {
-                assertNotNull(extractor.extract("one", ContentHints(isExplicit = true)))
-                assertNotNull(extractor.extract("two", ContentHints(isExplicit = true)))
+                assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
+                assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
                 assertEquals(2, parser.calls)
                 assertEquals(3, requests)
             } finally {
@@ -336,8 +943,8 @@ class InnerTubeExtractorTest {
                 }
             try {
                 val extractor = makeExtractor(client, InnerTube(client, retryDelay = {}), parser, fallback)
-                assertNotNull(extractor.extract("prime", ContentHints(isExplicit = true)))
-                assertNotNull(extractor.extract("refresh", ContentHints()))
+                assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
+                assertNotNull(extractor.extract("video", ContentHints()))
                 assertEquals(2, parser.calls)
                 assertTrue(requests > PlaybackClientCatalog.automaticManifests.size * 2 + 2)
             } finally {
@@ -446,10 +1053,10 @@ class InnerTubeExtractorTest {
                 }
             val extractor = makeExtractor(client, innerTube, parser)
 
-            assertNotNull(extractor.extract("normal-one", ContentHints(playbackClientOverrideId = "VISIONOS_0_1")))
-            assertNotNull(extractor.extract("explicit-one", ContentHints(isExplicit = true)))
-            assertNotNull(extractor.extract("normal-two", ContentHints(playbackClientOverrideId = "VISIONOS_0_1")))
-            assertNotNull(extractor.extract("explicit-two", ContentHints(isExplicit = true)))
+            assertNotNull(extractor.extract("video", ContentHints(playbackClientOverrideId = "VISIONOS_0_1")))
+            assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
+            assertNotNull(extractor.extract("video", ContentHints(playbackClientOverrideId = "VISIONOS_0_1")))
+            assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
 
             assertEquals(listOf(false, true), modes)
             client.close()
@@ -487,9 +1094,9 @@ class InnerTubeExtractorTest {
             val extractor = makeExtractor(client, innerTube, parser)
 
             assertFailsWith<CancellationException> {
-                extractor.extract("first", ContentHints(isExplicit = true))
+                extractor.extract("video", ContentHints(isExplicit = true))
             }
-            assertNotNull(extractor.extract("second", ContentHints(isExplicit = true)))
+            assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
             assertEquals(2, calls)
             client.close()
         }
@@ -902,12 +1509,16 @@ class InnerTubeExtractorTest {
         parser: YtConfigParser,
         fallback: com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy = DirectFallback,
         cipherService: ExtractionCipherService = DefaultExtractionCipherService(YouTubeCipherService(client)),
+        tvBearerProviderTimeoutMs: Long = 8_000,
+        now: () -> Instant = { Clock.System.now() },
     ): InnerTubeExtractor =
         InnerTubeExtractor(
             configParser = parser,
             clientDirector = PlayerClientDirector(innerTube, fallback, NoTokenProvider),
             cipherService = cipherService,
             innerTube = innerTube,
+            tvBearerProviderTimeoutMs = tvBearerProviderTimeoutMs,
+            now = now,
         )
 
     private fun jsonClient(body: String) =
@@ -1033,6 +1644,10 @@ class InnerTubeExtractorTest {
         val VIDEO_RESPONSE =
             """
             {"playabilityStatus":{"status":"OK"},"streamingData":{"adaptiveFormats":[{"itag":251,"url":"https://r.googlevideo.com/videoplayback","mimeType":"audio/webm","bitrate":128000},{"itag":136,"url":"https://r.googlevideo.com/videoplayback","mimeType":"video/mp4; codecs=\"avc1\"","bitrate":1000000,"width":1280,"height":720},{"itag":247,"url":"https://r.googlevideo.com/videoplayback","mimeType":"video/webm; codecs=\"vp9\"","bitrate":2000000,"width":1920,"height":1080},{"itag":313,"url":"https://r.googlevideo.com/videoplayback","mimeType":"video/webm; codecs=\"vp9\"","bitrate":10000000,"width":3840,"height":2160}]}}
+            """.trimIndent()
+        val HIGH_QUALITY_CIPHER_RESPONSE =
+            """
+            {"playabilityStatus":{"status":"OK"},"streamingData":{"adaptiveFormats":[{"itag":251,"url":"https://r.googlevideo.com/videoplayback","mimeType":"audio/webm; codecs=\"opus\"","bitrate":128000,"audioChannels":2},{"itag":141,"signatureCipher":"url=https%3A%2F%2Fr.googlevideo.com%2Fvideoplayback&sp=sig&s=encrypted","mimeType":"audio/mp4; codecs=\"mp4a.40.2\"","bitrate":256000,"audioChannels":2}]}}
             """.trimIndent()
         val CIPHERED_VIDEO_RESPONSE =
             """

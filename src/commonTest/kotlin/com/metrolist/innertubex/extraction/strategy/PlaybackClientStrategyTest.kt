@@ -12,7 +12,7 @@ class PlaybackClientStrategyTest {
 
     @Test
     fun catalogProfilesHaveConsistentManifestInvariants() {
-        assertEquals(31, PlaybackClientCatalog.benchmarkOptions.size)
+        assertEquals(35, PlaybackClientCatalog.benchmarkOptions.size)
         assertEquals(
             PlaybackClientCatalog.manifests.size,
             PlaybackClientCatalog.manifests
@@ -23,6 +23,119 @@ class PlaybackClientStrategyTest {
         assertTrue(
             PlaybackClientCatalog.manifests.all { it.client.clientName.isNotBlank() },
         )
+    }
+
+    @Test
+    fun requestedProbeClientsStayExplicitAndConservative() {
+        val ids = setOf("IOS_MUSIC", "ANDROID_KIDS", "ANDROID_PRODUCER", "MEDIA_CONNECT_FRONTEND")
+        val probes = ids.map { checkNotNull(PlaybackClientCatalog.findBenchmark(it)?.manifest) }
+
+        assertTrue(probes.all { it.selectionMode == ClientSelectionMode.PROBE_ONLY })
+        assertTrue(probes.all { it !in PlaybackClientCatalog.automaticManifests })
+        assertTrue(probes.all { it.content.normal == CapabilitySupport.UNKNOWN })
+        assertTrue(probes.all { it.content.explicit == CapabilitySupport.UNKNOWN })
+        assertTrue(probes.all { it.evidence.isNotEmpty() && !it.notes.isNullOrBlank() })
+
+        ids.forEach { id ->
+            assertNotNull(PlaybackClientCatalog.find(id))
+        }
+        val kids = checkNotNull(PlaybackClientCatalog.findBenchmark("ANDROID_KIDS")).client
+        assertEquals("7.36.1", kids.clientVersion)
+        assertEquals("11", kids.osVersion)
+        assertEquals("30", kids.androidSdkVersion)
+        assertEquals("com.google.android.apps.youtube.kids/7.36.1 (Linux; U; Android 11) gzip", kids.userAgent)
+    }
+
+    @Test
+    fun premiumDemotionRequiresHighQualityIntent() {
+        val strategy = ContentAwareFallbackStrategy()
+        val request =
+            ClientSelectionRequest(
+                hints = ContentHints().withPremium(),
+                authenticated = true,
+                premium = true,
+                availablePoTokenProviders = allProviders,
+                webViewAvailable = true,
+            )
+
+        val normal = strategy.selectClients(request, premiumHighQuality = false)
+        val high = strategy.selectClients(request, premiumHighQuality = true)
+
+        assertEquals(
+            "VISIONOS_0_1",
+            normal.candidates
+                .first()
+                .manifest
+                ?.id,
+        )
+        assertTrue(
+            high.candidates
+                .first()
+                .manifest
+                ?.authentication != AuthenticationPolicy.UNSUPPORTED,
+        )
+    }
+
+    @Test
+    fun premiumBypassRequiresCallerHintAndAuthentication() {
+        val strategy = ContentAwareFallbackStrategy()
+        val withoutPremium =
+            strategy.selectClients(
+                ClientSelectionRequest(
+                    hints = ContentHints(),
+                    authenticated = true,
+                ),
+            )
+        val withPremium =
+            strategy.selectClients(
+                ClientSelectionRequest(
+                    hints = ContentHints().withPremium(),
+                    authenticated = true,
+                    premium = true,
+                ),
+                premiumHighQuality = true,
+            )
+        val signedOutPremium =
+            strategy.selectClients(
+                ClientSelectionRequest(
+                    hints = ContentHints().withPremium(),
+                    authenticated = false,
+                    premium = true,
+                ),
+            )
+
+        assertTrue(withoutPremium.rejected.any { it.manifest.id == "WEB_REMIX" })
+        assertTrue(
+            withPremium.candidates
+                .first()
+                .manifest
+                ?.authentication != AuthenticationPolicy.UNSUPPORTED,
+        )
+        assertTrue(signedOutPremium.rejected.any { it.manifest.id == "WEB_REMIX" })
+        assertEquals(
+            "VISIONOS_0_1",
+            signedOutPremium.candidates
+                .first()
+                .manifest
+                ?.id,
+        )
+    }
+
+    @Test
+    fun authenticatedNonPremiumSelectionKeepsAnonymousNormalClientFirst() {
+        val candidates =
+            ContentAwareFallbackStrategy()
+                .selectClients(
+                    ClientSelectionRequest(
+                        hints = ContentHints(),
+                        authenticated = true,
+                        availablePoTokenProviders = allProviders,
+                        webViewAvailable = true,
+                    ),
+                ).candidates
+
+        assertTrue(candidates.isNotEmpty())
+        assertEquals("VISIONOS_0_1", candidates.first().manifest?.id)
     }
 
     @Test
@@ -157,6 +270,23 @@ class PlaybackClientStrategyTest {
                 .reasons
                 .any { it.startsWith("ignored:") },
         )
+    }
+
+    @Test
+    fun excludedAnonymousProfileFallsBackToAnotherAutomaticClient() {
+        val result =
+            ContentAwareFallbackStrategy().selectClients(
+                ClientSelectionRequest(
+                    hints = ContentHints(),
+                    authenticated = true,
+                    availablePoTokenProviders = allProviders,
+                    webViewAvailable = true,
+                    excludedClients = setOf("VISIONOS_0_1__nopo"),
+                ),
+            )
+
+        assertTrue(result.candidates.none { it.manifest?.id == "VISIONOS_0_1" })
+        assertTrue(result.candidates.isNotEmpty())
     }
 
     @Test

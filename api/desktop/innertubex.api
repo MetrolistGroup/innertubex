@@ -255,6 +255,7 @@ public final class com/metrolist/innertubex/extraction/ContentHints {
 	public final fun getEndpointParams ()Ljava/lang/String;
 	public final fun getMaxVideoHeight ()Ljava/lang/Integer;
 	public final fun getPlaybackClientOverrideId ()Ljava/lang/String;
+	public final fun getPremium ()Z
 	public final fun getSabrFirst ()Z
 	public final fun getWantVideo ()Z
 	public fun hashCode ()I
@@ -265,6 +266,8 @@ public final class com/metrolist/innertubex/extraction/ContentHints {
 	public final fun isLocal ()Ljava/lang/Boolean;
 	public final fun isUploaded ()Ljava/lang/Boolean;
 	public fun toString ()Ljava/lang/String;
+	public final fun withPremium (Z)Lcom/metrolist/innertubex/extraction/ContentHints;
+	public static synthetic fun withPremium$default (Lcom/metrolist/innertubex/extraction/ContentHints;ZILjava/lang/Object;)Lcom/metrolist/innertubex/extraction/ContentHints;
 	public final fun withStreamCapabilities (ZZZ)Lcom/metrolist/innertubex/extraction/ContentHints;
 	public static synthetic fun withStreamCapabilities$default (Lcom/metrolist/innertubex/extraction/ContentHints;ZZZILjava/lang/Object;)Lcom/metrolist/innertubex/extraction/ContentHints;
 }
@@ -379,6 +382,8 @@ public final class com/metrolist/innertubex/extraction/InnerTubeExtractor : com/
 	public fun <init> (Lcom/metrolist/innertubex/extraction/YtConfigParser;Lcom/metrolist/innertubex/cipher/YouTubeCipherService;Lcom/metrolist/innertubex/InnerTube;Lcom/metrolist/innertubex/extraction/strategy/ClientFallbackStrategy;Lcom/metrolist/innertubex/extraction/TokenProvider;Lcom/metrolist/innertubex/extraction/strategy/ClientHealthMonitor;Lcom/metrolist/innertubex/InnerTubeLogger;)V
 	public synthetic fun <init> (Lcom/metrolist/innertubex/extraction/YtConfigParser;Lcom/metrolist/innertubex/cipher/YouTubeCipherService;Lcom/metrolist/innertubex/InnerTube;Lcom/metrolist/innertubex/extraction/strategy/ClientFallbackStrategy;Lcom/metrolist/innertubex/extraction/TokenProvider;Lcom/metrolist/innertubex/extraction/strategy/ClientHealthMonitor;Lcom/metrolist/innertubex/InnerTubeLogger;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public fun extract (Ljava/lang/String;Lcom/metrolist/innertubex/extraction/ContentHints;Ljava/util/Set;Lcom/metrolist/innertubex/extraction/AudioQuality;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun extractWithAuthenticatedTvDiscovery (Ljava/lang/String;ZLcom/metrolist/innertubex/extraction/TvBearerCredentialProvider;Lcom/metrolist/innertubex/extraction/ContentHints;Ljava/util/Set;Lcom/metrolist/innertubex/extraction/AudioQuality;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun extractWithAuthenticatedTvDiscovery$default (Lcom/metrolist/innertubex/extraction/InnerTubeExtractor;Ljava/lang/String;ZLcom/metrolist/innertubex/extraction/TvBearerCredentialProvider;Lcom/metrolist/innertubex/extraction/ContentHints;Ljava/util/Set;Lcom/metrolist/innertubex/extraction/AudioQuality;Ljava/lang/String;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 	public fun prewarm (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
@@ -536,6 +541,21 @@ public final class com/metrolist/innertubex/extraction/TokenProviderCapabilities
 	public final fun getUsesWebView ()Z
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/metrolist/innertubex/extraction/TvBearerCredential {
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;Lkotlin/time/Instant;JLjava/lang/String;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Lkotlin/time/Instant;JLjava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getExpiresAt ()Lkotlin/time/Instant;
+	public final fun getProfileId ()Ljava/lang/String;
+	public final fun getSessionGeneration ()J
+	public final fun getVisitorData ()Ljava/lang/String;
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/metrolist/innertubex/extraction/TvBearerCredentialProvider {
+	public abstract fun getCredential (Ljava/lang/String;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun isCredentialCurrent (Lcom/metrolist/innertubex/extraction/TvBearerCredential;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
 public abstract interface class com/metrolist/innertubex/extraction/YtConfigParser {
@@ -1828,7 +1848,9 @@ public final synthetic class com/metrolist/innertubex/models/YouTubeClient$$seri
 public final class com/metrolist/innertubex/models/YouTubeClient$Companion {
 	public final fun getANDROID ()Lcom/metrolist/innertubex/models/YouTubeClient;
 	public final fun getANDROID_CREATOR ()Lcom/metrolist/innertubex/models/YouTubeClient;
+	public final fun getANDROID_KIDS ()Lcom/metrolist/innertubex/models/YouTubeClient;
 	public final fun getANDROID_MUSIC ()Lcom/metrolist/innertubex/models/YouTubeClient;
+	public final fun getANDROID_PRODUCER ()Lcom/metrolist/innertubex/models/YouTubeClient;
 	public final fun getANDROID_SABR ()Lcom/metrolist/innertubex/models/YouTubeClient;
 	public final fun getANDROID_VR_1_43_32 ()Lcom/metrolist/innertubex/models/YouTubeClient;
 	public final fun getANDROID_VR_1_61_48 ()Lcom/metrolist/innertubex/models/YouTubeClient;
@@ -1836,8 +1858,10 @@ public final class com/metrolist/innertubex/models/YouTubeClient$Companion {
 	public final fun getANDROID_VR_NO_AUTH ()Lcom/metrolist/innertubex/models/YouTubeClient;
 	public final fun getANDROID_VR_SABR ()Lcom/metrolist/innertubex/models/YouTubeClient;
 	public final fun getIOS ()Lcom/metrolist/innertubex/models/YouTubeClient;
+	public final fun getIOS_MUSIC ()Lcom/metrolist/innertubex/models/YouTubeClient;
 	public final fun getIOS_SABR ()Lcom/metrolist/innertubex/models/YouTubeClient;
 	public final fun getIPADOS ()Lcom/metrolist/innertubex/models/YouTubeClient;
+	public final fun getMEDIA_CONNECT_FRONTEND ()Lcom/metrolist/innertubex/models/YouTubeClient;
 	public final fun getMWEB ()Lcom/metrolist/innertubex/models/YouTubeClient;
 	public final fun getMWEB_SABR ()Lcom/metrolist/innertubex/models/YouTubeClient;
 	public final fun getTVHTML5 ()Lcom/metrolist/innertubex/models/YouTubeClient;
@@ -3879,6 +3903,7 @@ public final class com/metrolist/innertubex/models/response/PlayerResponse$Strea
 
 public final class com/metrolist/innertubex/models/response/PlayerResponse$VideoDetails {
 	public static final field Companion Lcom/metrolist/innertubex/models/response/PlayerResponse$VideoDetails$Companion;
+	public fun <init> ()V
 	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Lcom/metrolist/innertubex/models/Thumbnails;Ljava/lang/Boolean;)V
 	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Lcom/metrolist/innertubex/models/Thumbnails;Ljava/lang/Boolean;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1 ()Ljava/lang/String;

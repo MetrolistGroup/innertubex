@@ -1,6 +1,8 @@
 package com.metrolist.innertubex.extraction
 
 import com.metrolist.innertubex.InnerTube
+import com.metrolist.innertubex.InnerTubeLogger
+import com.metrolist.innertubex.extraction.strategy.AuthenticationPolicy
 import com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy
 import com.metrolist.innertubex.extraction.strategy.ClientSelectionRequest
 import com.metrolist.innertubex.extraction.strategy.ClientSelectionResult
@@ -24,8 +26,107 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlin.time.Clock
+import kotlin.time.Duration.Companion.hours
 
 class PlayerClientDirectorTest {
+    @Test
+    fun authenticatedPremiumManualOverrideSkipsTokenMinting() =
+        runBlocking {
+            val client = client { PLAYER_RESPONSE }
+            val innerTube =
+                InnerTube(client, retryDelay = {}).also {
+                    it.cookie = "SAPISID=synthetic-session"
+                    it.visitorData = "synthetic-visitor"
+                }
+            val manifest = checkNotNull(PlaybackClientCatalog.findManifest("WEB_REMIX"))
+            var selectionRequest: ClientSelectionRequest? = null
+            var tokenRequests = 0
+            val tokenProvider =
+                object : TokenProvider {
+                    override val capabilities = TokenProviderCapabilities(setOf(PoTokenProviderKind.WEB_BOTGUARD))
+
+                    override suspend fun getPoToken(
+                        videoId: String,
+                        visitorData: String,
+                        cookie: String?,
+                    ): PoTokenResult? {
+                        tokenRequests++
+                        return null
+                    }
+                }
+            val director =
+                PlayerClientDirector(
+                    innerTube,
+                    object : ClientFallbackStrategy {
+                        override fun resolveClients(hints: ContentHints) = listOf(manifest.client)
+
+                        override fun selectClients(request: ClientSelectionRequest): ClientSelectionResult {
+                            selectionRequest = request
+                            return ClientSelectionResult(listOf(SelectedClient(manifest.client, manifest)))
+                        }
+                    },
+                    tokenProvider,
+                )
+
+            val result =
+                director.fetchPlayerResponses(
+                    "video",
+                    PlayerConfig("player.js", null, null, null),
+                    ContentHints(playbackClientOverrideId = "WEB_REMIX").withPremium(),
+                )
+
+            assertTrue(selectionRequest?.premium == true)
+            assertEquals(0, tokenRequests)
+            assertEquals("WEB_REMIX", result.playableResponses.single().clientName)
+            client.close()
+        }
+
+    @Test
+    fun signedOutPremiumHintStillRequiresPoToken() =
+        runBlocking {
+            val client = client { PLAYER_RESPONSE }
+            val manifest = checkNotNull(PlaybackClientCatalog.findManifest("WEB_REMIX"))
+            val director = PlayerClientDirector(InnerTube(client, retryDelay = {}), fixed(manifest), NoTokenProvider)
+
+            val result =
+                director.fetchPlayerResponses(
+                    "video",
+                    PlayerConfig("player.js", null, null, null),
+                    ContentHints(playbackClientOverrideId = "WEB_REMIX").withPremium(),
+                )
+
+            assertTrue(result.playableResponses.isEmpty())
+            client.close()
+        }
+
+    @Test
+    fun premiumHintDoesNotBypassTokensForAnonymousOnlyClient() =
+        runBlocking {
+            val client = client { PLAYER_RESPONSE }
+            val innerTube = InnerTube(client, retryDelay = {}).also { it.cookie = "SAPISID=synthetic-session" }
+            val anonymousClient = YouTubeClient.VISIONOS_0_1
+            val sourceManifest = checkNotNull(PlaybackClientCatalog.findManifest("WEB_REMIX"))
+            val manifest =
+                sourceManifest.copy(
+                    id = "SYNTHETIC_ANONYMOUS",
+                    client = anonymousClient,
+                    authentication = AuthenticationPolicy.UNSUPPORTED,
+                    request = sourceManifest.request.copy(signatureTimestamp = anonymousClient.useSignatureTimestamp, cookies = false),
+                )
+            val director = PlayerClientDirector(innerTube, fixed(manifest), NoTokenProvider)
+
+            val result =
+                director.fetchPlayerResponses(
+                    "video",
+                    PlayerConfig("player.js", null, null, null),
+                    ContentHints().withPremium(),
+                )
+
+            assertTrue(result.playableResponses.isEmpty())
+            client.close()
+        }
+
     @Test
     fun requiredPoTokenIsBoundToTheCorrectVisitorAndBinding() =
         runBlocking {
@@ -201,6 +302,235 @@ class PlayerClientDirectorTest {
                     ).playableResponses
                     .isEmpty(),
             )
+            client.close()
+        }
+
+    @Test
+    fun wrongVideoResponseIsRejectedAtThePlayerBoundary() =
+        runBlocking {
+            val wrongVideoResponse =
+                """
+                {"playabilityStatus":{"status":"OK"},"videoDetails":{"videoId":"other-video"},"streamingData":{"adaptiveFormats":[{"itag":251,"url":"https://r.googlevideo.com/videoplayback","mimeType":"audio/webm","bitrate":128000}]}}
+                """.trimIndent()
+            val client = client { wrongVideoResponse }
+            val director =
+                PlayerClientDirector(
+                    InnerTube(client, retryDelay = {
+                    }),
+                    fixed(checkNotNull(PlaybackClientCatalog.findManifest("VISIONOS_0_1"))),
+                    NoTokenProvider,
+                )
+
+            val batch = director.fetchPlayerResponses("requested-video", PlayerConfig("player.js", null, null, null), ContentHints())
+
+            assertTrue(batch.playableResponses.isEmpty())
+            assertEquals("no_playable_response", batch.attempts.single().outcome)
+            client.close()
+        }
+
+    @Test
+    fun missingVideoIdentityRemainsCompatible() =
+        runBlocking {
+            val response =
+                """
+                {"playabilityStatus":{"status":"OK"},"streamingData":{"adaptiveFormats":[{"itag":251,"url":"https://r.googlevideo.com/videoplayback","mimeType":"audio/webm","bitrate":128000}]}}
+                """.trimIndent()
+            val client = client { response }
+            val director =
+                PlayerClientDirector(
+                    InnerTube(client, retryDelay = {
+                    }),
+                    fixed(checkNotNull(PlaybackClientCatalog.findManifest("VISIONOS_0_1"))),
+                    NoTokenProvider,
+                )
+
+            val batch = director.fetchPlayerResponses("requested-video", PlayerConfig("player.js", null, null, null), ContentHints())
+
+            assertEquals(1, batch.playableResponses.size)
+            client.close()
+        }
+
+    @Test
+    fun wrongVideoResponseIsRejectedForTokenizedRequests() =
+        runBlocking {
+            val wrongVideoResponse =
+                """
+                {"playabilityStatus":{"status":"OK"},"videoDetails":{"videoId":"other-video"},"streamingData":{"serverAbrStreamingUrl":"https://r.googlevideo.com/videoplayback","adaptiveFormats":[{"itag":140,"mimeType":"audio/mp4","bitrate":128000}]},"playerConfig":{"mediaCommonConfig":{"mediaUstreamerRequestConfig":{"videoPlaybackUstreamerConfig":"AQID"}}}}
+                """.trimIndent()
+            val client = client { wrongVideoResponse }
+            val innerTube = InnerTube(client, retryDelay = {}).also { it.visitorData = "synthetic-visitor" }
+            val manifest = checkNotNull(PlaybackClientCatalog.findManifest("WEB_SABR"))
+            val tokenProvider =
+                object : TokenProvider {
+                    override val capabilities = TokenProviderCapabilities(setOf(PoTokenProviderKind.WEB_BOTGUARD))
+
+                    override suspend fun getPoToken(
+                        videoId: String,
+                        visitorData: String,
+                        cookie: String?,
+                    ) = PoTokenResult("synthetic-player-token", "synthetic-stream-token", visitorData)
+                }
+            val director = PlayerClientDirector(innerTube, fixed(manifest), tokenProvider)
+
+            val batch =
+                director.fetchPlayerResponses(
+                    "requested-video",
+                    PlayerConfig("https://www.youtube.com/s/player/x/base.js", null, null, null),
+                    ContentHints(playbackClientOverrideId = "WEB_SABR"),
+                )
+
+            assertTrue(batch.playableResponses.isEmpty())
+            client.close()
+        }
+
+    @Test
+    fun playerDiagnosticsClassifyObservedTransportFields() =
+        runBlocking {
+            val observedResponse =
+                """
+                {"playabilityStatus":{"status":"UNPLAYABLE"},"videoDetails":{"videoId":"video"},"streamingData":{"formats":[{"itag":22,"mimeType":"video/mp4","width":1280,"height":720}],"adaptiveFormats":[{"itag":140,"mimeType":"audio/mp4","bitrate":128000}],"hlsManifestUrl":"https://video.google.com/live.m3u8","dashManifestUrl":"https://video.google.com/video.mpd","serverAbrStreamingUrl":"https://r.googlevideo.com/videoplayback"},"playerConfig":{"mediaCommonConfig":{"mediaUstreamerRequestConfig":{"videoPlaybackUstreamerConfig":"AQID"}}}}
+                """.trimIndent()
+            val client = client { observedResponse }
+            val transportLogs = mutableListOf<Map<String, String>>()
+            val logger =
+                InnerTubeLogger { event ->
+                    if (event.message == "player response decoded") transportLogs += event.details
+                }
+            val manifest = checkNotNull(PlaybackClientCatalog.findManifest("IOS_MUSIC"))
+            val director = PlayerClientDirector(InnerTube(client, retryDelay = {}), fixed(manifest), NoTokenProvider, logger = logger)
+
+            val batch =
+                director.fetchPlayerResponses(
+                    "video",
+                    PlayerConfig("player.js", null, null, null),
+                    ContentHints(playbackClientOverrideId = "IOS_MUSIC"),
+                )
+
+            assertTrue(batch.playableResponses.isEmpty())
+            val details = transportLogs.single()
+            assertEquals("1", details["adaptiveFormatCount"])
+            assertEquals("0", details["adaptiveDirectCount"])
+            assertEquals("0", details["adaptiveCipherCount"])
+            assertEquals("1", details["progressiveFormatCount"])
+            assertEquals("0", details["progressiveDirectCount"])
+            assertEquals("0", details["progressiveCipherCount"])
+            assertEquals("true", details["hlsPresent"])
+            assertEquals("true", details["dashPresent"])
+            assertEquals("true", details["sabrPresent"])
+            assertEquals("true", details["sabrConfigPresent"])
+            assertEquals(
+                "response_shape:adaptive_direct=absent,adaptive_cipher=absent,progressive_direct=absent,progressive_cipher=absent,hls=present,dash=present,sabr=present",
+                batch.attempts.single().outcome,
+            )
+            client.close()
+        }
+
+    @Test
+    fun bearerDrmMarkerRejectsCandidateBeforeFormatSelection() =
+        runBlocking {
+            val drmResponses =
+                listOf(
+                    PLAYER_RESPONSE.replace(
+                        "\"adaptiveFormats\":[{\"itag\":251",
+                        "\"adaptiveFormats\":[{\"drmFamilies\":[\"WIDEVINE\"],\"itag\":251",
+                    ),
+                    PLAYER_RESPONSE.replace(
+                        "\"streamingData\":{\"adaptiveFormats\"",
+                        "\"streamingData\":{\"licenseInfos\":[{\"type\":\"WIDEVINE\"}],\"adaptiveFormats\"",
+                    ),
+                )
+            for (drmResponse in drmResponses) {
+                val client = client { drmResponse }
+                val innerTube = InnerTube(client, retryDelay = {})
+                val manifest = checkNotNull(PlaybackClientCatalog.findManifest("TVHTML5"))
+                val credential =
+                    TvBearerCredential(
+                        "synthetic-bearer",
+                        manifest.id,
+                        Clock.System.now().plus(1.hours),
+                        innerTube.sessionSnapshot().generation,
+                    )
+                val director = PlayerClientDirector(innerTube, fixed(manifest), NoTokenProvider)
+
+                val batch =
+                    director.fetchPlayerResponses(
+                        "video",
+                        PlayerConfig("player.js", null, null, null),
+                        ContentHints(),
+                        tvBearerCredential = credential,
+                    )
+
+                assertTrue(batch.playableResponses.isEmpty())
+                client.close()
+            }
+        }
+
+    @Test
+    fun bearerEmptyDrmMarkersRemainClearCandidates() =
+        runBlocking {
+            val clearResponses =
+                listOf(
+                    PLAYER_RESPONSE.replace(
+                        "\"streamingData\":{\"adaptiveFormats\"",
+                        "\"streamingData\":{\"licenseInfos\":null,\"drmFamilies\":[],\"adaptiveFormats\"",
+                    ),
+                    PLAYER_RESPONSE.replace(
+                        "\"itag\":251",
+                        "\"drmFamilies\":null,\"drmTrackType\":\"\",\"itag\":251",
+                    ),
+                )
+            for (clearResponse in clearResponses) {
+                val client = client { clearResponse }
+                val innerTube = InnerTube(client, retryDelay = {})
+                val manifest = checkNotNull(PlaybackClientCatalog.findManifest("TVHTML5"))
+                val credential =
+                    TvBearerCredential(
+                        "synthetic-bearer",
+                        manifest.id,
+                        Clock.System.now().plus(1.hours),
+                        innerTube.sessionSnapshot().generation,
+                    )
+                val director = PlayerClientDirector(innerTube, fixed(manifest), NoTokenProvider)
+
+                val batch =
+                    director.fetchPlayerResponses(
+                        "video",
+                        PlayerConfig("player.js", null, null, null),
+                        ContentHints(),
+                        tvBearerCredential = credential,
+                    )
+
+                assertEquals(1, batch.playableResponses.size)
+                client.close()
+            }
+        }
+
+    @Test
+    fun expiredTvBearerCredentialIsRejectedBeforeRequest() =
+        runBlocking {
+            var requests = 0
+            val client =
+                HttpClient(
+                    MockEngine {
+                        requests++
+                        respond(PLAYER_RESPONSE, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
+                    },
+                )
+            val innerTube = InnerTube(client, retryDelay = {})
+            val manifest = checkNotNull(PlaybackClientCatalog.findManifest("TVHTML5"))
+            val credential = TvBearerCredential("synthetic-bearer", manifest.id, Clock.System.now(), innerTube.sessionSnapshot().generation)
+            val director = PlayerClientDirector(innerTube, fixed(manifest), NoTokenProvider)
+
+            val batch =
+                director.fetchPlayerResponses(
+                    "video",
+                    PlayerConfig("player.js", null, null, null),
+                    ContentHints(),
+                    tvBearerCredential = credential,
+                )
+
+            assertTrue(batch.playableResponses.isEmpty())
+            assertEquals(0, requests)
             client.close()
         }
 

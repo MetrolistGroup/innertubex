@@ -528,5 +528,56 @@ data class YouTubeClient(
                 useSignatureTimestamp = true,
                 includeUserAgentInContext = true,
             )
+
+        /** Historical probe identity: iOS Music client ID 26, current source evidence only. */
+        val IOS_MUSIC =
+            YouTubeClient(
+                clientName = "IOS_MUSIC",
+                clientVersion = "7.27.0",
+                clientId = "26",
+                userAgent = "com.google.ios.youtubemusic/7.27.0 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X;)",
+                osName = "iPhone",
+                osVersion = "18.1.0.22B83",
+                deviceMake = "Apple",
+                deviceModel = "iPhone16,2",
+                platform = "MOBILE",
+                friendlyName = "iOS Music probe",
+            )
+
+        /** Historical probe identity: Android Kids client ID 18, current source evidence only. */
+        val ANDROID_KIDS =
+            YouTubeClient(
+                clientName = "ANDROID_KIDS",
+                clientVersion = "7.36.1",
+                clientId = "18",
+                userAgent = "com.google.android.apps.youtube.kids/7.36.1 (Linux; U; Android 11) gzip",
+                osName = "Android",
+                osVersion = "11",
+                androidSdkVersion = "30",
+                friendlyName = "Android Kids probe",
+            )
+
+        /** Historical probe identity: Android Producer client ID 91, current source evidence only. */
+        val ANDROID_PRODUCER =
+            YouTubeClient(
+                clientName = "ANDROID_PRODUCER",
+                clientVersion = "0.111.1",
+                clientId = "91",
+                userAgent = "com.google.android.apps.youtube.producer/0.111.1 (Linux; U; Android 11) gzip",
+                osName = "Android",
+                osVersion = "11",
+                androidSdkVersion = "30",
+                friendlyName = "Android Producer probe",
+            )
+
+        /** Historical probe identity: Media Connect Frontend client ID 95, current source evidence only. */
+        val MEDIA_CONNECT_FRONTEND =
+            YouTubeClient(
+                clientName = "MEDIA_CONNECT_FRONTEND",
+                clientVersion = "0.1",
+                clientId = "95",
+                userAgent = "Mozilla/5.0",
+                friendlyName = "Media Connect probe",
+            )
     }
 }

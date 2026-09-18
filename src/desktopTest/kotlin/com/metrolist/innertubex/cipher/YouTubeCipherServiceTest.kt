@@ -10,14 +10,58 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class YouTubeCipherServiceTest {
+    @Test
+    fun directFormatsDoNotWaitForPlayerPreload() =
+        runBlocking {
+            val requestStarted = CompletableDeferred<Unit>()
+            val service =
+                YouTubeCipherService(
+                    HttpClient(
+                        MockEngine {
+                            requestStarted.complete(Unit)
+                            awaitCancellation()
+                        },
+                    ),
+                )
+            val preload =
+                async {
+                    service.preloadPlayerCode(
+                        "https://www.youtube.com/s/player/12345678/player_ias.vflset/en_GB/base.js",
+                    )
+                }
+
+            try {
+                requestStarted.await()
+                val format =
+                    PlayerResponse.StreamingData.Format(
+                        itag = 140,
+                        url = "https://example.googlevideo.com/videoplayback?expire=1",
+                        mimeType = "audio/mp4",
+                    )
+
+                val result = withTimeout(1_000) { service.processFormats("unused", listOf(format)) }
+
+                assertEquals(listOf(format), result)
+                assertFalse(preload.isCompleted)
+            } finally {
+                preload.cancelAndJoin()
+            }
+        }
+
     @Test
     fun processFormatsRejectsNFormatsWhenPlayerScriptUnavailable() =
         runBlocking {
