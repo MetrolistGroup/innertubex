@@ -109,7 +109,7 @@ internal class QuickJsEngine {
                       const text = String(value);
                       return text.length <= $maxResultLength ? text : "";
                     })()
-                    """.trimIndent()
+                    """
                 try {
                     runtime.evaluateSafely<String?>(boundedCode).orEmpty()
                 } finally {

@@ -253,7 +253,7 @@ internal class EjsChallengeSolver(
               }
               return JSON.stringify(out);
             })()
-            """.trimIndent()
+            """
         val evaluateStartMs = Clock.System.now().toEpochMilliseconds()
         val evaluated = engine.evaluate(js, MAX_RAW_OUTPUT_LENGTH, collectGarbage = !preprocessed)
         if (evaluated.length > MAX_RAW_OUTPUT_LENGTH) return SolveResult(emptyMap(), emptyMap(), null)

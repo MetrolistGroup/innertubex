@@ -25,13 +25,15 @@ class QuickJsEngineTest {
         }
 
     @Test
-    fun functionResultsAreBoundedBeforeLeavingQuickJs() =
+    fun evaluatePreservesMultilineWhitespaceAndBoundsResults() =
         runBlocking {
             val engine = QuickJsEngine()
             try {
                 engine.initialize()
                 engine.execute("function oversized() { return 'x'.repeat(300000); }")
 
+                val source = "  `  leading\n    \\\\ \" escaped`"
+                assertEquals("  leading\n    \\ \" escaped", engine.evaluate(source, maxResultLength = 1024))
                 assertNull(engine.callFunction("oversized", "input"))
                 assertEquals("", engine.evaluate("'x'.repeat(300000)", maxResultLength = 1024))
             } finally {

@@ -114,6 +114,32 @@ class EjsChallengeSolverTest {
         }
 
     @Test
+    fun solvesLargeWhitespacePlayerPayload() =
+        runBlocking {
+            val engine = QuickJsEngine()
+            try {
+                val challenge = "synthetic-large-challenge"
+                val playerCode =
+                    buildString(LARGE_PLAYER_JS_LENGTH) {
+                        append(PLAYER_CODE)
+                        append('\n')
+                        while (length < LARGE_PLAYER_JS_LENGTH) append(' ')
+                    }
+
+                val result =
+                    EjsChallengeSolver(engine, InnerTubeLogger.NONE).solve(
+                        PLAYER_URL,
+                        playerCode,
+                        listOf("sig" to listOf(challenge)),
+                    )
+
+                assertEquals(challenge.reversed(), result.sigByChallenge[challenge])
+            } finally {
+                engine.dispose()
+            }
+        }
+
+    @Test
     fun oversizedChallengesAreRejectedBeforeInitializingQuickJs() =
         runBlocking {
             val solver = EjsChallengeSolver(QuickJsEngine(), InnerTubeLogger.NONE)
@@ -131,6 +157,7 @@ class EjsChallengeSolverTest {
         }
 
     private companion object {
+        const val LARGE_PLAYER_JS_LENGTH = 2 * 1024 * 1024
         const val PLAYER_URL = "https://www.youtube.com/s/player/12345678/player.js"
         const val OTHER_PLAYER_URL = "https://www.youtube.com/s/player/87654321/player.js"
         val PLAYER_CODE =
