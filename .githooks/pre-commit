@@ -5,7 +5,7 @@ repository_root=$(git rev-parse --show-toplevel)
 cd "$repository_root"
 
 printf '%s\n' 'Running InnerTubeX pre-commit checks...'
-if ! ./gradlew ktlintCheck apiCheck --no-configuration-cache; then
+if ! ./gradlew ktlintCheck apiCheck --no-configuration-cache --no-parallel --max-workers=2 -Dorg.gradle.jvmargs='-Xmx2g -XX:MaxMetaspaceSize=768m'; then
     printf '%s\n' '' >&2
     printf '%s\n' 'Pre-commit checks failed.' >&2
     printf '%s\n' 'Run ./gradlew ktlintFormat to fix formatting.' >&2

@@ -73,6 +73,10 @@ kotlin {
     }
 }
 
+apiValidation { ignoredProjects.add("harness") }
+
+tasks.named("allTests") { dependsOn(":harness:test") }
+
 configure<KtlintExtension> {
     version.set("1.8.0")
     baseline.set(layout.projectDirectory.file("ktlint-baseline.xml"))

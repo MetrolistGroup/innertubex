@@ -114,6 +114,15 @@ host-owned. Never log an `ExtractedStream`, PO-token values, signed URLs, or
 authenticated session fields; library model `toString()` implementations redact
 those values as defense in depth.
 
+## Standalone playback diagnostics
+
+Run `./gradlew :harness:run --args='--help'` to see the offline CLI help, or
+`--args='--list-clients'` for the offline profile catalog. The source-built
+JVM harness performs opt-in 90-second paced audio playback with real backward/forward
+transport seeks, HLS/direct/SABR profiles, a quick `--seconds` smoke mode and
+sanitized local reports. Run `--help` for options. Live checks are never part
+of `allTests`.
+
 ## Development
 
 ```bash
