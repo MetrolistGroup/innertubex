@@ -366,7 +366,8 @@ internal class HlsSession(
                 }
             return minOf(duration * 16, before.first + after.first) to before.second
         }
-        val decoder = decoder("pipe:0", relative - part.start, listOf("-f", if (part.map != null) "mp4" else "mpegts"))
+        // No init map does not imply MPEG-TS: separate audio renditions can carry ADTS AAC.
+        val decoder = decoder("pipe:0", relative - part.start, if (part.map != null) listOf("-f", "mp4") else emptyList())
         val scope = CoroutineScope(currentCoroutineContext() + SupervisorJob())
         val writer =
             scope.async(Dispatchers.IO) {

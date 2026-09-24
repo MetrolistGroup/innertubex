@@ -432,6 +432,60 @@ https://a.googlevideo.com/videoplayback/two
             }
         }
 
+    @Test fun hlsAdtsAudioWithoutMap() =
+        runBlocking {
+            assumeTrue(hasFfmpeg())
+            val file = Files.createTempFile("harness-adts-", ".aac").toFile()
+            try {
+                val maker =
+                    ProcessBuilder(
+                        "ffmpeg",
+                        "-nostdin",
+                        "-v",
+                        "quiet",
+                        "-f",
+                        "lavfi",
+                        "-i",
+                        "sine=frequency=440:duration=2",
+                        "-c:a",
+                        "aac",
+                        "-f",
+                        "adts",
+                        "-y",
+                        file.absolutePath,
+                    ).start()
+                awaitProcess(maker, 10)
+                assertEquals(0, maker.exitValue())
+                val segment = file.readBytes()
+                val master =
+                    "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",DEFAULT=YES,URI=\"audio\"\n" +
+                        "#EXT-X-STREAM-INF:BANDWIDTH=1000000,AUDIO=\"audio\"\nvideo\n"
+                val playlist =
+                    "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2,\npart0\n#EXTINF:2,\npart1\n#EXT-X-ENDLIST\n"
+                HttpClient(
+                    MockEngine { request ->
+                        respond(
+                            when (request.url.encodedPath.substringAfterLast('/')) {
+                                "master" -> master.toByteArray()
+                                "audio" -> playlist.toByteArray()
+                                "part0", "part1" -> segment
+                                else -> error("Unexpected HLS request")
+                            },
+                        )
+                    },
+                ).use { http ->
+                    val source = stream("http://127.0.0.1:8877/fixture/master", 0, "application/x-mpegURL")
+                    val session = HlsSession(http, source, MediaBudget(5_000_000), true)
+                    for (target in listOf(0L, 2250L, 1750L)) {
+                        assertEquals(8000L, session.play(target, 500) { _, _, _ -> }.first)
+                    }
+                    assertEquals("AUDIO_0", session.representation)
+                }
+            } finally {
+                file.delete()
+            }
+        }
+
     @Test fun hlsPacedSeekAndLate403() =
         runBlocking {
             assumeTrue(hasFfmpeg())
