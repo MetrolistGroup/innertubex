@@ -218,6 +218,20 @@ internal fun hints(
         playbackClientOverrideId = client.takeUnless { it == "AUTO" },
     ).withPremium(premium)
 
+internal fun readCookieFile(file: File): String {
+    require(file.length() in 1..16384) { "Invalid cookie file size" }
+    val lines =
+        file
+            .readText()
+            .lines()
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+    require(lines.isNotEmpty() && lines.all { '=' in it && it.none { char -> char == '\r' || char == '\t' || char == '\u0000' } }) {
+        "Invalid cookie file"
+    }
+    return lines.joinToString("; ").also { require(it.length in 1..16384) { "Invalid cookie file" } }
+}
+
 private fun proxy(value: String?): Proxy? {
     if (value.isNullOrBlank()) return null
     val uri = URI(value)
@@ -367,19 +381,7 @@ fun main(args: Array<String>) {
         require((auth == "cookie") == ("cookie-file" in opts) && (auth == "cookie" || "premium-confirmed" !in opts)) {
             "Cookie file required only for cookie mode; premium requires cookie mode"
         }
-        val cookie =
-            opts["cookie-file"]?.singleOrNull()?.let {
-                File(it)
-                    .also { file ->
-                        require(file.length() in 1..16384) { "Invalid cookie file size" }
-                    }.readText()
-                    .trim()
-                    .also { content ->
-                        require(
-                            content.length in 1..16384 && !content.contains('\n'),
-                        ) { "Invalid cookie file" }
-                    }
-            }
+        val cookie = opts["cookie-file"]?.singleOrNull()?.let { readCookieFile(File(it)) }
         val selectedProxy = proxy(opts["proxy"]?.singleOrNull() ?: System.getenv("HTTPS_PROXY")?.takeIf { it.isNotBlank() })
         val tokenMode = opts["tokens"]?.singleOrNull() ?: "browser"
         require(tokenMode in setOf("browser", "off")) { "Invalid token mode" }

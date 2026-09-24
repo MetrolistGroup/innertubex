@@ -35,6 +35,18 @@ class HarnessTest {
         assertFailsWith<IllegalArgumentException> { validate(listOf(Case("sample", "AAAAAAAAAAA"), Case("sample", "BBBBBBBBBBB"))) }
     }
 
+    @Test fun multilineCookieFile() {
+        val file = Files.createTempFile("harness-cookies-", ".txt").toFile()
+        try {
+            file.writeText("SAPISID=example; SID=example\n__Secure-1PAPISID=example\n")
+            assertEquals("SAPISID=example; SID=example; __Secure-1PAPISID=example", readCookieFile(file))
+            file.writeText("SAPISID=example\nAuthorization: Bearer example")
+            assertFailsWith<IllegalArgumentException> { readCookieFile(file) }
+        } finally {
+            file.delete()
+        }
+    }
+
     @Test fun captureRedactsNestedUnknownAndNumericIds() {
         val text =
             """{"videoId":"AAAAAAAAAAA","url":"https://host/?token=secret","otherId":123456,"context":{
