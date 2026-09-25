@@ -6,6 +6,19 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-09-26
+
+### Added
+
+- Add a standalone playback verification harness for paced client benchmarks.
+
+### Fixed
+
+- Prefer sustained visionOS audio for automatic explicit and SABR selection.
+- Retain cumulative SABR buffered ranges across empty responses and span
+  checked timestamps instead of the latest response only.
+- Avoid redundant EJS source copies in the cipher solver.
+
 ## [0.7.0] - 2026-09-18
 
 ### Added
