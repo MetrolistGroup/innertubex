@@ -608,6 +608,23 @@ class InnerTubeExtractorTest {
         }
 
     @Test
+    fun explicitAudioUsesVisionosWithWatchConfigRatherThanNormalFastPath() =
+        runBlocking {
+            val client = jsonClient(DIRECT_RESPONSE)
+            val parser = CountingParser()
+            try {
+                val stream =
+                    makeExtractor(client, InnerTube(client, retryDelay = {}), parser, fallback = ContentAwareFallbackStrategy())
+                        .extract("video", ContentHints(isExplicit = true))
+
+                assertEquals("VISIONOS_0_1__nopo", assertNotNull(stream).profileId)
+                assertEquals(1, parser.calls)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
     fun normalDirectFailureTriesAnonymousWatchConfigBeforeAuthenticated() =
         runBlocking {
             val configModes = mutableListOf<Boolean>()

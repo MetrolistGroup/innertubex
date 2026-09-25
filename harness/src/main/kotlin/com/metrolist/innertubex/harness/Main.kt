@@ -130,9 +130,9 @@ internal data class Attempt(
 private val HELP = """InnerTubeX playback harness (no network for help/list-clients)
 ./gradlew :harness:run --args='--cases /path/to/cases.json --client AUTO,WEB_REMIX_SABR'
 Default: paced decoded PCM initial 0..70s, seek back 20s to 50..60s,
-seek forward 30s from 60s to 90..100s; 90s total audio, 3 real transport stages.
+seek forward up to 30s for final 10s (short clips stop before EOF); 90s total audio, 3 real transport stages.
 --seconds N instead runs legacy offline decode/download smoke (no seeks, not benchmark).
-Options: --id VIDEO_ID (repeatable), --cases FILE, --client AUTO|ALL|comma-separated IDs,
+Options: --id VIDEO_ID (repeatable), --cases FILE, --client AUTO|SABR_FIRST|ALL|comma-separated IDs,
 --quality AUTO|LOW|HIGH|MP4, --repetitions 1..10, --seconds 1..120 (smoke only),
 --max-bytes 2..64 (MiB), --deadline 5..300 (default 240s per attempt), --pace-ms 0..10000,
 --auth anonymous|cookie, --cookie-file FILE (only with cookie mode), --premium-confirmed (cookie mode only),
@@ -204,6 +204,8 @@ private fun number(
         }
     ).also { require(it in range) { "Invalid $name" } }
 
+internal val AUTOMATIC_SELECTIONS = setOf("AUTO", "SABR_FIRST")
+
 internal fun hints(
     case: Case,
     client: String,
@@ -215,7 +217,8 @@ internal fun hints(
         isAgeRestricted = (case.hint == "age").takeIf { it },
         isLive = (case.hint == "live").takeIf { it },
         isUploaded = (case.hint == "uploads").takeIf { it },
-        playbackClientOverrideId = client.takeUnless { it == "AUTO" },
+        playbackClientOverrideId = client.takeUnless { it in AUTOMATIC_SELECTIONS },
+        sabrFirst = client == "SABR_FIRST",
     ).withPremium(premium)
 
 internal fun readCookieFile(file: File): String {
@@ -346,7 +349,7 @@ fun main(args: Array<String>) {
             return
         }
         if ("list-clients" in opts) {
-            println("AUTO")
+            AUTOMATIC_SELECTIONS.forEach(::println)
             PlaybackClientCatalog.benchmarkOptions.forEach { println("${it.id} ${it.manifest.transports} ${it.manifest.selectionMode}") }
             return
         }
@@ -362,12 +365,16 @@ fun main(args: Array<String>) {
         validate(cases)
         val clients =
             opts["client"]?.singleOrNull()?.let { value ->
-                if (value == "ALL") listOf("AUTO") + PlaybackClientCatalog.benchmarkOptions.map { it.id } else value.split(',')
+                if (value == "ALL") {
+                    AUTOMATIC_SELECTIONS.toList() + PlaybackClientCatalog.benchmarkOptions.map { it.id }
+                } else {
+                    value.split(',')
+                }
             } ?: listOf("AUTO")
         require(
             clients.isNotEmpty() &&
                 clients.distinct().size == clients.size &&
-                clients.all { it == "AUTO" || PlaybackClientCatalog.findBenchmark(it) != null },
+                clients.all { it in AUTOMATIC_SELECTIONS || PlaybackClientCatalog.findBenchmark(it) != null },
         ) { "Unknown or duplicate client" }
         val quality = opts["quality"]?.singleOrNull()?.let(AudioQuality::valueOf) ?: AudioQuality.HIGH
         val reps = number(opts, "repetitions", 1, 1..10)
@@ -403,7 +410,7 @@ fun main(args: Array<String>) {
                     "clients" to clients.joinToString(","),
                     "quality" to quality.name,
                     "auth" to auth,
-                    "mode" to if (seconds == null) "paced-70-back20-play10-forward30-play10" else "decode-smoke",
+                    "mode" to if (seconds == null) "paced-70-back20-play10-forward-up-to30-play10" else "decode-smoke",
                     "seconds" to (seconds?.toString() ?: "90"),
                     "repetitions" to reps.toString(),
                     "maxBytes" to maxBytes.toString(),

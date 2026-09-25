@@ -143,6 +143,15 @@ class PlaybackTest {
         assertEquals(90_000, plan.initialMs + 2 * plan.afterMs)
     }
 
+    @Test fun forwardSeekFitsShortFixturesWithoutReducingDecodedTime() {
+        val plan = PlaybackPlan()
+        assertEquals(90_000, forwardSeekMs(plan, null))
+        assertEquals(90_000, forwardSeekMs(plan, 180))
+        assertEquals(85_000, forwardSeekMs(plan, 96))
+        assertEquals(90_000, plan.initialMs + 2 * plan.afterMs)
+        assertFailsWith<IllegalStateException> { forwardSeekMs(plan, 70) }
+    }
+
     @Test fun hlsParsingAndSafety() {
         val base = "https://manifest.googlevideo.com/api/manifest/hls_playlist/x"
         val playlist = """#EXTM3U

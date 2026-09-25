@@ -110,10 +110,6 @@ data class YouTubeClient(
                 useWebPoTokens = true,
             )
 
-        /**
-         * Super reliable client, works faster than WEB_REMIX as of July 2026.
-         * Works for normal, explicit, and kids content when signed in.
-         */
         val TVHTML5 =
             YouTubeClient(
                 clientName = "TVHTML5",

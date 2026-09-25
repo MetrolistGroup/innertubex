@@ -137,6 +137,9 @@ class ContentAwareFallbackStrategy(
             if (checkContentSupport && contentSupport == CapabilitySupport.UNSUPPORTED) {
                 add("content type unsupported")
             }
+            if (manifest.id in setOf("VISIONOS_0_1", "VISIONOS_SABR") && request.hints.isExplicit == true && request.hints.wantVideo) {
+                add("explicit video playback unverified")
+            }
             if (request.hints.wantVideo &&
                 manifest.transports.none { it == PlaybackTransport.DIRECT || it == PlaybackTransport.SABR }
             ) {
@@ -235,6 +238,19 @@ class ContentAwareFallbackStrategy(
             CapabilitySupport.LIMITED -> adjust(-12, "content-limited")
             CapabilitySupport.UNKNOWN -> adjust(-4, "content-unknown")
             CapabilitySupport.UNSUPPORTED -> Unit
+        }
+        // Sustained explicit audio passed on visionOS 0.1; a playable Web Remix response alone
+        // does not establish that its later media ranges will work.
+        if (request.hints.isExplicit == true && request.hints.isAgeRestricted != true &&
+            request.hints.isLive != true && !request.hints.wantVideo && manifest.id == "VISIONOS_0_1"
+        ) {
+            adjust(20, "explicit-audio-playback")
+        }
+
+        // Prefer sustained audio playback over Web SABR responses that stall on attestation.
+        // Keep the existing video ordering: these probes only decoded audio.
+        if (manifest.id == "VISIONOS_SABR" && !request.hints.wantVideo) {
+            adjust(80, "sabr-audio-playback")
         }
 
         val restrictedContent =

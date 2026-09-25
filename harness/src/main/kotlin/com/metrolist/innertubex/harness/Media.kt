@@ -31,7 +31,7 @@ internal fun matchesProfile(
     stream: ExtractedStream,
 ): Boolean =
     (
-        requested == "AUTO" &&
+        requested in AUTOMATIC_SELECTIONS &&
             PlaybackClientCatalog.automaticManifests.any {
                 stream.profileId in PlaybackClientCatalog.profileIds(it, stream.profileId.endsWith("__po"))
             }
@@ -281,7 +281,7 @@ internal suspend fun probe(
     onProgress: (Attempt) -> Unit = {},
     tokenCapabilities: TokenProviderCapabilities = TokenProviderCapabilities(),
 ): Attempt {
-    val manifest = requested.takeUnless { it == "AUTO" }?.let(PlaybackClientCatalog::findBenchmark)?.manifest
+    val manifest = requested.takeUnless { it in AUTOMATIC_SELECTIONS }?.let(PlaybackClientCatalog::findBenchmark)?.manifest
     if (!authenticated && (case.hint == "uploads" || manifest?.authentication == AuthenticationPolicy.REQUIRED)) {
         return Attempt(case.alias, requested, phase, iteration, "unsupported", "login_required")
     }

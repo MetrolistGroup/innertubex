@@ -199,6 +199,34 @@ class SabrCoreTest {
     }
 
     @Test
+    fun processorReadsUnsignedByteMediaHeaderIds() {
+        // Media payload IDs are bytes, unlike the UMP framing varints.
+        val response =
+            umpPart(UmpPartType.MEDIA_HEADER, mediaHeader(headerId = 128, contentLength = 3)) +
+                umpPart(UmpPartType.MEDIA, byteArrayOf(128.toByte(), 1, 2)) +
+                umpPart(UmpPartType.MEDIA, byteArrayOf(128.toByte(), 3)) +
+                umpPart(UmpPartType.MEDIA_END, byteArrayOf(128.toByte()))
+        val processor = SabrUmpProcessor()
+        val events = processor.feed(response)
+        processor.finish()
+
+        assertEquals(
+            128,
+            events
+                .filterIsInstance<SabrEvent.Segment>()
+                .single()
+                .segment.header.headerId,
+        )
+        assertContentEquals(
+            byteArrayOf(1, 2, 3),
+            events
+                .filterIsInstance<SabrEvent.Segment>()
+                .single()
+                .segment.data,
+        )
+    }
+
+    @Test
     fun processorCapsTotalResponseBytes() {
         val response = umpPart(20, ByteArray(64))
         val processor = SabrUmpProcessor(maxResponseBytes = response.size.toLong() - 1)

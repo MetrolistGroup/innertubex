@@ -189,7 +189,7 @@ class PlaybackClientStrategyTest {
             )
 
         assertEquals(
-            "WEB_REMIX_SABR",
+            "VISIONOS_SABR",
             result.candidates
                 .first()
                 .manifest
@@ -198,6 +198,60 @@ class PlaybackClientStrategyTest {
         val firstDirect = result.candidates.indexOfFirst { !it.client.useSabr }
         assertTrue(firstDirect > 0)
         assertTrue(result.candidates.take(firstDirect).all { it.client.useSabr })
+    }
+
+    @Test
+    fun sabrAudioPrefersSustainedPlaybackWithoutWeakeningRestrictions() {
+        val strategy = ContentAwareFallbackStrategy()
+        val request =
+            ClientSelectionRequest(
+                hints = ContentHints(isExplicit = true, sabrFirst = true),
+                authenticated = true,
+                availablePoTokenProviders = allProviders,
+                transportPreference = PlaybackTransportPreference.SABR,
+            )
+        assertEquals(
+            "VISIONOS_SABR",
+            strategy
+                .selectClients(request)
+                .candidates
+                .first()
+                .manifest
+                ?.id,
+        )
+        assertEquals(
+            "VISIONOS_SABR",
+            strategy
+                .selectClients(request.copy(authenticated = false, availablePoTokenProviders = emptySet()))
+                .candidates
+                .first()
+                .manifest
+                ?.id,
+        )
+        assertTrue(
+            strategy
+                .selectClients(request.copy(excludedClients = setOf("VISIONOS_SABR__nopo")))
+                .candidates
+                .none { it.manifest?.id == "VISIONOS_SABR" },
+        )
+        for (hints in listOf(
+            request.hints.copy(isAgeRestricted = true),
+            request.hints.copy(isKidsContent = true),
+            request.hints.copy(isLive = true),
+            request.hints.copy(isUploaded = true),
+            request.hints.copy(wantVideo = true),
+        )) {
+            assertTrue(strategy.selectClients(request.copy(hints = hints)).candidates.none { it.manifest?.id == "VISIONOS_SABR" })
+        }
+        assertEquals(
+            "WEB_REMIX_SABR",
+            strategy
+                .selectClients(request.copy(hints = request.hints.copy(playbackClientOverrideId = "WEB_REMIX_SABR")))
+                .candidates
+                .single()
+                .manifest
+                ?.id,
+        )
     }
 
     @Test
@@ -324,18 +378,80 @@ class PlaybackClientStrategyTest {
     }
 
     @Test
-    fun explicitPlaybackKeepsProvenDirectClientFirst() {
-        val candidates =
-            ContentAwareFallbackStrategy()
-                .selectClients(
-                    ClientSelectionRequest(
-                        hints = ContentHints(isExplicit = true),
-                        authenticated = true,
-                        availablePoTokenProviders = allProviders,
-                        webViewAvailable = true,
-                    ),
-                ).candidates
-        assertEquals("WEB_REMIX", candidates.first().manifest?.id)
+    fun explicitAudioPrefersSustainedPlaybackOverPlayableWebResponse() {
+        val strategy = ContentAwareFallbackStrategy()
+        val request =
+            ClientSelectionRequest(
+                hints = ContentHints(isExplicit = true),
+                authenticated = true,
+                availablePoTokenProviders = allProviders,
+                webViewAvailable = true,
+            )
+        assertEquals(CapabilitySupport.LIMITED, PlaybackClientCatalog.findManifest("VISIONOS_0_1")?.content?.explicit)
+        assertEquals(
+            "VISIONOS_0_1",
+            strategy
+                .selectClients(request)
+                .candidates
+                .first()
+                .manifest
+                ?.id,
+        )
+        assertEquals(
+            "WEB_REMIX",
+            strategy
+                .selectClients(request.copy(excludedClients = setOf("VISIONOS_0_1__nopo")))
+                .candidates
+                .first()
+                .manifest
+                ?.id,
+        )
+        assertEquals(
+            "WEB_REMIX",
+            strategy
+                .selectClients(request.copy(hints = ContentHints(isExplicit = true, isAgeRestricted = true)))
+                .candidates
+                .first()
+                .manifest
+                ?.id,
+        )
+        assertEquals(
+            "WEB_REMIX",
+            strategy
+                .selectClients(request.copy(hints = ContentHints(isExplicit = true, playbackClientOverrideId = "WEB_REMIX")))
+                .candidates
+                .single()
+                .manifest
+                ?.id,
+        )
+    }
+
+    @Test
+    fun explicitVideoDoesNotAutoSelectAudioOnlyEvidence() {
+        val strategy = ContentAwareFallbackStrategy()
+        val request =
+            ClientSelectionRequest(
+                hints = ContentHints(isExplicit = true, wantVideo = true),
+                authenticated = false,
+                availablePoTokenProviders = allProviders,
+                transportPreference = PlaybackTransportPreference.DIRECT,
+            )
+        val automatic = strategy.selectClients(request)
+        assertTrue(automatic.candidates.isNotEmpty())
+        assertTrue(automatic.candidates.none { it.manifest?.id == "VISIONOS_0_1" })
+        assertTrue(automatic.rejected.any { it.manifest.id == "VISIONOS_0_1" })
+
+        val forced =
+            strategy.selectClients(
+                request.copy(hints = request.hints.copy(playbackClientOverrideId = "VISIONOS_0_1")),
+            )
+        assertEquals(
+            "VISIONOS_0_1",
+            forced.candidates
+                .single()
+                .manifest
+                ?.id,
+        )
     }
 
     @Test

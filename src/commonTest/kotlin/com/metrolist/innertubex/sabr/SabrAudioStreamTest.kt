@@ -352,6 +352,83 @@ class SabrAudioStreamTest {
         }
 
     @Test
+    fun followupRetainsBufferedTimeSpanAcrossEmptyResponseAndTimestampRounding() =
+        runBlocking {
+            val diagnostics = mutableListOf<SabrResponseDiagnostics>()
+            val requests = mutableListOf<ByteArray>()
+            val engine =
+                MockEngine { request ->
+                    requests += (request.body as OutgoingContent.ByteArrayContent).bytes()
+                    respond(
+                        content =
+                            when (requests.size) {
+                                1 -> {
+                                    initializationAndSegmentResponse(endSegmentNumber = 2, durationMs = 3_005)
+                                }
+
+                                2 -> {
+                                    mediaResponseSegment(
+                                        headerId = 3,
+                                        sequenceNumber = 1,
+                                        startMs = 1_010,
+                                        data = byteArrayOf(8, 9, 10),
+                                    )
+                                }
+
+                                3 -> {
+                                    umpPart(UmpPartType.NEXT_REQUEST_POLICY, nextRequestPolicy(0))
+                                }
+
+                                else -> {
+                                    mediaResponseSegment(
+                                        headerId = 4,
+                                        sequenceNumber = 2,
+                                        startMs = 2_005,
+                                        data = byteArrayOf(11, 12, 13),
+                                    ) +
+                                        umpPart(UmpPartType.END_OF_TRACK, byteArrayOf())
+                                }
+                            },
+                        status = HttpStatusCode.OK,
+                        headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"),
+                    )
+                }
+
+            val chunks =
+                SabrAudioStream(
+                    HttpClient(engine),
+                    bootstrap().copy(durationMs = 3_005, contentLengthBytes = 13),
+                    onResponse = diagnostics::add,
+                ).chunks().toList()
+
+            assertEquals(listOf(null, 0, 1, 2), chunks.map(SabrChunk::sequenceNumber))
+            assertEquals(4, requests.size)
+            assertEquals(SabrBufferedRange(SabrFormatId(140, 100, "x"), 0, 2_010, 0, 1), diagnostics[1].bufferedRanges.single())
+            assertEquals(diagnostics[1].bufferedRanges, diagnostics[2].bufferedRanges)
+            assertEquals(SabrBufferedRange(SabrFormatId(140, 100, "x"), 0, 3_005, 0, 2), diagnostics[3].bufferedRanges.single())
+            assertEquals(2_010, decodePlayerTimeMs(requests[3]))
+            val range =
+                ProtoReader(requests[3]).let { reader ->
+                    while (reader.hasRemaining) {
+                        val tag = reader.tag()
+                        if (tag.field == 3) {
+                            val value = reader.bytes()
+                            val fields = ProtoReader(value)
+                            while (fields.hasRemaining) {
+                                val field = fields.tag()
+                                if (field.field == 5) return@let fields.varint()
+                                fields.skip(field)
+                            }
+                        } else {
+                            reader.skip(tag)
+                        }
+                    }
+                    null
+                }
+            assertEquals(1L, range)
+        }
+
+    @Test
     fun multiSegmentResponsePreservesBufferedRangeDiagnostics() =
         runBlocking {
             val diagnostics = mutableListOf<SabrResponseDiagnostics>()
@@ -372,6 +449,7 @@ class SabrAudioStreamTest {
                 ).chunks().toList()
 
             assertEquals(3, chunks.size)
+            assertEquals(200, diagnostics.single().httpStatus)
             assertEquals(6, diagnostics.single().selectedMediaBytes)
             assertEquals(2, diagnostics.single().selectedSegmentCount)
             assertEquals(SabrBufferedRange(SabrFormatId(140, 100, "x"), 0, 2_000, 0, 1), diagnostics.single().bufferedRanges.single())

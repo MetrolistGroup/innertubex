@@ -65,6 +65,16 @@ internal data class PlaybackPlan(
     }
 }
 
+internal fun forwardSeekMs(
+    plan: PlaybackPlan,
+    durationSeconds: Long?,
+): Long {
+    val backwardEnd = plan.initialMs - plan.backMs + plan.afterMs
+    val requested = backwardEnd + plan.forwardMs
+    val latest = durationSeconds?.takeIf { it in 1..86_400 }?.let { it * 1_000 - plan.afterMs - 1_000 }
+    return minOf(requested, latest ?: requested).also { check(it > backwardEnd) { "Seek outside media" } }
+}
+
 internal class MediaBudget(
     private val max: Long,
 ) {
@@ -430,7 +440,7 @@ internal suspend fun playbackProbe(
     budget: MediaBudget = MediaBudget(maxBytes),
     onProgress: (Attempt) -> Unit = {},
 ): Attempt {
-    val manifest = requested.takeUnless { it == "AUTO" }?.let(PlaybackClientCatalog::findBenchmark)?.manifest
+    val manifest = requested.takeUnless { it in AUTOMATIC_SELECTIONS }?.let(PlaybackClientCatalog::findBenchmark)?.manifest
     if (!authenticated && (case.hint == "uploads" || manifest?.authentication == AuthenticationPolicy.REQUIRED)) {
         return Attempt(case.alias, requested, phase, iteration, "unsupported", "login_required")
     }
@@ -490,7 +500,7 @@ internal suspend fun playbackProbe(
     if (base.transport != "HLS" && stream.mimeType !in setOf("audio/webm", "audio/mp4")) {
         return base.copy(reason = "decoder_format")
     }
-    if (requested != "AUTO" &&
+    if (requested !in AUTOMATIC_SELECTIONS &&
         (attempts.size != 1 || PlaybackClientCatalog.manifestIdFromProfileId(attempts.single().profileId) != requested)
     ) {
         return base.copy(reason = "profile_attempts")
@@ -523,7 +533,15 @@ internal suspend fun playbackProbe(
                                     if (sabrLog.size < 128) {
                                         sabrLog += "request=${diagnostic.requestNumber},http=${sabrHttpStatus(diagnostic.httpStatus)}," +
                                             "bytes=${diagnostic.responseBytes},media=${diagnostic.selectedMediaBytes}," +
-                                            "segments=${diagnostic.selectedSegmentCount},failure=${safeSabrFailure(
+                                            "segments=${diagnostic.selectedSegmentCount},time=${diagnostic.requestPlayerTimeMs}," +
+                                            "observed=${diagnostic.observedPlaybackPositionMs}," +
+                                            "buffered=${diagnostic.bufferedRanges.singleOrNull()?.durationMs ?: 0}," +
+                                            "readahead=${diagnostic.minAudioReadaheadMs}..${diagnostic.targetAudioReadaheadMs}," +
+                                            "protection=${diagnostic.protectionStatus ?: "none"}," +
+                                            "maxRetries=${diagnostic.protectionMaxRetries ?: "none"}," +
+                                            "token=${if (bootstrap.poToken == null) "missing" else "present"}," +
+                                            "kind=${if (diagnostic.failureCategory == null) "response" else "terminal"}," +
+                                            "failure=${safeSabrFailure(
                                                 diagnostic.failureCategory,
                                             )}"
                                     }
@@ -635,7 +653,7 @@ internal suspend fun playbackProbe(
         for ((name, offset, duration) in listOf(
             Triple("initial", 0L, plan.initialMs),
             Triple("backward", plan.initialMs - plan.backMs, plan.afterMs),
-            Triple("forward", plan.initialMs - plan.backMs + plan.afterMs + plan.forwardMs, plan.afterMs),
+            Triple("forward", forwardSeekMs(plan, stream.mediaMetadata?.durationSeconds), plan.afterMs),
         )) {
             val started = System.nanoTime()
             var target = hlsAnchor + offset

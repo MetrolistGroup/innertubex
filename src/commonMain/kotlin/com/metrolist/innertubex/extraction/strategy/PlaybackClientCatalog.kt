@@ -133,16 +133,12 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 selectionMode = ClientSelectionMode.AUTOMATIC,
                 priority = 100,
                 transports = setOf(PlaybackTransport.DIRECT),
-                content = normalSongsOnlyContent(),
-                benchmarkContent =
-                    normalSongsOnlyContent().copy(
-                        explicit = CapabilitySupport.LIMITED,
-                    ),
+                content = normalSongsOnlyContent().copy(explicit = CapabilitySupport.LIMITED),
                 evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_METROLIST),
                 notes =
-                    "Anonymous playback passed both normal samples with 90-second playback, bidirectional " +
-                        "seeks, and complete telemetry. Explicit results were inconsistent, so " +
-                        "automatic selection remains normal-only.",
+                    "Anonymous playback passed both normal samples and one non-age-gated explicit sample " +
+                        "with 90-second playback and bidirectional seeks. Age-gated media was rejected; " +
+                        "explicit support remains limited to reflect the single successful sample.",
             ),
             manifest(
                 id = "ANDROID_VR_1_65_10",
@@ -717,12 +713,12 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 selectionMode = ClientSelectionMode.AUTOMATIC,
                 priority = 0,
                 transports = setOf(PlaybackTransport.SABR),
-                content = normalSongsOnlyContent(),
-                benchmarkContent = normalSongsOnlyContent().copy(explicit = CapabilitySupport.LIMITED),
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_ANDROID_SABR_BENCHMARK, SOURCE_YTDLP),
+                content = normalSongsOnlyContent().copy(explicit = CapabilitySupport.LIMITED),
+                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_ANDROID_SABR_BENCHMARK, SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP),
                 notes =
-                    "Passed both normal benchmark cases with 90-second playback, bidirectional seeks, and a " +
-                        "current complete-track probe. Automatic selection is limited to normal content.",
+                    "Passed both normal samples and one non-age-gated explicit audio sample with 90-second " +
+                        "playback and bidirectional seeks. Kids and age-gated media were rejected; explicit " +
+                        "support remains limited to reflect the single successful sample.",
             ),
             manifest(
                 id = "TVHTML5_SABR",

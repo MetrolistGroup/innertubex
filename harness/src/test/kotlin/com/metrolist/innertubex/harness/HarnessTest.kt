@@ -177,6 +177,10 @@ class HarnessTest {
 
     @Test fun transportDiagnostics() {
         assertTrue(hints(Case("live", "AAAAAAAAAAA", "live"), "AUTO", false).allowHls)
+        val sabr = hints(Case("explicit", "AAAAAAAAAAA", "explicit"), "SABR_FIRST", false)
+        assertTrue(sabr.sabrFirst && sabr.isExplicit == true && sabr.playbackClientOverrideId == null)
+        assertFalse(hints(Case("normal", "AAAAAAAAAAA"), "AUTO", false).sabrFirst)
+        assertEquals("WEB_SABR", hints(Case("normal", "AAAAAAAAAAA"), "WEB_SABR", false).playbackClientOverrideId)
         assertEquals("none", safeSabrFailure(null))
         assertEquals("ATTESTATION_REQUIRED", safeSabrFailure("ATTESTATION_REQUIRED"))
         assertEquals("other", safeSabrFailure("unknown-response"))
@@ -207,6 +211,9 @@ class HarnessTest {
         assertTrue(matchesProfile("WEB_REMIX", stream()))
         assertFalse(matchesProfile("WEB_REMIX_SABR", stream()))
         assertTrue(matchesProfile("AUTO", stream()))
+        assertTrue(matchesProfile("SABR_FIRST", stream()))
+        assertTrue(matchesProfile("SABR_FIRST", stream().copy(profileId = "VISIONOS_SABR__nopo")))
+        assertFalse(matchesProfile("SABR_FIRST", stream().copy(profileId = "ANDROID_VR_SABR__nopo")))
         assertFalse(matchesProfile("AUTO", stream().copy(profileId = "ANDROID_VR_1_65_10__nopo")))
         assertFalse(matchesProfile("AUTO", stream().copy(profileId = "WEB_REMIX__invalid")))
         assertTrue(matchesProfile("WEB_REMIX", stream().copy(profileId = "WEB_REMIX__po")))

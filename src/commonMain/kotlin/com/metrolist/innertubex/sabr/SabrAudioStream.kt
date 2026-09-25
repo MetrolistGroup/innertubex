@@ -141,6 +141,7 @@ private class SabrMediaStream(
             var maxTimeSinceLastRequestMs = 0L
             var minAudioReadaheadMs = 0L
             var bufferedRanges = emptyList<SabrBufferedRange>()
+            var firstBufferedSegment: SabrMediaHeader? = null
             var backoffTimeMs = 0L
             var requestsWithoutProgress = 0
             var ended = false
@@ -283,7 +284,6 @@ private class SabrMediaStream(
                             val pendingMediaBySequence = linkedMapOf<Int, SabrSegment>()
                             var firstNewSegmentHeader: SabrMediaHeader? = null
                             var lastNewSegmentHeader: SabrMediaHeader? = null
-                            var newSegmentsDurationMs = 0L
                             var newSegmentsBytes = 0L
                             var newSegmentCount = 0
 
@@ -295,13 +295,8 @@ private class SabrMediaStream(
                                 cumulativeMediaBytes += segment.data.size
                                 cumulativeStreamBytes += segment.data.size
                                 cumulativeSegmentCount++
-                                val durationMs = segment.header.durationMs
-                                if (newSegmentsDurationMs > Long.MAX_VALUE - durationMs) {
-                                    throw SabrProtocolException("SABR buffered duration exceeded the supported range")
-                                }
                                 if (firstNewSegmentHeader == null) firstNewSegmentHeader = segment.header
                                 lastNewSegmentHeader = segment.header
-                                newSegmentsDurationMs += durationMs
                                 newSegmentsBytes += segment.data.size
                                 newSegmentCount++
                             }
@@ -522,20 +517,20 @@ private class SabrMediaStream(
 
                             if (newSegmentCount > 0) {
                                 requestsWithoutProgress = 0
-                                val firstBufferedSegment = checkNotNull(firstNewSegmentHeader)
-                                val lastBufferedSegment = checkNotNull(lastNewSegmentHeader)
+                                if (firstBufferedSegment == null) firstBufferedSegment = firstNewSegmentHeader
+                                val first = checkNotNull(firstBufferedSegment)
+                                val last = checkNotNull(lastNewSegmentHeader)
                                 bufferedRanges =
                                     listOf(
                                         SabrBufferedRange(
                                             formatId = selectedFormat,
-                                            startTimeMs = firstBufferedSegment.startMs,
-                                            durationMs = newSegmentsDurationMs,
-                                            startSegmentIndex = firstBufferedSegment.sequenceNumber,
-                                            endSegmentIndex = lastBufferedSegment.sequenceNumber,
+                                            startTimeMs = first.startMs,
+                                            // End timestamps have been checked; durations can have rounding gaps/overlap.
+                                            durationMs = (last.startMs + last.durationMs - first.startMs).coerceAtLeast(0L),
+                                            startSegmentIndex = first.sequenceNumber,
+                                            endSegmentIndex = last.sequenceNumber,
                                         ),
                                     )
-                            } else {
-                                bufferedRanges = emptyList()
                             }
 
                             when {
@@ -575,6 +570,7 @@ private class SabrMediaStream(
                                     maxTimeSinceLastRequestMs = maxTimeSinceLastRequestMs,
                                     backoffTimeMs = backoffTimeMs,
                                     responseBytes = responseBytes,
+                                    httpStatus = response.status.value,
                                     selectedMediaBytes = newSegmentsBytes,
                                     cumulativeMediaBytes = cumulativeMediaBytes,
                                     selectedSegmentCount = newSegmentCount,
