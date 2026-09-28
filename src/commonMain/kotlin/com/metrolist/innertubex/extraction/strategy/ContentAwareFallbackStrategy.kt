@@ -239,14 +239,6 @@ class ContentAwareFallbackStrategy(
             CapabilitySupport.UNKNOWN -> adjust(-4, "content-unknown")
             CapabilitySupport.UNSUPPORTED -> Unit
         }
-        // Sustained explicit audio passed on visionOS 0.1; a playable Web Remix response alone
-        // does not establish that its later media ranges will work.
-        if (request.hints.isExplicit == true && request.hints.isAgeRestricted != true &&
-            request.hints.isLive != true && !request.hints.wantVideo && manifest.id == "VISIONOS_0_1"
-        ) {
-            adjust(20, "explicit-audio-playback")
-        }
-
         // Prefer sustained audio playback over Web SABR responses that stall on attestation.
         // Keep the existing video ordering: these probes only decoded audio.
         if (manifest.id == "VISIONOS_SABR" && !request.hints.wantVideo) {

@@ -568,9 +568,9 @@ class InnerTubeExtractorTest {
         }
 
     @Test
-    fun authenticatedNonPremiumNormalPlaybackKeepsVisionosFastPath() =
+    fun authenticatedNonPremiumNormalPlaybackKeepsVisionosSabrFastPath() =
         runBlocking {
-            val client = jsonClient(DIRECT_RESPONSE)
+            val client = jsonClient(SABR_RESPONSE)
             val innerTube = InnerTube(client, retryDelay = {}).also { it.cookie = "SAPISID=synthetic-session" }
             val parser = CountingParser()
             try {
@@ -580,7 +580,7 @@ class InnerTubeExtractorTest {
 
                 assertNotNull(stream)
                 assertEquals("VISIONOS", stream.clientName)
-                assertEquals("VISIONOS_0_1__nopo", stream.profileId)
+                assertEquals("VISIONOS_SABR__nopo", stream.profileId)
                 assertEquals(0, parser.calls)
                 assertEquals(null, stream.headers["Cookie"])
             } finally {
@@ -589,9 +589,9 @@ class InnerTubeExtractorTest {
         }
 
     @Test
-    fun signedOutPremiumHintStillKeepsVisionosFastPath() =
+    fun signedOutPremiumHintStillKeepsVisionosSabrFastPath() =
         runBlocking {
-            val client = jsonClient(DIRECT_RESPONSE)
+            val client = jsonClient(SABR_RESPONSE)
             val parser = CountingParser()
             try {
                 val stream =
@@ -600,7 +600,7 @@ class InnerTubeExtractorTest {
 
                 assertNotNull(stream)
                 assertEquals("VISIONOS", stream.clientName)
-                assertEquals("VISIONOS_0_1__nopo", stream.profileId)
+                assertEquals("VISIONOS_SABR__nopo", stream.profileId)
                 assertEquals(0, parser.calls)
             } finally {
                 client.close()
@@ -608,16 +608,16 @@ class InnerTubeExtractorTest {
         }
 
     @Test
-    fun explicitAudioUsesVisionosWithWatchConfigRatherThanNormalFastPath() =
+    fun explicitAudioUsesVisionosSabrWithWatchConfigRatherThanNormalFastPath() =
         runBlocking {
-            val client = jsonClient(DIRECT_RESPONSE)
+            val client = jsonClient(SABR_RESPONSE)
             val parser = CountingParser()
             try {
                 val stream =
                     makeExtractor(client, InnerTube(client, retryDelay = {}), parser, fallback = ContentAwareFallbackStrategy())
                         .extract("video", ContentHints(isExplicit = true))
 
-                assertEquals("VISIONOS_0_1__nopo", assertNotNull(stream).profileId)
+                assertEquals("VISIONOS_SABR__nopo", assertNotNull(stream).profileId)
                 assertEquals(1, parser.calls)
             } finally {
                 client.close()
@@ -625,7 +625,7 @@ class InnerTubeExtractorTest {
         }
 
     @Test
-    fun normalDirectFailureTriesAnonymousWatchConfigBeforeAuthenticated() =
+    fun normalFastPathFailureTriesAnonymousWatchConfigBeforeAuthenticated() =
         runBlocking {
             val configModes = mutableListOf<Boolean>()
             var playerRequests = 0
@@ -634,7 +634,7 @@ class InnerTubeExtractorTest {
                     MockEngine {
                         playerRequests++
                         respond(
-                            if (playerRequests <= 2) UNPLAYABLE_RESPONSE else DIRECT_RESPONSE,
+                            if (playerRequests <= 2) UNPLAYABLE_RESPONSE else SABR_RESPONSE,
                             HttpStatusCode.OK,
                             headersOf("Content-Type", "application/json"),
                         )

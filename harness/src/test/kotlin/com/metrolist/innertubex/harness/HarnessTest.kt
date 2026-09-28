@@ -1,6 +1,8 @@
 package com.metrolist.innertubex.harness
 
 import com.metrolist.innertubex.extraction.ExtractedStream
+import com.metrolist.innertubex.extraction.PlayerConfig
+import com.metrolist.innertubex.extraction.YtConfigParser
 import com.metrolist.innertubex.sabr.SabrChunk
 import com.sun.net.httpserver.HttpServer
 import io.ktor.client.HttpClient
@@ -320,8 +322,12 @@ class HarnessTest {
                 try {
                     val extractor =
                         com.metrolist.innertubex.extraction.InnerTubeExtractor(
-                            com.metrolist.innertubex.extraction
-                                .YtConfigParserImpl(http, tube),
+                            object : YtConfigParser {
+                                override suspend fun fetchConfig(
+                                    videoId: String,
+                                    useLoginCookies: Boolean,
+                                ) = PlayerConfig("https://www.youtube.com/s/player/test/base.js", 123, null, null)
+                            },
                             cipher,
                             tube,
                         )
@@ -330,7 +336,7 @@ class HarnessTest {
                         kotlinx.coroutines.withTimeout(1000) {
                             probe(
                                 Case("sample", "AAAAAAAAAAA"),
-                                "AUTO",
+                                "VISIONOS_0_1",
                                 "cold",
                                 1,
                                 extractor,

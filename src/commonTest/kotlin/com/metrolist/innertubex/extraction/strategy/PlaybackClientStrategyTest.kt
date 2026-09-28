@@ -62,7 +62,7 @@ class PlaybackClientStrategyTest {
         val high = strategy.selectClients(request, premiumHighQuality = true)
 
         assertEquals(
-            "VISIONOS_0_1",
+            "WEB_EMBEDDED_PLAYER",
             normal.candidates
                 .first()
                 .manifest
@@ -113,7 +113,7 @@ class PlaybackClientStrategyTest {
         )
         assertTrue(signedOutPremium.rejected.any { it.manifest.id == "WEB_REMIX" })
         assertEquals(
-            "VISIONOS_0_1",
+            "WEB_EMBEDDED_PLAYER",
             signedOutPremium.candidates
                 .first()
                 .manifest
@@ -122,7 +122,7 @@ class PlaybackClientStrategyTest {
     }
 
     @Test
-    fun authenticatedNonPremiumSelectionKeepsAnonymousNormalClientFirst() {
+    fun authenticatedNonPremiumSelectionSkipsRejectedLegacyClient() {
         val candidates =
             ContentAwareFallbackStrategy()
                 .selectClients(
@@ -135,7 +135,8 @@ class PlaybackClientStrategyTest {
                 ).candidates
 
         assertTrue(candidates.isNotEmpty())
-        assertEquals("VISIONOS_0_1", candidates.first().manifest?.id)
+        assertEquals("WEB_EMBEDDED_PLAYER", candidates.first().manifest?.id)
+        assertTrue(candidates.none { it.manifest?.id == "VISIONOS_0_1" })
     }
 
     @Test
@@ -327,7 +328,7 @@ class PlaybackClientStrategyTest {
     }
 
     @Test
-    fun excludedAnonymousProfileFallsBackToAnotherAutomaticClient() {
+    fun excludedSabrProfileFallsBackToAnotherAutomaticClient() {
         val result =
             ContentAwareFallbackStrategy().selectClients(
                 ClientSelectionRequest(
@@ -335,11 +336,11 @@ class PlaybackClientStrategyTest {
                     authenticated = true,
                     availablePoTokenProviders = allProviders,
                     webViewAvailable = true,
-                    excludedClients = setOf("VISIONOS_0_1__nopo"),
+                    excludedClients = setOf("VISIONOS_SABR__nopo"),
                 ),
             )
 
-        assertTrue(result.candidates.none { it.manifest?.id == "VISIONOS_0_1" })
+        assertTrue(result.candidates.none { it.manifest?.id == "VISIONOS_SABR" })
         assertTrue(result.candidates.isNotEmpty())
     }
 
@@ -378,7 +379,7 @@ class PlaybackClientStrategyTest {
     }
 
     @Test
-    fun explicitAudioPrefersSustainedPlaybackOverPlayableWebResponse() {
+    fun explicitAudioKeepsLegacyVisionosForManualProbingOnly() {
         val strategy = ContentAwareFallbackStrategy()
         val request =
             ClientSelectionRequest(
@@ -389,7 +390,7 @@ class PlaybackClientStrategyTest {
             )
         assertEquals(CapabilitySupport.LIMITED, PlaybackClientCatalog.findManifest("VISIONOS_0_1")?.content?.explicit)
         assertEquals(
-            "VISIONOS_0_1",
+            "WEB_REMIX",
             strategy
                 .selectClients(request)
                 .candidates
@@ -416,9 +417,9 @@ class PlaybackClientStrategyTest {
                 ?.id,
         )
         assertEquals(
-            "WEB_REMIX",
+            "VISIONOS_0_1",
             strategy
-                .selectClients(request.copy(hints = ContentHints(isExplicit = true, playbackClientOverrideId = "WEB_REMIX")))
+                .selectClients(request.copy(hints = ContentHints(isExplicit = true, playbackClientOverrideId = "VISIONOS_0_1")))
                 .candidates
                 .single()
                 .manifest
@@ -439,7 +440,7 @@ class PlaybackClientStrategyTest {
         val automatic = strategy.selectClients(request)
         assertTrue(automatic.candidates.isNotEmpty())
         assertTrue(automatic.candidates.none { it.manifest?.id == "VISIONOS_0_1" })
-        assertTrue(automatic.rejected.any { it.manifest.id == "VISIONOS_0_1" })
+        assertEquals(ClientSelectionMode.PROBE_ONLY, PlaybackClientCatalog.findManifest("VISIONOS_0_1")?.selectionMode)
 
         val forced =
             strategy.selectClients(

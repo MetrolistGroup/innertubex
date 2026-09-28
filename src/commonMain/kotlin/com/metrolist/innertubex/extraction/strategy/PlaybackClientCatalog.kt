@@ -129,16 +129,16 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 id = "VISIONOS_0_1",
                 client = YouTubeClient.VISIONOS_0_1,
                 displayName = "visionOS 0.1",
-                lifecycle = ClientLifecycle.EXPERIMENTAL,
-                selectionMode = ClientSelectionMode.AUTOMATIC,
+                lifecycle = ClientLifecycle.DEPRECATED,
+                selectionMode = ClientSelectionMode.PROBE_ONLY,
                 priority = 100,
                 transports = setOf(PlaybackTransport.DIRECT),
                 content = normalSongsOnlyContent().copy(explicit = CapabilitySupport.LIMITED),
                 evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_METROLIST),
                 notes =
-                    "Anonymous playback passed both normal samples and one non-age-gated explicit sample " +
-                        "with 90-second playback and bidirectional seeks. Age-gated media was rejected; " +
-                        "explicit support remains limited to reflect the single successful sample.",
+                    "Previously passed normal and limited explicit audio probes. September 2026 requests now " +
+                        "return HTTP 400 FAILED_PRECONDITION while visionOS 1.02 SABR succeeds. " +
+                        "Retained for explicit compatibility probing only.",
             ),
             manifest(
                 id = "ANDROID_VR_1_65_10",
