@@ -127,6 +127,19 @@ class SabrCoreTest {
     }
 
     @Test
+    fun omittedProtectionAllowanceDiffersFromExplicitZero() {
+        val omitted = SabrProtoCodec.decodeStreamProtectionStatus(byteArrayOf(0x08, 0x02))
+        val explicitZero = SabrProtoCodec.decodeStreamProtectionStatus(byteArrayOf(0x08, 0x02, 0x10, 0x00))
+
+        assertEquals(2, omitted.status)
+        assertEquals(-1, omitted.maxRetries)
+        assertEquals(0, explicitZero.maxRetries)
+        assertFailsWith<SabrProtocolException> {
+            SabrProtoCodec.decodeStreamProtectionStatus(ProtoWriter().apply { int32(2, -1) }.toByteArray())
+        }
+    }
+
+    @Test
     fun protobufDecodersRejectWrongWireTypesAndIntOverflows() {
         assertFailsWith<SabrProtocolException> {
             SabrProtoCodec.decodeFormatInitialization(byteArrayOf(0x10, 0x00))

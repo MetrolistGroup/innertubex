@@ -1,6 +1,7 @@
 package com.metrolist.innertubex.extraction.strategy
 
 import com.metrolist.innertubex.extraction.ContentHints
+import com.metrolist.innertubex.models.YouTubeClient
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -122,9 +123,10 @@ class PlaybackClientStrategyTest {
     }
 
     @Test
-    fun authenticatedNonPremiumSelectionSkipsRejectedLegacyClient() {
+    fun publicSelectionExcludesVisitorDependentLegacyClient() {
+        val strategy = ContentAwareFallbackStrategy()
         val candidates =
-            ContentAwareFallbackStrategy()
+            strategy
                 .selectClients(
                     ClientSelectionRequest(
                         hints = ContentHints(),
@@ -134,9 +136,10 @@ class PlaybackClientStrategyTest {
                     ),
                 ).candidates
 
-        assertTrue(candidates.isNotEmpty())
         assertEquals("WEB_EMBEDDED_PLAYER", candidates.first().manifest?.id)
         assertTrue(candidates.none { it.manifest?.id == "VISIONOS_0_1" })
+        assertTrue(strategy.resolveClients(ContentHints()).none { it == YouTubeClient.VISIONOS_0_1 })
+        assertTrue(PlaybackClientCatalog.automaticManifests.none { it.id == "VISIONOS_0_1" })
     }
 
     @Test
@@ -379,7 +382,7 @@ class PlaybackClientStrategyTest {
     }
 
     @Test
-    fun explicitAudioKeepsLegacyVisionosForManualProbingOnly() {
+    fun legacyVisionosAutomaticSelectionIsLimitedToNormalAudio() {
         val strategy = ContentAwareFallbackStrategy()
         val request =
             ClientSelectionRequest(
@@ -389,33 +392,41 @@ class PlaybackClientStrategyTest {
                 webViewAvailable = true,
             )
         assertEquals(CapabilitySupport.LIMITED, PlaybackClientCatalog.findManifest("VISIONOS_0_1")?.content?.explicit)
+        assertEquals(ClientSelectionMode.PROBE_ONLY, PlaybackClientCatalog.findManifest("VISIONOS_0_1")?.selectionMode)
+        assertTrue(strategy.selectClients(request.copy(hints = ContentHints())).candidates.none { it.manifest?.id == "VISIONOS_0_1" })
         assertEquals(
-            "WEB_REMIX",
+            "VISIONOS_0_1",
             strategy
-                .selectClients(request)
+                .selectClients(request.copy(hints = ContentHints()), premiumHighQuality = false, visitorDataAvailable = true)
                 .candidates
                 .first()
                 .manifest
                 ?.id,
         )
-        assertEquals(
-            "WEB_REMIX",
+        assertTrue(
             strategy
-                .selectClients(request.copy(excludedClients = setOf("VISIONOS_0_1__nopo")))
-                .candidates
-                .first()
-                .manifest
-                ?.id,
+                .selectClients(
+                    request.copy(hints = ContentHints(), excludedClients = setOf("VISIONOS_0_1__nopo")),
+                    premiumHighQuality = false,
+                    visitorDataAvailable = true,
+                ).candidates
+                .none { it.manifest?.id == "VISIONOS_0_1" },
         )
-        assertEquals(
-            "WEB_REMIX",
-            strategy
-                .selectClients(request.copy(hints = ContentHints(isExplicit = true, isAgeRestricted = true)))
-                .candidates
-                .first()
-                .manifest
-                ?.id,
-        )
+        listOf(
+            ContentHints(isExplicit = true),
+            ContentHints(isKidsContent = true),
+            ContentHints(isAgeRestricted = true),
+            ContentHints(isLive = true),
+            ContentHints(isUploaded = true),
+            ContentHints(wantVideo = true),
+        ).forEach { hints ->
+            assertTrue(
+                strategy
+                    .selectClients(request.copy(hints = hints), premiumHighQuality = false, visitorDataAvailable = true)
+                    .candidates
+                    .none { it.manifest?.id == "VISIONOS_0_1" },
+            )
+        }
         assertEquals(
             "VISIONOS_0_1",
             strategy

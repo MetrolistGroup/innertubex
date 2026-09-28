@@ -156,6 +156,8 @@ private class SabrMediaStream(
             var protectionPending = false
             var protectionRetryCount = 0
             var protectionRetryLimit: Int? = null
+            var omittedAllowancePending = false
+            var omittedProtectionPendingCount = 0
             val contexts = mutableMapOf<Int, SabrContext>()
             val activeContextTypes = mutableSetOf<Int>()
             var retainedContextBytes = 0L
@@ -469,7 +471,7 @@ private class SabrMediaStream(
 
                                     is SabrEvent.StreamProtectionStatus -> {
                                         responseProtectionStatus = event.status
-                                        responseProtectionMaxRetries = event.maxRetries
+                                        responseProtectionMaxRetries = event.maxRetries.takeIf { it >= 0 }
                                     }
 
                                     is SabrEvent.Error -> {
@@ -540,16 +542,21 @@ private class SabrMediaStream(
 
                                 responseProtectionStatus == PROTECTION_ATTESTATION_PENDING -> {
                                     protectionPending = true
-                                    protectionRetryCount++
+                                    omittedAllowancePending = responseProtectionMaxRetries == null
                                     responseProtectionMaxRetries
                                         ?.let { protectionRetryLimit = it }
                                 }
 
-                                responseProtectionStatus != null -> {
+                                responseProtectionStatus == PROTECTION_ATTESTATION_ACCEPTED -> {
                                     protectionPending = false
                                     protectionRetryCount = 0
                                     protectionRetryLimit = null
+                                    omittedAllowancePending = false
                                 }
+                            }
+                            if (protectionPending && responseProtectionStatus?.let { it >= PROTECTION_ATTESTATION_REQUIRED } != true) {
+                                protectionRetryCount++
+                                if (omittedAllowancePending) omittedProtectionPendingCount++
                             }
 
                             val diagnostics =
@@ -583,8 +590,11 @@ private class SabrMediaStream(
                             onResponse?.invoke(diagnostics)
                             logResponse(diagnostics)
 
+                            // ponytail: allow at most five responses while an omitted allowance is pending per stream;
+                            // refine only if observed protocol behavior warrants a larger budget.
                             val protectionRetriesExhausted =
-                                protectionRetryLimit?.let { protectionRetryCount > it } == true
+                                protectionRetryLimit?.let { protectionRetryCount > it } == true ||
+                                    omittedProtectionPendingCount > MAX_OMITTED_PROTECTION_PENDING
                             val protectionRequired =
                                 responseProtectionStatus?.let { it >= PROTECTION_ATTESTATION_REQUIRED } == true
                             if (protectionPending && (protectionRequired || newSegmentCount == 0 || protectionRetriesExhausted)) {
@@ -619,6 +629,9 @@ private class SabrMediaStream(
                 if (retryResponse) continue
             }
 
+            if (protectionPending) {
+                throw SabrProtocolException("SABR stream protection remains pending", SabrFailureKind.ATTESTATION_REQUIRED)
+            }
             validateCompleteStream(
                 initialization = initialization,
                 initSegmentEmitted = initSegmentEmitted,
@@ -827,8 +840,10 @@ private class SabrMediaStream(
         const val CONTENT_TYPE_PROTOBUF = "application/x-protobuf"
         const val CONTENT_TYPE_UMP = "application/vnd.yt-ump"
         const val KEEP_EXISTING = 2
+        const val PROTECTION_ATTESTATION_ACCEPTED = 1
         const val PROTECTION_ATTESTATION_PENDING = 2
         const val PROTECTION_ATTESTATION_REQUIRED = 3
+        const val MAX_OMITTED_PROTECTION_PENDING = 5
         const val MAX_REQUEST_COUNT = 10_000
         const val MAX_BACKOFF_MS = 30_000L
         const val MAX_RESPONSE_MEDIA_BYTES = 64L * 1024 * 1024

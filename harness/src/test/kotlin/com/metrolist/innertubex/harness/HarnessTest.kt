@@ -213,6 +213,8 @@ class HarnessTest {
         assertTrue(matchesProfile("WEB_REMIX", stream()))
         assertFalse(matchesProfile("WEB_REMIX_SABR", stream()))
         assertTrue(matchesProfile("AUTO", stream()))
+        assertTrue(matchesProfile("AUTO", stream().copy(profileId = "VISIONOS_0_1__nopo")))
+        assertFalse(matchesProfile("AUTO", stream().copy(profileId = "VISIONOS_0_1__invalid")))
         assertTrue(matchesProfile("SABR_FIRST", stream()))
         assertTrue(matchesProfile("SABR_FIRST", stream().copy(profileId = "VISIONOS_SABR__nopo")))
         assertFalse(matchesProfile("SABR_FIRST", stream().copy(profileId = "ANDROID_VR_SABR__nopo")))

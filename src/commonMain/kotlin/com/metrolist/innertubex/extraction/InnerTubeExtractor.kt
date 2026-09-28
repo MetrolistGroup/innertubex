@@ -404,26 +404,29 @@ class InnerTubeExtractor internal constructor(
 
         val authenticatedPremiumHighQuality =
             hints.premium && audioQuality == AudioQuality.HIGH && innerTube.hasSapCookieAuth()
-        if (
+        val configFreeEligible =
             hints.playbackClientOverrideId == null && !hints.wantVideo &&
-            hints.isExplicit != true && hints.isAgeRestricted != true &&
-            hints.isUploaded != true && hints.isLive != true &&
-            !authenticatedPremiumHighQuality
-        ) {
-            val directStream =
-                extractWithConfig(
-                    videoId = videoId,
-                    hints = hints,
-                    excludedClients = excludedClients,
-                    clientPlaybackNonce = clientPlaybackNonce,
-                    playerConfig = PlayerConfig("", null, innerTube.sessionSnapshot().visitorData, null),
-                    totalStartMs = totalStart,
-                    allowCipherProcessing = false,
-                    audioQuality = audioQuality,
-                    diagnostics = diagnostics,
-                )
-            if (directStream != null) return directStream
-        }
+                hints.isExplicit != true && hints.isAgeRestricted != true &&
+                hints.isUploaded != true && hints.isLive != true &&
+                !authenticatedPremiumHighQuality
+        val deferConfigFree =
+            configFreeEligible && hints.isKidsContent != true && !hints.sabrFirst &&
+                innerTube.sessionSnapshot().visitorData.isNullOrBlank() &&
+                clientDirector.includesVisitorBackedLegacy(excludedClients)
+
+        suspend fun extractConfigFree(): ExtractedStream? =
+            extractWithConfig(
+                videoId = videoId,
+                hints = hints,
+                excludedClients = excludedClients,
+                clientPlaybackNonce = clientPlaybackNonce,
+                playerConfig = PlayerConfig("", null, innerTube.sessionSnapshot().visitorData, null),
+                totalStartMs = totalStart,
+                allowCipherProcessing = false,
+                audioQuality = audioQuality,
+                diagnostics = diagnostics,
+            )
+        if (configFreeEligible && !deferConfigFree) extractConfigFree()?.let { return it }
 
         suspend fun extractWithWatchConfig(useLoginCookies: Boolean): ExtractedStream? =
             try {
@@ -463,8 +466,18 @@ class InnerTubeExtractor internal constructor(
                         hints.isUploaded == true ||
                         hints.wantVideo
                 )
-        val stream = extractWithWatchConfig(useLoginCookies = cookieFirst)
+        val stream =
+            try {
+                extractWithWatchConfig(useLoginCookies = cookieFirst)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                if (!deferConfigFree) throw error
+                diagnostics.requestFailures += error
+                null
+            }
         if (stream != null) return stream
+        if (deferConfigFree) extractConfigFree()?.let { return it }
 
         if (cookieFirst) {
             logger.w(TAG, "signed-out watch config fallback")

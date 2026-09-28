@@ -32,7 +32,11 @@ internal fun matchesProfile(
 ): Boolean =
     (
         requested in AUTOMATIC_SELECTIONS &&
-            PlaybackClientCatalog.automaticManifests.any {
+            (
+                PlaybackClientCatalog.automaticManifests +
+                    // Extraction can additionally select legacy normal audio after obtaining visitor data.
+                    listOfNotNull(PlaybackClientCatalog.find("VISIONOS_0_1")?.manifest)
+            ).any {
                 stream.profileId in PlaybackClientCatalog.profileIds(it, stream.profileId.endsWith("__po"))
             }
     ) ||

@@ -136,9 +136,12 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 content = normalSongsOnlyContent().copy(explicit = CapabilitySupport.LIMITED),
                 evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_METROLIST),
                 notes =
-                    "Previously passed normal and limited explicit audio probes. September 2026 requests now " +
-                        "return HTTP 400 FAILED_PRECONDITION while visionOS 1.02 SABR succeeds. " +
-                        "Retained for explicit compatibility probing only.",
+                    "September 2026 capture: two anonymous normal audio requests without visitorData were " +
+                        "UNPLAYABLE; the same requests with watch-config visitorData returned direct audio " +
+                        "(one complete file, one initial range). One anonymous desktop normal sample passed " +
+                        "90-second decoded playback with backward and forward seeks. Public selection stays probe-only " +
+                        "without visitor context; internal automatic extraction tries visitor-backed normal audio only. " +
+                        "Earlier HTTP 400 reports and other content remain unverified.",
             ),
             manifest(
                 id = "ANDROID_VR_1_65_10",

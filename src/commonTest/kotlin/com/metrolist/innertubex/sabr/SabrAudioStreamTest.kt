@@ -747,6 +747,226 @@ class SabrAudioStreamTest {
         }
 
     @Test
+    fun omittedProtectionAllowanceContinuesWithProgressUntilAccepted() =
+        runBlocking {
+            val diagnostics = mutableListOf<SabrResponseDiagnostics>()
+            var requests = 0
+            val engine =
+                MockEngine { request ->
+                    assertEquals(requests.toString(), request.url.parameters["rn"])
+                    requests++
+                    respond(
+                        content =
+                            if (requests == 1) {
+                                initializationAndSegmentResponse(endSegmentNumber = 1) +
+                                    umpPart(UmpPartType.STREAM_PROTECTION_STATUS, streamProtectionStatus(status = 2))
+                            } else {
+                                assertEquals(1_000, decodePlayerTimeMs((request.body as OutgoingContent.ByteArrayContent).bytes()))
+                                finalSegmentResponse() +
+                                    umpPart(UmpPartType.STREAM_PROTECTION_STATUS, streamProtectionStatus(status = 1))
+                            },
+                        status = HttpStatusCode.OK,
+                        headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"),
+                    )
+                }
+
+            val chunks =
+                SabrAudioStream(
+                    HttpClient(engine),
+                    bootstrap().copy(durationMs = 2_000, contentLengthBytes = 10),
+                    onResponse = diagnostics::add,
+                ).chunks().toList()
+
+            assertEquals(listOf(null, 0, 1), chunks.map(SabrChunk::sequenceNumber))
+            assertEquals(2, requests)
+            assertEquals(2, diagnostics.first().protectionStatus)
+            assertEquals(null, diagnostics.first().protectionMaxRetries)
+            assertEquals(1, diagnostics.last().protectionStatus)
+        }
+
+    @Test
+    fun statuslessProgressAfterOmittedPendingCanBeAccepted() =
+        runBlocking {
+            var requests = 0
+            val diagnostics = mutableListOf<SabrResponseDiagnostics>()
+            val engine =
+                MockEngine {
+                    val sequence = requests++
+                    respond(
+                        content =
+                            when (sequence) {
+                                0 -> {
+                                    initializationAndSegmentResponse(endSegmentNumber = 2, durationMs = 3_000) +
+                                        umpPart(UmpPartType.STREAM_PROTECTION_STATUS, streamProtectionStatus(status = 2))
+                                }
+
+                                1 -> {
+                                    mediaResponseSegment(3, 1, 1_000, byteArrayOf(8, 9, 10))
+                                }
+
+                                else -> {
+                                    mediaResponseSegment(3, 2, 2_000, byteArrayOf(11, 12, 13)) +
+                                        umpPart(UmpPartType.STREAM_PROTECTION_STATUS, streamProtectionStatus(status = 1))
+                                }
+                            },
+                        status = HttpStatusCode.OK,
+                        headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"),
+                    )
+                }
+
+            val chunks =
+                SabrAudioStream(
+                    HttpClient(engine),
+                    bootstrap().copy(durationMs = 3_000, contentLengthBytes = 13),
+                    onResponse = diagnostics::add,
+                ).chunks().toList()
+
+            assertEquals(listOf(null, 0, 1, 2), chunks.map(SabrChunk::sequenceNumber))
+            assertEquals(3, requests)
+            assertEquals(listOf(2, null, 1), diagnostics.map(SabrResponseDiagnostics::protectionStatus))
+        }
+
+    @Test
+    fun videoContinuesThroughOmittedProtectionAllowance() =
+        runBlocking {
+            var requests = 0
+            val engine =
+                MockEngine {
+                    requests++
+                    respond(
+                        content =
+                            if (requests == 1) {
+                                umpPart(UmpPartType.FORMAT_INITIALIZATION_METADATA, initialization(1, 2_000, 248, 300)) +
+                                    mediaSegment(headerId = 1, itag = 248, lastModified = 300, isInit = true, data = byteArrayOf(1)) +
+                                    mediaSegment(headerId = 2, itag = 248, lastModified = 300, data = byteArrayOf(2)) +
+                                    umpPart(UmpPartType.STREAM_PROTECTION_STATUS, streamProtectionStatus(status = 2))
+                            } else {
+                                mediaResponseSegment(3, 1, 1_000, byteArrayOf(3), itag = 248, lastModified = 300) +
+                                    umpPart(UmpPartType.STREAM_PROTECTION_STATUS, streamProtectionStatus(status = 1))
+                            },
+                        status = HttpStatusCode.OK,
+                        headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"),
+                    )
+                }
+            val bootstrap =
+                bootstrap().copy(
+                    durationMs = 2_000,
+                    selectedVideoFormat = SabrFormatId(248, 300),
+                    selectedVideoWidth = 1920,
+                    selectedVideoHeight = 1080,
+                    selectedVideoContentLengthBytes = 3,
+                )
+
+            assertEquals(
+                listOf(null, 0, 1),
+                SabrVideoStream(HttpClient(engine), bootstrap).chunks().toList().map(SabrChunk::sequenceNumber),
+            )
+            assertEquals(2, requests)
+        }
+
+    @Test
+    fun repeatedOmittedProtectionAllowanceHasFiniteTotalBudget() =
+        runBlocking {
+            var requests = 0
+            val engine =
+                MockEngine {
+                    val sequence = requests++
+                    respond(
+                        content =
+                            (
+                                if (sequence == 0) {
+                                    initializationAndSegmentResponse(endSegmentNumber = 6, durationMs = 7_000)
+                                } else {
+                                    mediaResponseSegment(3, sequence, sequence * 1_000L, byteArrayOf(8, 9, 10))
+                                }
+                            ) +
+                                umpPart(UmpPartType.STREAM_PROTECTION_STATUS, streamProtectionStatus(status = 2)),
+                        status = HttpStatusCode.OK,
+                        headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"),
+                    )
+                }
+
+            val error =
+                assertFailsWith<SabrProtocolException> {
+                    SabrAudioStream(HttpClient(engine), bootstrap().copy(durationMs = 7_000, contentLengthBytes = null)).chunks().toList()
+                }
+
+            assertEquals(SabrFailureKind.ATTESTATION_REQUIRED, error.kind)
+            assertEquals(6, requests)
+        }
+
+    @Test
+    fun absentOrUnknownProtectionStatusCannotEvadeOmittedPendingBudget() =
+        runBlocking {
+            for (status in listOf(null, 0)) {
+                var requests = 0
+                val diagnostics = mutableListOf<SabrResponseDiagnostics>()
+                val engine =
+                    MockEngine {
+                        val sequence = requests++
+                        respond(
+                            content =
+                                if (sequence == 0) {
+                                    initializationAndSegmentResponse(endSegmentNumber = 6, durationMs = 7_000) +
+                                        umpPart(UmpPartType.STREAM_PROTECTION_STATUS, streamProtectionStatus(status = 2))
+                                } else {
+                                    mediaResponseSegment(3, sequence, sequence * 1_000L, byteArrayOf(8, 9, 10)) +
+                                        (
+                                            status?.let {
+                                                umpPart(UmpPartType.STREAM_PROTECTION_STATUS, streamProtectionStatus(status = it))
+                                            } ?: byteArrayOf()
+                                        )
+                                },
+                            status = HttpStatusCode.OK,
+                            headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"),
+                        )
+                    }
+
+                val error =
+                    assertFailsWith<SabrProtocolException> {
+                        SabrAudioStream(
+                            HttpClient(engine),
+                            bootstrap().copy(durationMs = 7_000, contentLengthBytes = null),
+                            onResponse = diagnostics::add,
+                        ).chunks().toList()
+                    }
+
+                assertEquals(SabrFailureKind.ATTESTATION_REQUIRED, error.kind)
+                assertEquals(6, requests)
+                assertEquals(1, diagnostics[5].selectedSegmentCount)
+                assertEquals(status, diagnostics[5].protectionStatus)
+            }
+        }
+
+    @Test
+    fun completionWithoutAcceptedProtectionStatusFails() =
+        runBlocking {
+            var requests = 0
+            val engine =
+                MockEngine {
+                    requests++
+                    respond(
+                        content =
+                            if (requests == 1) {
+                                initializationAndSegmentResponse(endSegmentNumber = 1) +
+                                    umpPart(UmpPartType.STREAM_PROTECTION_STATUS, streamProtectionStatus(status = 2))
+                            } else {
+                                finalSegmentResponse()
+                            },
+                        status = HttpStatusCode.OK,
+                        headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"),
+                    )
+                }
+
+            val error =
+                assertFailsWith<SabrProtocolException> {
+                    SabrAudioStream(HttpClient(engine), bootstrap().copy(durationMs = 2_000, contentLengthBytes = 10)).bytes().toList()
+                }
+            assertEquals(SabrFailureKind.ATTESTATION_REQUIRED, error.kind)
+            assertEquals(2, requests)
+        }
+
+    @Test
     fun protectionPendingWithoutMediaIsTypedAsAttestationFailure() =
         runBlocking {
             val diagnostics = mutableListOf<SabrResponseDiagnostics>()
@@ -850,6 +1070,34 @@ class SabrAudioStreamTest {
                     ).bytes().toList()
                 }
 
+            assertEquals(SabrFailureKind.ATTESTATION_REQUIRED, error.kind)
+            assertEquals(2, requests)
+        }
+
+    @Test
+    fun statuslessProgressCannotEvadeExplicitPendingBudget() =
+        runBlocking {
+            var requests = 0
+            val engine =
+                MockEngine {
+                    requests++
+                    respond(
+                        content =
+                            if (requests == 1) {
+                                initializationAndSegmentResponse(endSegmentNumber = 2, durationMs = 3_000) +
+                                    umpPart(UmpPartType.STREAM_PROTECTION_STATUS, streamProtectionStatus(status = 2, maxRetries = 1))
+                            } else {
+                                finalSegmentResponse(includeEndOfTrack = false)
+                            },
+                        status = HttpStatusCode.OK,
+                        headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"),
+                    )
+                }
+
+            val error =
+                assertFailsWith<SabrProtocolException> {
+                    SabrAudioStream(HttpClient(engine), bootstrap().copy(durationMs = 3_000, contentLengthBytes = 13)).bytes().toList()
+                }
             assertEquals(SabrFailureKind.ATTESTATION_REQUIRED, error.kind)
             assertEquals(2, requests)
         }
@@ -1021,12 +1269,12 @@ class SabrAudioStreamTest {
 
     private fun streamProtectionStatus(
         status: Int,
-        maxRetries: Int = 1,
+        maxRetries: Int? = null,
     ): ByteArray =
         ProtoWriter()
             .apply {
                 int32(1, status)
-                int32(2, maxRetries)
+                maxRetries?.let { int32(2, it) }
             }.toByteArray()
 
     private fun contextUpdate(type: Int): ByteArray =

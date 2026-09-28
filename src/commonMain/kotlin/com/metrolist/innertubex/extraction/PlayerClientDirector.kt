@@ -80,6 +80,11 @@ internal class PlayerClientDirector(
             )
     }
 
+    internal val usesAutomaticCatalog: Boolean = fallbackStrategy is ContentAwareFallbackStrategy
+
+    internal fun includesVisitorBackedLegacy(excludedClients: Set<String>): Boolean =
+        (fallbackStrategy as? ContentAwareFallbackStrategy)?.includesVisitorBackedLegacy(excludedClients) == true
+
     internal suspend fun fetchPlayerResponses(
         videoId: String,
         playerConfig: PlayerConfig,
@@ -121,7 +126,7 @@ internal class PlayerClientDirector(
             )
         val selection =
             if (fallbackStrategy is ContentAwareFallbackStrategy) {
-                fallbackStrategy.selectClients(selectionRequest, premiumHighQuality)
+                fallbackStrategy.selectClients(selectionRequest, premiumHighQuality, requestVisitorData != null)
             } else {
                 fallbackStrategy.selectClients(selectionRequest)
             }
@@ -189,6 +194,12 @@ internal class PlayerClientDirector(
             if (requestsConsumedInBatch >= maxPlayerRequests || effectiveRequestBudget.remaining <= 0) break
             val selectedClient = declaredClient.withPlayerConfigVersion(playerConfig)
             val client = selectedClient.client
+            // A visitor-less automatic legacy probe says nothing about its visitor-backed playback health.
+            if (usesAutomaticCatalog && selectedClient.manifest?.id == "VISIONOS_0_1" &&
+                requestVisitorData.isNullOrBlank() && hints.playbackClientOverrideId == null
+            ) {
+                continue
+            }
             val premiumEntitlement = selectedClient.hasUsablePremiumEntitlement(authenticated, hints.premium)
             val tokenUsesCookie = selectedClient.manifest?.request?.cookies != false
             val untokenizedProfileFailed =
@@ -226,17 +237,21 @@ internal class PlayerClientDirector(
             if (attemptResult.tokenFetchUnavailable) unavailablePoTokenCookieModes += tokenUsesCookie
             requestsConsumedInBatch += remainingBeforeAttempt - effectiveRequestBudget.remaining
             val attempt = attemptResult.attempt
-            selectedClient.manifest?.id?.let { manifestId ->
-                when {
-                    attemptResult.requestFailure != null -> {
-                        clientHealthMonitor.recordFailure(manifestId, ClientFailureKind.PLAYER_REQUEST, healthScope)
-                    }
+            selectedClient.manifest
+                ?.id
+                ?.takeUnless {
+                    client == YouTubeClient.VISIONOS_0_1 && requestVisitorData.isNullOrBlank()
+                }?.let { manifestId ->
+                    when {
+                        attemptResult.requestFailure != null -> {
+                            clientHealthMonitor.recordFailure(manifestId, ClientFailureKind.PLAYER_REQUEST, healthScope)
+                        }
 
-                    attempt == null && !attemptResult.tokenUnavailable -> {
-                        clientHealthMonitor.recordFailure(manifestId, ClientFailureKind.PLAYABILITY, healthScope)
+                        attempt == null && !attemptResult.tokenUnavailable -> {
+                            clientHealthMonitor.recordFailure(manifestId, ClientFailureKind.PLAYABILITY, healthScope)
+                        }
                     }
                 }
-            }
             attempts +=
                 StreamAttemptDiagnostic(
                     clientName = client.clientName,

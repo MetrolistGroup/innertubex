@@ -368,7 +368,8 @@ internal object SabrProtoCodec {
     fun decodeStreamProtectionStatus(data: ByteArray): SabrEvent.StreamProtectionStatus {
         val reader = ProtoReader(data)
         var status = 0
-        var maxRetries = 0
+        // -1 means field 2 was omitted; an explicit zero forbids even the first pending retry.
+        var maxRetries = -1
         while (reader.hasRemaining) {
             val tag = reader.tag()
             when (tag.field) {
@@ -380,6 +381,7 @@ internal object SabrProtoCodec {
                 2 -> {
                     tag.requireWireType(0)
                     maxRetries = reader.intValue()
+                    if (maxRetries < 0) throw SabrProtocolException("Invalid SABR protection retry allowance")
                 }
 
                 else -> {

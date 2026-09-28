@@ -24,9 +24,16 @@ class ContentAwareFallbackStrategy(
 
     override fun selectClients(request: ClientSelectionRequest): ClientSelectionResult = selectClients(request, premiumHighQuality = false)
 
+    internal fun includesVisitorBackedLegacy(excludedClients: Set<String>): Boolean =
+        catalog.find("VISIONOS_0_1")?.manifest?.let {
+            it.selectionMode == ClientSelectionMode.PROBE_ONLY &&
+                !it.isExcluded(excludedClients, emptySet(), premiumEntitlement = false)
+        } == true
+
     internal fun selectClients(
         request: ClientSelectionRequest,
         premiumHighQuality: Boolean,
+        visitorDataAvailable: Boolean = false,
     ): ClientSelectionResult {
         val rejected = mutableListOf<RejectedClient>()
         request.hints.playbackClientOverrideId?.let(catalog::find)?.let { option ->
@@ -58,7 +65,11 @@ class ContentAwareFallbackStrategy(
         }
 
         val candidates = mutableListOf<SelectedClient>()
-        catalog.automaticManifests.forEach { manifest ->
+        val visitorBackedLegacy =
+            catalog.find("VISIONOS_0_1")?.manifest?.takeIf {
+                visitorDataAvailable && it.selectionMode == ClientSelectionMode.PROBE_ONLY
+            }
+        (catalog.automaticManifests + listOfNotNull(visitorBackedLegacy)).forEach { manifest ->
             if (
                 manifest.isExcluded(
                     request.excludedClients,
@@ -136,6 +147,11 @@ class ContentAwareFallbackStrategy(
             val contentSupport = manifest.content.supportFor(request.hints)
             if (checkContentSupport && contentSupport == CapabilitySupport.UNSUPPORTED) {
                 add("content type unsupported")
+            }
+            if (checkContentSupport && manifest.id == "VISIONOS_0_1" &&
+                (request.hints.wantVideo || contentSupport != CapabilitySupport.SUPPORTED)
+            ) {
+                add("legacy direct playback verified for normal audio only")
             }
             if (manifest.id in setOf("VISIONOS_0_1", "VISIONOS_SABR") && request.hints.isExplicit == true && request.hints.wantVideo) {
                 add("explicit video playback unverified")

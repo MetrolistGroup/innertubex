@@ -2,7 +2,10 @@ package com.metrolist.innertubex.extraction
 
 import com.metrolist.innertubex.InnerTube
 import com.metrolist.innertubex.cipher.YouTubeCipherService
+import com.metrolist.innertubex.extraction.strategy.ClientFailureKind
 import com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy
+import com.metrolist.innertubex.extraction.strategy.ClientHealthMonitor
+import com.metrolist.innertubex.extraction.strategy.ClientHealthScope
 import com.metrolist.innertubex.extraction.strategy.ClientSelectionRequest
 import com.metrolist.innertubex.extraction.strategy.ClientSelectionResult
 import com.metrolist.innertubex.extraction.strategy.ContentAwareFallbackStrategy
@@ -568,10 +571,148 @@ class InnerTubeExtractorTest {
         }
 
     @Test
+    fun failedWatchConfigFallsBackToVisitorlessConfigFreeClient() =
+        runBlocking {
+            val client = jsonClient(SABR_RESPONSE)
+            val parser =
+                object : YtConfigParser {
+                    var calls = 0
+
+                    override suspend fun fetchConfig(
+                        videoId: String,
+                        useLoginCookies: Boolean,
+                    ): PlayerConfig {
+                        calls++
+                        throw IllegalStateException("Watch config unavailable")
+                    }
+                }
+            try {
+                val stream =
+                    makeExtractor(client, InnerTube(client, retryDelay = {}), parser, fallback = ContentAwareFallbackStrategy())
+                        .extract("video", ContentHints())
+                assertEquals("VISIONOS_SABR__nopo", assertNotNull(stream).profileId)
+                assertEquals(1, parser.calls)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun excludedLegacyClientDoesNotForceWatchConfig() =
+        runBlocking {
+            val client = jsonClient(SABR_RESPONSE)
+            val parser = CountingParser()
+            try {
+                val stream =
+                    makeExtractor(client, InnerTube(client, retryDelay = {}), parser, fallback = ContentAwareFallbackStrategy())
+                        .extract("video", ContentHints(), excludedClients = setOf("VISIONOS_0_1"))
+                assertEquals("VISIONOS_SABR__nopo", assertNotNull(stream).profileId)
+                assertEquals(0, parser.calls)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun existingVisitorUsesLegacyDirectFastPathWithoutWatchConfig() =
+        runBlocking {
+            val client = jsonClient(DIRECT_RESPONSE)
+            val innerTube = InnerTube(client, retryDelay = {}).also { it.visitorData = "session-visitor" }
+            val parser = CountingParser()
+            try {
+                val stream =
+                    makeExtractor(
+                        client,
+                        innerTube,
+                        parser,
+                        fallback = ContentAwareFallbackStrategy(),
+                    ).extract("video", ContentHints())
+                assertEquals("VISIONOS_0_1__nopo", assertNotNull(stream).profileId)
+                assertEquals(0, parser.calls)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun missingVisitorDoesNotPoisonLegacyHealthAndWatchConfigEnablesDirectAudio() =
+        runBlocking {
+            val visitors = mutableListOf<String?>()
+            val client =
+                HttpClient(
+                    MockEngine { request ->
+                        val visitor = request.headers["X-Goog-Visitor-Id"]
+                        visitors += visitor
+                        respond(
+                            if (visitor == "config-visitor" && request.headers["X-YouTube-Client-Version"] == "0.1") {
+                                DIRECT_RESPONSE
+                            } else {
+                                UNPLAYABLE_RESPONSE
+                            },
+                            HttpStatusCode.OK,
+                            headersOf("Content-Type", "application/json"),
+                        )
+                    },
+                ) {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
+            val innerTube = InnerTube(client, retryDelay = {})
+            val health =
+                object : ClientHealthMonitor {
+                    var failures = 0
+
+                    override fun recordFailure(
+                        clientId: String,
+                        kind: ClientFailureKind,
+                        scope: ClientHealthScope?,
+                    ) {
+                        if (clientId == "VISIONOS_0_1") failures++
+                    }
+                }
+            val director = PlayerClientDirector(innerTube, ContentAwareFallbackStrategy(), NoTokenProvider, health)
+            val parser =
+                object : YtConfigParser {
+                    var calls = 0
+
+                    override suspend fun fetchConfig(
+                        videoId: String,
+                        useLoginCookies: Boolean,
+                    ): PlayerConfig {
+                        calls++
+                        return PlayerConfig("https://www.youtube.com/s/player/test/base.js", 123, "config-visitor", null)
+                    }
+                }
+            try {
+                val preliminary =
+                    director.fetchPlayerResponses(
+                        "video",
+                        PlayerConfig("", null, null, null),
+                        ContentHints(playbackClientOverrideId = "VISIONOS_0_1"),
+                    )
+                assertTrue(preliminary.playableResponses.isEmpty())
+                assertEquals(0, health.failures)
+
+                val stream =
+                    InnerTubeExtractor(parser, director, AudioOnlyCipherService, innerTube)
+                        .extract("video", ContentHints())
+                assertEquals("VISIONOS_0_1__nopo", assertNotNull(stream).profileId)
+                assertEquals(1, parser.calls)
+                assertEquals(listOf(null, "config-visitor"), visitors)
+                assertEquals(0, health.failures)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
     fun authenticatedNonPremiumNormalPlaybackKeepsVisionosSabrFastPath() =
         runBlocking {
             val client = jsonClient(SABR_RESPONSE)
-            val innerTube = InnerTube(client, retryDelay = {}).also { it.cookie = "SAPISID=synthetic-session" }
+            val innerTube =
+                InnerTube(client, retryDelay = {}).also {
+                    it.cookie = "SAPISID=synthetic-session"
+                    it.visitorData = "synthetic-visitor"
+                }
             val parser = CountingParser()
             try {
                 val stream =
@@ -594,8 +735,9 @@ class InnerTubeExtractorTest {
             val client = jsonClient(SABR_RESPONSE)
             val parser = CountingParser()
             try {
+                val innerTube = InnerTube(client, retryDelay = {}).also { it.visitorData = "synthetic-visitor" }
                 val stream =
-                    makeExtractor(client, InnerTube(client, retryDelay = {}), parser, fallback = ContentAwareFallbackStrategy())
+                    makeExtractor(client, innerTube, parser, fallback = ContentAwareFallbackStrategy())
                         .extract("video", ContentHints().withPremium())
 
                 assertNotNull(stream)
@@ -642,7 +784,11 @@ class InnerTubeExtractorTest {
                 ) {
                     install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
                 }
-            val innerTube = InnerTube(client, retryDelay = {}).also { it.cookie = "SAPISID=synthetic-session" }
+            val innerTube =
+                InnerTube(client, retryDelay = {}).also {
+                    it.cookie = "SAPISID=synthetic-session"
+                    it.visitorData = "synthetic-visitor"
+                }
             val parser =
                 object : YtConfigParser {
                     override suspend fun fetchConfig(
@@ -661,7 +807,7 @@ class InnerTubeExtractorTest {
 
                 assertNotNull(stream)
                 assertEquals(listOf(false, true), configModes)
-                assertEquals(3, playerRequests)
+                assertEquals(5, playerRequests)
             } finally {
                 client.close()
             }

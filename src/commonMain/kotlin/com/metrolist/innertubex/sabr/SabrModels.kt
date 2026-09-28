@@ -247,6 +247,7 @@ sealed interface SabrEvent {
 
     data class StreamProtectionStatus(
         val status: Int,
+        /** -1 when the protobuf field is absent (distinct from an explicit zero allowance). */
         val maxRetries: Int,
     ) : SabrEvent
 
