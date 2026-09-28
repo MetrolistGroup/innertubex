@@ -6,6 +6,15 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-09-29
+
+### Fixed
+
+- Allow visitor-backed legacy visionOS direct audio for eligible ordinary playback
+  without promoting the probe-only client globally.
+- Bound SABR protection-pending responses when the server omits a retry allowance,
+  and require explicit acceptance before clearing pending protection.
+
 ## [0.7.2] - 2026-09-28
 
 ### Fixed
