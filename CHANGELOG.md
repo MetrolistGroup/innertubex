@@ -6,6 +6,15 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-09-28
+
+### Fixed
+
+- Exclude the rejected legacy visionOS 0.1 client from automatic playback
+  selection while retaining explicit compatibility probes.
+- Use visionOS SABR for eligible normal and explicit audio without the legacy
+  client's failing player requests.
+
 ## [0.7.1] - 2026-09-26
 
 ### Added
