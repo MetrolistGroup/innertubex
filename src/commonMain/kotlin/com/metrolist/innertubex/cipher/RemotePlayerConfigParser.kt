@@ -175,3 +175,8 @@ internal object RemotePlayerConfigParser {
         return config to aliases
     }
 }
+
+internal fun faradayCipherPlayerUrl(playerUrl: String): String? =
+    RemotePlayerConfigParser.extractPlayerHash(playerUrl)?.let { hash ->
+        "https://www.youtube.com/s/player/$hash/player_ias.vflset/en_GB/base.js"
+    }

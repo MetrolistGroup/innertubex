@@ -2,11 +2,6 @@ package com.metrolist.innertubex.cipher
 
 import kotlinx.coroutines.CancellationException
 
-internal fun faradayCipherPlayerUrl(playerUrl: String): String? =
-    RemotePlayerConfigParser.extractPlayerHash(playerUrl)?.let { hash ->
-        "https://www.youtube.com/s/player/$hash/player_ias.vflset/en_GB/base.js"
-    }
-
 internal class ZemerCipherSolver private constructor(
     private val engine: QuickJsEngine,
 ) {

@@ -10,23 +10,11 @@ data class PlaybackClientOption(
     val manifest: PlaybackClientManifest,
 )
 
-interface PlaybackClientCatalogView {
-    val automaticManifests: List<PlaybackClientManifest>
-
-    fun find(id: String): PlaybackClientOption?
-
-    fun profileIds(
-        manifest: PlaybackClientManifest,
-        usedPoToken: Boolean,
-    ): Set<String>
-}
-
-object PlaybackClientCatalog : PlaybackClientCatalogView {
+object PlaybackClientCatalog {
     const val AUTOMATIC_ID = "AUTO"
     const val SABR_FIRST_ID = "SABR_FIRST"
 
     private const val SOURCE_PLAYBACK_MATRIX = "Playback live matrix"
-    private const val SOURCE_METROLIST = SOURCE_PLAYBACK_MATRIX
     private const val SOURCE_ANDROID_BENCHMARK = "Android playback benchmark (2026-08-13)"
     private const val SOURCE_ANDROID_SABR_BENCHMARK = "Android SABR benchmark (2026-08-20)"
     private const val SOURCE_YTDLP = "yt-dlp client inventory"
@@ -134,7 +122,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 priority = 100,
                 transports = setOf(PlaybackTransport.DIRECT),
                 content = normalSongsOnlyContent().copy(explicit = CapabilitySupport.LIMITED),
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_METROLIST),
+                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_PLAYBACK_MATRIX),
                 notes =
                     "September 2026 capture: two anonymous normal audio requests without visitorData were " +
                         "UNPLAYABLE; the same requests with watch-config visitorData returned direct audio " +
@@ -153,7 +141,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 transports = setOf(PlaybackTransport.DIRECT),
                 content = vrContent(),
                 benchmarkContent = globallyUnusableContent(),
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_METROLIST, SOURCE_YTDLP, SOURCE_YOUTUBE_JS),
+                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP, SOURCE_YOUTUBE_JS),
                 notes =
                     "A live anonymous visitor request resolved, but every audio itag reached a CDN 403 after " +
                         "1 MiB. Kept for explicit benchmark probing only.",
@@ -168,7 +156,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 transports = setOf(PlaybackTransport.DIRECT),
                 content = vrContent(),
                 benchmarkContent = globallyUnusableContent(),
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_METROLIST),
+                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_PLAYBACK_MATRIX),
                 notes =
                     "Player requests resolve, but sustained media reaches the same later-range authorization " +
                         "boundary as other Android VR profiles. Retained for benchmark comparison only.",
@@ -183,7 +171,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 transports = setOf(PlaybackTransport.DIRECT),
                 content = restrictedFallbackVrContent(),
                 benchmarkContent = globallyUnusableContent(),
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_METROLIST),
+                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_PLAYBACK_MATRIX),
                 notes =
                     "Player requests resolve, but sustained media reaches a later-range authorization boundary. " +
                         "Retained for benchmark comparison only.",
@@ -198,7 +186,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 transports = setOf(PlaybackTransport.DIRECT),
                 content = restrictedFallbackVrContent(),
                 benchmarkContent = globallyUnusableContent(),
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_METROLIST),
+                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_PLAYBACK_MATRIX),
                 notes =
                     "Player requests resolve, but sustained media reaches a later-range authorization boundary. " +
                         "Retained for benchmark comparison only.",
@@ -218,7 +206,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 poTokens = ClientPoTokenCapabilities(player = webPlayerNotRequired, gvs = webGvsOptional),
                 request = webRequest,
                 content = normalWebContent,
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_METROLIST, SOURCE_YTDLP, SOURCE_YOUTUBE_JS),
+                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP, SOURCE_YOUTUBE_JS),
                 notes = "Player responses contained no direct or HLS audio usable by this profile.",
             ),
              */
@@ -244,7 +232,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                         ageRestricted = CapabilitySupport.SUPPORTED,
                     ),
                 benchmarkContent = globallyUnusableContent(),
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_METROLIST, SOURCE_YTDLP),
+                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP),
                 notes =
                     "Matches the current yt-dlp profile but YouTube returned UNPLAYABLE in August 2026 probes. " +
                         "Retained for explicit compatibility testing only.",
@@ -261,7 +249,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 poTokens = ClientPoTokenCapabilities(player = webPlayerNotRequired, gvs = webGvsRequired),
                 request = webRequest,
                 content = validatedRestrictedWebContent,
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_METROLIST, SOURCE_YTDLP, SOURCE_YOUTUBE_JS),
+                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP, SOURCE_YOUTUBE_JS),
                 notes = "Passed normal, made-for-kids, and age-restricted playback with backward and forward seeks.",
             ),
             manifest(
@@ -276,7 +264,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 poTokens = ClientPoTokenCapabilities(player = webPlayerNotRequired, gvs = webGvsRequired),
                 request = webRequest,
                 content = validatedRestrictedWebContent,
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_METROLIST, SOURCE_YTDLP, SOURCE_YOUTUBE_JS),
+                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP, SOURCE_YOUTUBE_JS),
                 notes =
                     "Passed normal, made-for-kids, and age-restricted playback with backward and forward seeks. " +
                         "Requires a signed-in account.",
@@ -308,7 +296,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                         explicit = CapabilitySupport.LIMITED,
                         kids = CapabilitySupport.SUPPORTED,
                     ),
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_METROLIST, SOURCE_YTDLP, SOURCE_YOUTUBE_JS),
+                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP, SOURCE_YOUTUBE_JS),
                 notes =
                     "The two-token HLS path passed both normal samples, both made-for-kids " +
                         "samples, and one explicit sample with sustained playback and bidirectional seeks.",
@@ -328,7 +316,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 poTokens = ClientPoTokenCapabilities(player = webPlayerNotRequired, gvs = webGvsRequired),
                 request = webRequest,
                 content = globallyUnusableContent(),
-                evidence = setOf(SOURCE_METROLIST, SOURCE_YTDLP),
+                evidence = setOf(SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP),
                 notes =
                     "Current player responses may contain only SABR-capable data and no direct URL or HLS stream. " +
                         "Use WEB_SAFARI_SABR for the validated transport path.",
@@ -363,7 +351,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                         explicit = CapabilitySupport.UNSUPPORTED,
                         kids = CapabilitySupport.SUPPORTED,
                     ),
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_METROLIST, SOURCE_YTDLP, SOURCE_YOUTUBE_JS),
+                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP, SOURCE_YOUTUBE_JS),
                 notes =
                     "Normal and made-for-kids playback passed sustained playback and both seek directions after " +
                         "fetching per-video encryptedHostFlags; age-restricted media was rejected.",
@@ -380,7 +368,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 priority = 78,
                 transports = setOf(PlaybackTransport.SABR),
                 content = normalSongsOnlyContent(),
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_METROLIST, SOURCE_YTDLP),
+                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP),
                 notes = "Normal playback never became ready; the other benchmark content was rejected.",
             ),
              */
@@ -395,7 +383,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 poTokens = ClientPoTokenCapabilities(player = androidPlayerOptional, gvs = androidGvsRequired),
                 content = normalSongsOnlyContent(),
                 benchmarkContent = globallyUnusableContent(),
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_ANDROID_SABR_BENCHMARK, SOURCE_METROLIST, SOURCE_YTDLP),
+                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_ANDROID_SABR_BENCHMARK, SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP),
                 notes =
                     "Passed 0 of 6 current benchmark cases. Normal responses reached media but did not advance; " +
                         "explicit and made-for-kids samples were rejected or failed media without DroidGuard.",
@@ -415,7 +403,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 poTokens = ClientPoTokenCapabilities(player = webPlayerNotRequired, gvs = webGvsOptional),
                 request = webRequest,
                 content = normalWebContent,
-                evidence = setOf(SOURCE_METROLIST, SOURCE_YTDLP),
+                evidence = setOf(SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP),
                 notes = "Probe-only until full playback, protection, and seek behavior are benchmarked.",
             ),
              */
@@ -442,7 +430,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                         explicit = CapabilitySupport.SUPPORTED,
                         kids = CapabilitySupport.SUPPORTED,
                     ),
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_ANDROID_SABR_BENCHMARK, SOURCE_METROLIST),
+                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_ANDROID_SABR_BENCHMARK, SOURCE_PLAYBACK_MATRIX),
                 notes =
                     "Passed all 6 current normal, explicit, and made-for-kids cases with 90-second playback, " +
                         "bidirectional seeks, and complete telemetry without a PO token.",
@@ -459,7 +447,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 poTokens = ClientPoTokenCapabilities(player = webPlayerNotRequired, gvs = pageBoundGvsRequired),
                 request = webRequest.copy(webView = WebViewRequirement.REQUIRED_TOKEN_MINTING),
                 content = validatedProbeWebContent,
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_ANDROID_SABR_BENCHMARK, SOURCE_METROLIST, SOURCE_YTDLP),
+                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_ANDROID_SABR_BENCHMARK, SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP),
                 notes =
                     "Page-bound GVS tokens passed all 6 current normal, explicit, and made-for-kids cases with " +
                         "90-second playback, bidirectional seeks, and complete telemetry.",
@@ -488,7 +476,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                         ageRestricted = CapabilitySupport.UNSUPPORTED,
                         uploads = CapabilitySupport.UNSUPPORTED,
                     ),
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_ANDROID_SABR_BENCHMARK, SOURCE_METROLIST),
+                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_ANDROID_SABR_BENCHMARK, SOURCE_PLAYBACK_MATRIX),
                 notes =
                     "Passed both normal and both made-for-kids samples with 90-second playback, bidirectional " +
                         "seeks, and complete telemetry. One of two explicit samples passed; explicit content " +
@@ -507,7 +495,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 transports = setOf(PlaybackTransport.DIRECT, PlaybackTransport.HLS),
                 poTokens = ClientPoTokenCapabilities(player = androidPlayerOptional, gvs = androidGvsRequired),
                 content = nativeDirectUnusableContent(),
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_METROLIST, SOURCE_YTDLP, SOURCE_YOUTUBE_JS),
+                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP, SOURCE_YOUTUBE_JS),
                 notes =
                     "Normal and made-for-kids requests return SABR-only metadata without direct URLs, while " +
                         "age-restricted media requires login. This direct profile is not currently usable.",
@@ -525,7 +513,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 transports = setOf(PlaybackTransport.SABR),
                 poTokens = ClientPoTokenCapabilities(player = androidPlayerOptional, gvs = androidGvsRequired),
                 content = ClientContentCapabilities(explicit = CapabilitySupport.UNKNOWN, kids = CapabilitySupport.UNKNOWN),
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_METROLIST, SOURCE_YTDLP),
+                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP),
                 notes = "Not automatic until a DroidGuard-compatible provider is available.",
             ),
              */
@@ -541,7 +529,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 poTokens = ClientPoTokenCapabilities(player = webPlayerNotRequired, gvs = pageBoundGvsRequired),
                 request = webRequest,
                 content = validatedProbeWebContent,
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_METROLIST, SOURCE_YTDLP, SOURCE_YOUTUBE_JS),
+                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP, SOURCE_YOUTUBE_JS),
                 notes =
                     "Page-bound GVS tokens passed normal, made-for-kids, and age-restricted playback. " +
                         "Fresh tokenized URLs can return several transient HTTP 403 responses before becoming usable.",
@@ -559,7 +547,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 request = webRequest.copy(webView = WebViewRequirement.REQUIRED_TOKEN_MINTING),
                 content = validatedProbeWebContent,
                 benchmarkContent = validatedProbeWebContent.copy(explicit = CapabilitySupport.LIMITED),
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_ANDROID_SABR_BENCHMARK, SOURCE_METROLIST, SOURCE_YTDLP),
+                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_ANDROID_SABR_BENCHMARK, SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP),
                 notes =
                     "Passed 5 of 6 current cases with 90-second playback and bidirectional seeks. One explicit " +
                         "sample had a media failure; runtime health fallback remains enabled.",
@@ -576,7 +564,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 poTokens = ClientPoTokenCapabilities(player = webPlayerNotRequired, gvs = pageBoundGvsRequired),
                 request = webRequest.copy(webView = WebViewRequirement.REQUIRED_TOKEN_MINTING),
                 content = validatedProbeWebContent,
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_ANDROID_SABR_BENCHMARK, SOURCE_METROLIST, SOURCE_YTDLP),
+                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_ANDROID_SABR_BENCHMARK, SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP),
                 notes =
                     "Page-bound GVS tokens passed all 6 current normal, explicit, and made-for-kids cases with " +
                         "90-second playback, bidirectional seeks, and complete telemetry.",
@@ -594,7 +582,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 transports = setOf(PlaybackTransport.DIRECT, PlaybackTransport.HLS),
                 poTokens = ClientPoTokenCapabilities(player = iosPlayerOptional, gvs = iosGvsRequired),
                 content = nativeDirectUnusableContent(),
-                evidence = setOf(SOURCE_METROLIST, SOURCE_YTDLP, SOURCE_YOUTUBE_JS),
+                evidence = setOf(SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP, SOURCE_YOUTUBE_JS),
                 notes =
                     "Normal and made-for-kids requests return SABR-only metadata without direct URLs. " +
                         "Age-restricted media requires login; no iOS attestation provider is available.",
@@ -627,7 +615,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 transports = setOf(PlaybackTransport.DIRECT, PlaybackTransport.HLS),
                 poTokens = ClientPoTokenCapabilities(player = iosPlayerOptional, gvs = iosGvsRequired),
                 content = nativeDirectUnusableContent(),
-                evidence = setOf(SOURCE_METROLIST),
+                evidence = setOf(SOURCE_PLAYBACK_MATRIX),
                 notes =
                     "Current normal and made-for-kids responses are SABR-only without direct URLs; age-restricted " +
                         "media requires login. Historical direct probes failed sequential GVS ranges around 1 MiB.",
@@ -651,7 +639,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                         embedded = true,
                     ),
                 content = globallyUnusableContent(),
-                evidence = setOf(SOURCE_METROLIST, SOURCE_YOUTUBE_JS),
+                evidence = setOf(SOURCE_PLAYBACK_MATRIX, SOURCE_YOUTUBE_JS),
                 notes = "YouTube reports this application and device as no longer supported.",
             ),
              */
@@ -803,7 +791,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 transports = setOf(PlaybackTransport.DIRECT, PlaybackTransport.HLS),
                 poTokens = ClientPoTokenCapabilities(player = iosPlayerOptional, gvs = iosGvsRequired),
                 content = nativeDirectUnusableContent(),
-                evidence = setOf(SOURCE_METROLIST),
+                evidence = setOf(SOURCE_PLAYBACK_MATRIX),
                 notes = "Previous responses exposed SABR-only media and require unavailable iOS attestation.",
             ),
             manifest(
@@ -859,7 +847,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 transports = setOf(PlaybackTransport.DIRECT),
                 poTokens = ClientPoTokenCapabilities(player = androidPlayerRequired, gvs = androidGvsRequired),
                 content = globallyUnusableContent(),
-                evidence = setOf(SOURCE_METROLIST, SOURCE_YOUTUBE_JS),
+                evidence = setOf(SOURCE_PLAYBACK_MATRIX, SOURCE_YOUTUBE_JS),
                 notes = "Current player requests return HTTP 400 FAILED_PRECONDITION for every benchmark probe.",
             ),
              *
@@ -875,7 +863,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
                 authentication = AuthenticationPolicy.REQUIRED,
                 transports = setOf(PlaybackTransport.DIRECT),
                 content = globallyUnusableContent(),
-                evidence = setOf(SOURCE_METROLIST, SOURCE_YOUTUBE_JS),
+                evidence = setOf(SOURCE_PLAYBACK_MATRIX, SOURCE_YOUTUBE_JS),
                 notes = "Both 25.03.101 and the YouTube.js 22.43.101 identity return HTTP 400.",
             ),
              */
@@ -957,9 +945,9 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
     val devtoolsOverrideOptions: List<PlaybackClientOption> =
         options.filter { it.manifest.selectionMode != ClientSelectionMode.PROBE_ONLY }
 
-    override val automaticManifests: List<PlaybackClientManifest> = manifests.filter(PlaybackClientManifest::isAutomatic)
+    val automaticManifests: List<PlaybackClientManifest> = manifests.filter(PlaybackClientManifest::isAutomatic)
 
-    override fun find(id: String): PlaybackClientOption? = options.firstOrNull { it.id == id }
+    fun find(id: String): PlaybackClientOption? = options.firstOrNull { it.id == id }
 
     fun findBenchmark(id: String): PlaybackClientOption? = benchmarkOptions.firstOrNull { it.id == id }
 
@@ -978,7 +966,7 @@ object PlaybackClientCatalog : PlaybackClientCatalogView {
             ?.substringBefore("__")
             ?.takeIf { candidate -> manifests.any { it.id == candidate } }
 
-    override fun profileIds(
+    fun profileIds(
         manifest: PlaybackClientManifest,
         usedPoToken: Boolean,
     ): Set<String> =

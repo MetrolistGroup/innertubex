@@ -5,7 +5,7 @@ import com.metrolist.innertubex.models.YouTubeClient
 
 class ContentAwareFallbackStrategy(
     private val healthMonitor: ClientHealthMonitor = ClientHealthMonitor.NONE,
-    private val catalog: PlaybackClientCatalogView = PlaybackClientCatalog,
+    private val catalog: PlaybackClientCatalog = PlaybackClientCatalog,
 ) : ClientFallbackStrategy {
     /**
      * Resolves only clients that are usable with conservative, signed-out runtime capabilities.

@@ -860,8 +860,8 @@ public final class com/metrolist/innertubex/extraction/strategy/ClientSelectionR
 
 public final class com/metrolist/innertubex/extraction/strategy/ContentAwareFallbackStrategy : com/metrolist/innertubex/extraction/strategy/ClientFallbackStrategy {
 	public fun <init> ()V
-	public fun <init> (Lcom/metrolist/innertubex/extraction/strategy/ClientHealthMonitor;Lcom/metrolist/innertubex/extraction/strategy/PlaybackClientCatalogView;)V
-	public synthetic fun <init> (Lcom/metrolist/innertubex/extraction/strategy/ClientHealthMonitor;Lcom/metrolist/innertubex/extraction/strategy/PlaybackClientCatalogView;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Lcom/metrolist/innertubex/extraction/strategy/ClientHealthMonitor;Lcom/metrolist/innertubex/extraction/strategy/PlaybackClientCatalog;)V
+	public synthetic fun <init> (Lcom/metrolist/innertubex/extraction/strategy/ClientHealthMonitor;Lcom/metrolist/innertubex/extraction/strategy/PlaybackClientCatalog;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public fun resolveClients (Lcom/metrolist/innertubex/extraction/ContentHints;)Ljava/util/List;
 	public fun selectClients (Lcom/metrolist/innertubex/extraction/strategy/ClientSelectionRequest;)Lcom/metrolist/innertubex/extraction/strategy/ClientSelectionResult;
 }
@@ -875,16 +875,16 @@ public final class com/metrolist/innertubex/extraction/strategy/JavaScriptRequir
 	public static fun values ()[Lcom/metrolist/innertubex/extraction/strategy/JavaScriptRequirement;
 }
 
-public final class com/metrolist/innertubex/extraction/strategy/PlaybackClientCatalog : com/metrolist/innertubex/extraction/strategy/PlaybackClientCatalogView {
+public final class com/metrolist/innertubex/extraction/strategy/PlaybackClientCatalog {
 	public static final field AUTOMATIC_ID Ljava/lang/String;
 	public static final field INSTANCE Lcom/metrolist/innertubex/extraction/strategy/PlaybackClientCatalog;
 	public static final field SABR_FIRST_ID Ljava/lang/String;
-	public fun find (Ljava/lang/String;)Lcom/metrolist/innertubex/extraction/strategy/PlaybackClientOption;
+	public final fun find (Ljava/lang/String;)Lcom/metrolist/innertubex/extraction/strategy/PlaybackClientOption;
 	public final fun findBenchmark (Ljava/lang/String;)Lcom/metrolist/innertubex/extraction/strategy/PlaybackClientOption;
 	public final fun findDevtoolsOverride (Ljava/lang/String;)Lcom/metrolist/innertubex/extraction/strategy/PlaybackClientOption;
 	public final fun findManifest (Lcom/metrolist/innertubex/models/YouTubeClient;)Lcom/metrolist/innertubex/extraction/strategy/PlaybackClientManifest;
 	public final fun findManifest (Ljava/lang/String;)Lcom/metrolist/innertubex/extraction/strategy/PlaybackClientManifest;
-	public fun getAutomaticManifests ()Ljava/util/List;
+	public final fun getAutomaticManifests ()Ljava/util/List;
 	public final fun getBenchmarkOptions ()Ljava/util/List;
 	public final fun getDevtoolsOverrideOptions ()Ljava/util/List;
 	public final fun getManifests ()Ljava/util/List;
@@ -892,13 +892,7 @@ public final class com/metrolist/innertubex/extraction/strategy/PlaybackClientCa
 	public final fun isDevtoolsOverrideAllowed (Ljava/lang/String;)Z
 	public final fun isDevtoolsSelectionAllowed (Ljava/lang/String;)Z
 	public final fun manifestIdFromProfileId (Ljava/lang/String;)Ljava/lang/String;
-	public fun profileIds (Lcom/metrolist/innertubex/extraction/strategy/PlaybackClientManifest;Z)Ljava/util/Set;
-}
-
-public abstract interface class com/metrolist/innertubex/extraction/strategy/PlaybackClientCatalogView {
-	public abstract fun find (Ljava/lang/String;)Lcom/metrolist/innertubex/extraction/strategy/PlaybackClientOption;
-	public abstract fun getAutomaticManifests ()Ljava/util/List;
-	public abstract fun profileIds (Lcom/metrolist/innertubex/extraction/strategy/PlaybackClientManifest;Z)Ljava/util/Set;
+	public final fun profileIds (Lcom/metrolist/innertubex/extraction/strategy/PlaybackClientManifest;Z)Ljava/util/Set;
 }
 
 public final class com/metrolist/innertubex/extraction/strategy/PlaybackClientManifest {
