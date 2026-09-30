@@ -6,6 +6,8 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-09-30
+
 ### Added
 
 - `YtConfigParserImpl` accepts an optional `cipherService` so its signature-timestamp
