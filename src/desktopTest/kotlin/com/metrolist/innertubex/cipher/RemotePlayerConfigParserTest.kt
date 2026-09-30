@@ -52,6 +52,16 @@ class RemotePlayerConfigParserTest {
     }
 
     @Test
+    fun canonicalizesOnlyLocalizedIasPlayerUrls() {
+        assertEquals(
+            "https://www.youtube.com/s/player/66a6ea83/player_ias.vflset/en_GB/base.js",
+            canonicalPlayerUrl("https://www.youtube.com/s/player/66a6ea83/player_ias.vflset/pl_PL/base.js"),
+        )
+        val tvPlayer = "https://www.youtube.com/s/player/66a6ea83/tv-player-ias.vflset/tv-player-ias.js"
+        assertEquals(tvPlayer, canonicalPlayerUrl(tvPlayer))
+    }
+
+    @Test
     fun parsesLegacyNestedSignatureTimestamp() {
         assertEquals(
             20613,

@@ -60,7 +60,7 @@ val configStore = RemotePlayerConfigStore(
 )
 val cipher = YouTubeCipherService(client.httpClient, configStore)
 val extractor = InnerTubeExtractor(
-    configParser = YtConfigParserImpl(client.httpClient, client, configStore),
+    configParser = YtConfigParserImpl(client.httpClient, client, configStore, cipherService = cipher),
     cipherService = cipher,
     innerTube = client,
 )

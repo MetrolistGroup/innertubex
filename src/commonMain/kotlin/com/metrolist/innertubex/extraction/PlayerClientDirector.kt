@@ -20,7 +20,6 @@ import com.metrolist.innertubex.models.PoTokenBinding
 import com.metrolist.innertubex.models.YouTubeClient
 import com.metrolist.innertubex.models.response.PlayerResponse
 import com.metrolist.innertubex.w
-import io.ktor.http.isSuccess
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.TimeoutCancellationException
@@ -59,6 +58,8 @@ internal class PlayerClientDirector(
         private val DEFAULT_MAX_PLAYER_REQUESTS = PlaybackClientCatalog.automaticManifests.size * 2
         private const val MAX_PLAYER_RESPONSE_BYTES = 4 * 1024 * 1024
         private const val MAX_PLAYER_FORMATS = 2048
+        private val N_PARAMETER_REGEX = Regex("[?&]n=[^&]+", RegexOption.IGNORE_CASE)
+        private val UNSAFE_PROFILE_CHARACTERS = Regex("[^A-Za-z0-9_.-]")
         private val DYNAMIC_WEB_VERSION_CLIENT_NAMES = setOf("WEB", "WEB_EMBEDDED_PLAYER")
         private val TRANSPORT_PROBE_CLIENT_NAMES =
             setOf("IOS_MUSIC", "ANDROID_KIDS", "ANDROID_PRODUCER", "MEDIA_CONNECT_FRONTEND")
@@ -103,7 +104,7 @@ internal class PlayerClientDirector(
         val requestVisitorData =
             initialSession.visitorData?.takeIf { it.isNotBlank() }
                 ?: playerConfig.visitorData?.takeIf { it.isNotBlank() }
-        val requestSession = initialSession.copy(visitorData = requestVisitorData)
+        var requestSession = initialSession.copy(visitorData = requestVisitorData)
         val authenticated = !requestSession.sapisid.isNullOrBlank()
         val healthScope = ClientHealthScope.from(hints, authenticated)
         val selectionRequest =
@@ -192,6 +193,14 @@ internal class PlayerClientDirector(
         val unavailablePoTokenCookieModes = mutableSetOf<Boolean>()
         for (declaredClient in clients) {
             if (requestsConsumedInBatch >= maxPlayerRequests || effectiveRequestBudget.remaining <= 0) break
+            // A tokenized attempt may have published fresh visitor data. Carry it forward; any other change still cancels.
+            innerTube
+                .sessionSnapshot()
+                .takeIf { it.generation != requestSession.generation }
+                ?.visitorData
+                ?.takeIf(String::isNotBlank)
+                ?.let { innerTube.sessionSnapshotWithVisitorData(requestSession, it) }
+                ?.let { requestSession = it }
             val selectedClient = declaredClient.withPlayerConfigVersion(playerConfig)
             val client = selectedClient.client
             // A visitor-less automatic legacy probe says nothing about its visitor-backed playback health.
@@ -242,13 +251,20 @@ internal class PlayerClientDirector(
                 ?.takeUnless {
                     client == YouTubeClient.VISIONOS_0_1 && requestVisitorData.isNullOrBlank()
                 }?.let { manifestId ->
+                    // Later extraction passes can replay the same outcome; report each one once.
                     when {
                         attemptResult.requestFailure != null -> {
-                            clientHealthMonitor.recordFailure(manifestId, ClientFailureKind.PLAYER_REQUEST, healthScope)
+                            if (effectiveRequestBudget.firstHealthReport(manifestId, "request")) {
+                                clientHealthMonitor.recordFailure(manifestId, ClientFailureKind.PLAYER_REQUEST, healthScope)
+                            }
                         }
 
+                        // Success is left to the host: a playable response can still fail at the CDN,
+                        // and recording it here would clear that failure's cooldown.
                         attempt == null && !attemptResult.tokenUnavailable -> {
-                            clientHealthMonitor.recordFailure(manifestId, ClientFailureKind.PLAYABILITY, healthScope)
+                            if (effectiveRequestBudget.firstHealthReport(manifestId, "playability")) {
+                                clientHealthMonitor.recordFailure(manifestId, ClientFailureKind.PLAYABILITY, healthScope)
+                            }
                         }
                     }
                 }
@@ -812,23 +828,45 @@ internal class PlayerClientDirector(
         encryptedHostFlags: String?,
         requestBudget: PlayerRequestBudget,
         bearerToken: String? = null,
-    ): PlayerResponse? =
-        try {
-            requestBudget.consume()
-            withTimeout(playerRequestTimeoutMs.milliseconds) {
-                requestPlayerWithoutTimeout(
+    ): PlayerResponse? {
+        // Bearer requests are never remembered so the credential cannot outlive its single use.
+        val key =
+            if (bearerToken == null) {
+                PlayerRequestKey(
                     client = client,
                     videoId = videoId,
-                    signatureTimestamp = signatureTimestamp,
+                    signatureTimestamp = signatureTimestamp.takeIf { client.useSignatureTimestamp },
                     poToken = poToken,
                     requestSession = requestSession,
-                    encryptedHostFlags = encryptedHostFlags,
-                    bearerToken = bearerToken,
+                    encryptedHostFlags = encryptedHostFlags.takeIf { client.isEmbedded },
                 )
+            } else {
+                null
             }
-        } catch (error: TimeoutCancellationException) {
-            throw PlayerRequestTimeoutException(client.clientName, playerRequestTimeoutMs, error)
+        if (key != null && requestBudget.hasResponse(key)) {
+            logger.d(TAG, "player response reused", details = mapOf("client" to client.clientName))
+            return requestBudget.response(key)
         }
+        requestBudget.consume()
+        val response =
+            try {
+                withTimeout(playerRequestTimeoutMs.milliseconds) {
+                    requestPlayerWithoutTimeout(
+                        client = client,
+                        videoId = videoId,
+                        signatureTimestamp = signatureTimestamp,
+                        poToken = poToken,
+                        requestSession = requestSession,
+                        encryptedHostFlags = encryptedHostFlags,
+                        bearerToken = bearerToken,
+                    )
+                }
+            } catch (error: TimeoutCancellationException) {
+                throw PlayerRequestTimeoutException(client.clientName, playerRequestTimeoutMs, error)
+            }
+        key?.let { requestBudget.remember(it, response) }
+        return response
+    }
 
     private suspend fun requestPlayerWithoutTimeout(
         client: YouTubeClient,
@@ -860,11 +898,9 @@ internal class PlayerClientDirector(
                         requestVisitorData = requestSession.visitorData,
                         requestSession = requestSession,
                         encryptedHostFlags = encryptedHostFlags,
+                        retryTransientFailures = false,
                     )
-                if (!httpResponse.status.isSuccess()) {
-                    httpResponse.bodyAsTextLimited(MAX_PLAYER_RESPONSE_BYTES)
-                    return null
-                }
+                // Non-2xx responses already threw InnerTubeHttpException.
                 httpResponse.bodyAsTextLimited(MAX_PLAYER_RESPONSE_BYTES)
             }
         return parsePlayerResponse(payload, videoId, client, startTime, bearerToken != null)
@@ -1068,7 +1104,7 @@ internal class PlayerClientDirector(
         }
     }
 
-    private fun String.hasNParameter(): Boolean = Regex("[?&]n=[^&]+", RegexOption.IGNORE_CASE).containsMatchIn(this)
+    private fun String.hasNParameter(): Boolean = N_PARAMETER_REGEX.containsMatchIn(this)
 
     private fun SelectedClient.withPlayerConfigVersion(playerConfig: PlayerConfig): SelectedClient {
         val liveVersion = playerConfig.clientVersion?.takeIf { it.isNotBlank() } ?: return this
@@ -1157,7 +1193,7 @@ internal class PlayerClientDirector(
                 append(friendlyName ?: clientVersion)
                 if (isEmbedded) append("_embedded")
             }
-        val safeBase = base.replace(Regex("[^A-Za-z0-9_.-]"), "_")
+        val safeBase = base.replace(UNSAFE_PROFILE_CHARACTERS, "_")
         return "${safeBase}_${if (usedPoToken) "po" else "nopo"}"
     }
 
@@ -1230,10 +1266,46 @@ internal class PlayerClientDirector(
     ) : Exception("Player request for $clientName exceeded ${timeoutMs}ms", cause)
 }
 
+/** Every input that can change a non-bearer player response. */
+internal data class PlayerRequestKey(
+    val client: YouTubeClient,
+    val videoId: String,
+    val signatureTimestamp: Int?,
+    val poToken: String?,
+    val requestSession: InnerTube.SessionSnapshot,
+    val encryptedHostFlags: String?,
+) {
+    override fun toString(): String = "PlayerRequestKey(client=${client.clientName})"
+}
+
+/**
+ * Per-extraction player-request budget. It also remembers each response, so the config-free, cached-config,
+ * fresh-config and cookie passes of one extraction never resend an identical request.
+ * Request failures are not remembered because they are usually transient.
+ */
 @OptIn(ExperimentalAtomicApi::class)
 internal class PlayerRequestBudget(
     initial: Int,
 ) {
+    private val responses = mutableMapOf<PlayerRequestKey, PlayerResponse?>()
+    private val healthReports = mutableSetOf<Pair<String, String>>()
+
+    fun hasResponse(key: PlayerRequestKey): Boolean = key in responses
+
+    fun response(key: PlayerRequestKey): PlayerResponse? = responses[key]
+
+    fun remember(
+        key: PlayerRequestKey,
+        response: PlayerResponse?,
+    ) {
+        responses[key] = response
+    }
+
+    fun firstHealthReport(
+        manifestId: String,
+        outcome: String,
+    ): Boolean = healthReports.add(manifestId to outcome)
+
     private val remainingCount = AtomicInt(initial.also { require(it > 0) { "Player request budget must be positive" } })
 
     val remaining: Int

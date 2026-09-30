@@ -203,6 +203,67 @@ class PlayerClientDirectorTest {
         }
 
     @Test
+    fun visitorFetchedForOneClientDoesNotAbortTheRestOfTheBatch() =
+        runBlocking {
+            val client =
+                HttpClient(
+                    MockEngine { request ->
+                        val body =
+                            when {
+                                request.url.encodedPath == "/sw.js_data" -> {
+                                    ")]}'\n[[\"x\",0,[[[0,1,2,3,4,5,6,7,8,9,10,11,12,\"fresh-visitor\"]]]]]"
+                                }
+
+                                // A playable Web SABR response still needs a GVS token, which triggers the visitor fetch.
+                                request.headers["X-YouTube-Client-Name"] == YouTubeClient.WEB_SABR.clientId -> {
+                                    TOKEN_PLAYER_RESPONSE
+                                }
+
+                                else -> {
+                                    PLAYER_RESPONSE
+                                }
+                            }
+                        respond(body, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
+                    },
+                ) {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
+            val innerTube = InnerTube(client, retryDelay = {})
+            val provider =
+                object : TokenProvider {
+                    override val capabilities =
+                        TokenProviderCapabilities(
+                            setOf(PoTokenProviderKind.WEB_BOTGUARD, PoTokenProviderKind.WEBPAGE_ATTESTATION),
+                            usesWebView = true,
+                        )
+
+                    override suspend fun getPoToken(
+                        videoId: String,
+                        visitorData: String,
+                        cookie: String?,
+                    ): PoTokenResult? = null
+                }
+            val manifests = listOf("WEB_SABR", "VISIONOS").map { checkNotNull(PlaybackClientCatalog.findManifest(it)) }
+            val director =
+                PlayerClientDirector(
+                    innerTube,
+                    object : ClientFallbackStrategy {
+                        override fun resolveClients(hints: ContentHints) = manifests.map { it.client }
+
+                        override fun selectClients(request: ClientSelectionRequest) =
+                            ClientSelectionResult(manifests.map { SelectedClient(it.client, it) })
+                    },
+                    provider,
+                )
+
+            val result = director.fetchPlayerResponses("video", PlayerConfig("player.js", null, null, null), ContentHints())
+
+            assertEquals("fresh-visitor", innerTube.visitorData)
+            assertEquals(YouTubeClient.VISIONOS.clientName, result.playableResponses.single().clientName)
+            client.close()
+        }
+
+    @Test
     fun unavailablePoTokenIsRequestedOnlyOncePerBatch() =
         runBlocking {
             val client = client { PLAYER_RESPONSE }

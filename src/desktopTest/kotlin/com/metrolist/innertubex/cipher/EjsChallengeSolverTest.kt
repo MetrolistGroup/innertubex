@@ -47,9 +47,19 @@ class EjsChallengeSolverTest {
             try {
                 val secondSolver = EjsChallengeSolver(secondEngine, InnerTubeLogger.NONE)
                 secondSolver.setPreprocessedPlayerCache(read, write)
-                val restored = secondSolver.solve(PLAYER_URL, "", listOf("n" to listOf("fresh")))
+                var fullPlayerLoads = 0
+                val restored =
+                    secondSolver.solve(
+                        PLAYER_URL,
+                        loadFullPlayerJs = {
+                            fullPlayerLoads++
+                            PLAYER_CODE
+                        },
+                        requestOrder = listOf("n" to listOf("fresh")),
+                    )
 
                 assertEquals("fresh_done", restored.nByChallenge["fresh"])
+                assertEquals(0, fullPlayerLoads)
                 assertEquals(2, reads)
                 assertTrue(stored.keys.single().matches(Regex("[a-f0-9]{40}")))
             } finally {

@@ -9,6 +9,7 @@ import com.metrolist.innertubex.extraction.strategy.ClientHealthMonitor
 import com.metrolist.innertubex.extraction.strategy.ContentAwareFallbackStrategy
 import com.metrolist.innertubex.extraction.strategy.PlaybackClientCatalog
 import com.metrolist.innertubex.i
+import com.metrolist.innertubex.models.YouTubeLocale
 import com.metrolist.innertubex.models.response.PlayerResponse
 import com.metrolist.innertubex.models.response.PlayerResponse.StreamingData
 import com.metrolist.innertubex.models.response.PlayerResponse.StreamingData.Format
@@ -45,7 +46,8 @@ class InnerTubeExtractor internal constructor(
         configParser: YtConfigParser,
         cipherService: YouTubeCipherService,
         innerTube: InnerTube,
-        fallbackStrategy: ClientFallbackStrategy = ContentAwareFallbackStrategy(),
+        /** Defaults to a [ContentAwareFallbackStrategy] that scores clients with [clientHealthMonitor]. */
+        fallbackStrategy: ClientFallbackStrategy? = null,
         tokenProvider: TokenProvider? = null,
         clientHealthMonitor: ClientHealthMonitor = ClientHealthMonitor.NONE,
         logger: InnerTubeLogger = InnerTubeLogger.NONE,
@@ -54,7 +56,7 @@ class InnerTubeExtractor internal constructor(
         clientDirector =
             PlayerClientDirector(
                 innerTube = innerTube,
-                fallbackStrategy = fallbackStrategy,
+                fallbackStrategy = fallbackStrategy ?: ContentAwareFallbackStrategy(clientHealthMonitor),
                 tokenProvider = tokenProvider ?: UnavailableTokenProvider,
                 clientHealthMonitor = clientHealthMonitor,
                 logger = logger,
@@ -68,12 +70,17 @@ class InnerTubeExtractor internal constructor(
     private companion object {
         private const val TAG = "InnerTubeExtractor"
         private const val DEFAULT_BOUNDED_RANGE_CHUNK_BYTES = 1_048_576L
-        private const val PLAYER_CONFIG_CACHE_TTL_MS = 30 * 60 * 1000L
+
+        // An unusable cached config is refetched immediately, so the TTL only bounds idle staleness.
+        private const val PLAYER_CONFIG_CACHE_TTL_MS = 3 * 60 * 60 * 1000L
         private const val PREWARM_VIDEO_ID = "dQw4w9WgXcQ"
         private const val WEB_EMBEDDED_PLAYER_ID = "WEB_EMBEDDED_PLAYER"
         private const val WEB_KIDS_ID = "WEB_KIDS"
         private val PO_TOKEN_PREFETCH_TIMEOUT = 18.seconds
         private const val TV_BEARER_PROVIDER_TIMEOUT_MS = 8_000L
+        private val EXPIRE_REGEX = Regex("[?&]expire=([0-9]+)")
+        private val N_PARAMETER_REGEX = Regex("(?:[?&]|%26)n(?:=|%3[dD])", RegexOption.IGNORE_CASE)
+        private val CODECS_REGEX = Regex("codecs=\"([^\"]+)\"")
 
         // Allow a cached-config pass and a fresh-config pass, plus native probes.
         private val MAX_PLAYER_REQUESTS_PER_EXTRACTION = PlaybackClientCatalog.automaticManifests.size * 4 + 2
@@ -82,9 +89,18 @@ class InnerTubeExtractor internal constructor(
     private data class CachedPlayerConfig(
         val config: PlayerConfig,
         val cachedAtMs: Long,
-        val sessionIdentity: InnerTube.SessionSnapshot,
+        val identity: ConfigIdentity,
         val usedLoginCookies: Boolean,
     )
+
+    /** The only session fields a watch or embed page request depends on. */
+    private data class ConfigIdentity(
+        val locale: YouTubeLocale,
+        val cookie: String?,
+    )
+
+    private fun configIdentity(useLoginCookies: Boolean): ConfigIdentity =
+        innerTube.sessionSnapshot().let { ConfigIdentity(it.locale, it.cookie.takeIf { useLoginCookies }) }
 
     private val playerConfigCache = mutableMapOf<Boolean, CachedPlayerConfig>()
     private val playerConfigFetchMutex = Mutex()
@@ -227,15 +243,15 @@ class InnerTubeExtractor internal constructor(
                         nowMs = Clock.System.now().toEpochMilliseconds(),
                     )?.config
                         ?: run {
-                            val expectedSession = innerTube.sessionSnapshot()
+                            val expectedIdentity = configIdentity(useLoginCookies)
                             val config = configParser.fetchConfig(PREWARM_VIDEO_ID, useLoginCookies)
-                            if (innerTube.sessionSnapshot() != expectedSession) {
+                            if (configIdentity(useLoginCookies) != expectedIdentity) {
                                 throw CancellationException("InnerTube session changed")
                             }
                             cachePlayerConfig(
                                 useLoginCookies = useLoginCookies,
                                 config = config,
-                                sessionIdentity = expectedSession,
+                                identity = expectedIdentity,
                             ).config
                         }
                 }
@@ -714,13 +730,13 @@ class InnerTubeExtractor internal constructor(
                 if (diagnostics.requestBudget.remaining <= 0) return null
                 getCachedPlayerConfigLocked(useLoginCookies, Clock.System.now().toEpochMilliseconds())
                     ?: run {
-                        val expectedSession = innerTube.sessionSnapshot()
+                        val expectedIdentity = configIdentity(useLoginCookies)
                         val config = configParser.fetchConfig(videoId, useLoginCookies)
-                        if (innerTube.sessionSnapshot() != expectedSession) {
+                        if (configIdentity(useLoginCookies) != expectedIdentity) {
                             throw CancellationException("InnerTube session changed")
                         }
                         fetchedFreshConfig = true
-                        cachePlayerConfig(useLoginCookies, config, expectedSession)
+                        cachePlayerConfig(useLoginCookies, config, expectedIdentity)
                     }
             }
         diagnostics.usedAuthenticatedWatchPage =
@@ -762,9 +778,8 @@ class InnerTubeExtractor internal constructor(
         nowMs: Long,
     ): CachedPlayerConfig? {
         val cached = playerConfigCache[useLoginCookies] ?: return null
-        val currentSession = innerTube.sessionSnapshot()
-        if (cached.sessionIdentity != currentSession) {
-            playerConfigCache.clear()
+        if (cached.identity != configIdentity(useLoginCookies)) {
+            playerConfigCache.remove(useLoginCookies)
             return null
         }
         if (nowMs - cached.cachedAtMs <= PLAYER_CONFIG_CACHE_TTL_MS) return cached
@@ -776,12 +791,12 @@ class InnerTubeExtractor internal constructor(
     private fun cachePlayerConfig(
         useLoginCookies: Boolean,
         config: PlayerConfig,
-        sessionIdentity: InnerTube.SessionSnapshot = innerTube.sessionSnapshot(),
+        identity: ConfigIdentity,
     ): CachedPlayerConfig =
         CachedPlayerConfig(
             config = config,
             cachedAtMs = Clock.System.now().toEpochMilliseconds(),
-            sessionIdentity = sessionIdentity,
+            identity = identity,
             usedLoginCookies = useLoginCookies,
         ).also { playerConfigCache[useLoginCookies] = it }
 
@@ -1468,11 +1483,11 @@ class InnerTubeExtractor internal constructor(
     }
 
     private fun extractExpire(url: String): Long? {
-        val match = Regex("[?&]expire=([0-9]+)").find(url)
+        val match = EXPIRE_REGEX.find(url)
         return match?.groupValues?.get(1)?.toLongOrNull()
     }
 
-    private fun String.hasNParameter(): Boolean = Regex("(?:[?&]|%26)n(?:=|%3[dD])", RegexOption.IGNORE_CASE).containsMatchIn(this)
+    private fun String.hasNParameter(): Boolean = N_PARAMETER_REGEX.containsMatchIn(this)
 
     private suspend fun resolveBoundedContentLength(
         contentLength: Long?,
@@ -1607,7 +1622,7 @@ class InnerTubeExtractor internal constructor(
             }
     }
 
-    private fun String.extractCodecs(): String? = Regex("codecs=\"([^\"]+)\"").find(this)?.groupValues?.getOrNull(1)
+    private fun String.extractCodecs(): String? = CODECS_REGEX.find(this)?.groupValues?.getOrNull(1)
 
     private fun Format.hasReadyVideoUrl(): Boolean = url?.let { !it.hasNParameter() && isAllowedMediaUrl(it) } == true
 

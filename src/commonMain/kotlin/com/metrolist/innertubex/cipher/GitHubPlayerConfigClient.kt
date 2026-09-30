@@ -34,6 +34,7 @@ internal class GitHubPlayerConfigClient(
         private const val TAG = "GitHubPlayerConfigClient"
         private const val REQUEST_TIMEOUT_MS = 2_000L
         private const val CONFIG_TTL_MS = 24 * 60 * 60 * 1000L
+        private const val MISSING_CONFIG_TTL_MS = 15 * 60 * 1000L
         private const val MAX_CONFIG_CACHE_ENTRIES = 8
         private const val MAX_CONFIG_RESPONSE_BYTES = 4 * 1024 * 1024
         private const val PREPROCESSED_TYPE = "yt-dlp-ejs-preprocessed-player"
@@ -53,6 +54,9 @@ internal class GitHubPlayerConfigClient(
         }
     private val cacheMutex = Mutex()
     private val cachedConfigs = LinkedHashMap<String, CachedConfig>()
+
+    /** URLs that recently had no usable config; retried after [MISSING_CONFIG_TTL_MS]. */
+    private val missingConfigs = LinkedHashMap<String, Long>()
 
     @Serializable
     private data class PlayerConfig(
@@ -169,9 +173,22 @@ internal class GitHubPlayerConfigClient(
                     cachedConfigs[configUrl] = it
                     return it.config
                 }
+            missingConfigs[configUrl]?.let { missingAt ->
+                if (now - missingAt in 0 until MISSING_CONFIG_TTL_MS) return null
+                missingConfigs.remove(configUrl)
+            }
         }
 
-        val fetched = fetchConfig(configUrl) ?: return null
+        val fetched = fetchConfig(configUrl)?.takeIf { it.hasConfigFor(playerHash) }
+        if (fetched == null) {
+            cacheMutex.withLock {
+                missingConfigs[configUrl] = Clock.System.now().toEpochMilliseconds()
+                while (missingConfigs.size > MAX_CONFIG_CACHE_ENTRIES) {
+                    missingConfigs.remove(missingConfigs.keys.firstOrNull() ?: break)
+                }
+            }
+            return null
+        }
         cacheMutex.withLock {
             cachedConfigs[configUrl] = CachedConfig(configUrl, fetched, Clock.System.now().toEpochMilliseconds())
             trimConfigCacheLocked()

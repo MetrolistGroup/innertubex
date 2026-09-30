@@ -448,7 +448,7 @@ fun main(args: Array<String>) {
                                 tube.cookie = cookie
                                 val extractor =
                                     InnerTubeExtractor(
-                                        YtConfigParserImpl(http, tube, logger = logger),
+                                        YtConfigParserImpl(http, tube, logger = logger, cipherService = cipher),
                                         cipher,
                                         tube,
                                         tokenProvider = tokens,

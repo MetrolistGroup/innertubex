@@ -3,6 +3,7 @@ package com.metrolist.innertubex.extraction
 import com.metrolist.innertubex.InnerTube
 import com.metrolist.innertubex.InnerTubeLogger
 import com.metrolist.innertubex.cipher.RemotePlayerConfigStore
+import com.metrolist.innertubex.cipher.YouTubeCipherService
 import com.metrolist.innertubex.cipher.getTextWithoutRedirects
 import com.metrolist.innertubex.d
 import com.metrolist.innertubex.models.YouTubeClient
@@ -22,6 +23,8 @@ public class YtConfigParserImpl(
     private val innerTube: InnerTube,
     private val remotePlayerConfigStore: RemotePlayerConfigStore? = null,
     private val logger: InnerTubeLogger = InnerTubeLogger.NONE,
+    /** When set, the signature-timestamp fallback reuses the cipher service's player download. */
+    private val cipherService: YouTubeCipherService? = null,
 ) : YtConfigParser {
     override suspend fun fetchConfig(
         videoId: String,
@@ -98,25 +101,21 @@ public class YtConfigParserImpl(
                 ?: error("Unable to parse YouTube player JavaScript URL")
         val sts = extractSignatureTimestamp(html)
         val resolvedSts = sts ?: remotePlayerConfigStore?.getSignatureTimestamp(playerUrl) ?: fetchPlayerSignatureTimestamp(playerUrl)
+        val visitorData = extractVisitorData(html)
+        val encryptedHostFlags = extractEncryptedHostFlags(html).takeIf { pageKind == "embed" }
         logger.d(
             TAG,
             "fetchConfig parsed page=$pageKind htmlSize=${html.length} " +
-                "hasSts=${resolvedSts != null} hasVisitorData=${extractVisitorData(html) != null} " +
-                "hasEncryptedHostFlags=${pageKind == "embed" && extractEncryptedHostFlags(html) != null}",
+                "hasSts=${resolvedSts != null} hasVisitorData=${visitorData != null} " +
+                "hasEncryptedHostFlags=${encryptedHostFlags != null}",
         )
-        return PlayerConfig(
-            playerUrl,
-            resolvedSts,
-            extractVisitorData(html),
-            extractClientVersion(html),
-            extractEncryptedHostFlags(html).takeIf { pageKind == "embed" },
-        )
+        return PlayerConfig(playerUrl, resolvedSts, visitorData, extractClientVersion(html), encryptedHostFlags)
     }
 
     private suspend fun fetchPlayerSignatureTimestamp(playerUrl: String): Int? =
         try {
             val js =
-                getText(Url(playerUrl), PLAYER_JS_MAX_BYTES) {
+                cipherService?.playerCode(playerUrl) ?: getText(Url(playerUrl), PLAYER_JS_MAX_BYTES) {
                     header(HttpHeaders.UserAgent, YouTubeClient.USER_AGENT_WEB)
                     timeout {
                         requestTimeoutMillis = PLAYER_TIMEOUT_MS
@@ -152,16 +151,24 @@ public class YtConfigParserImpl(
         }
 
     internal fun extractPlayerUrl(html: String): String? {
-        val normalized = html.replace("\\/", "/").replace("\\u0026", "&")
-        val patterns =
-            listOf(
-                Regex("\"PLAYER_JS_URL\":\"([^\"]+)\""),
-                Regex("\"jsUrl\":\"([^\"]+)\""),
-                Regex("(?<![A-Za-z0-9:/])(/s/player/[^\"'\\\\]+/[^\"'\\\\]*\\.js[^\"'\\\\]*)"),
-            )
-        return patterns
-            .asSequence()
-            .mapNotNull { it.find(normalized)?.groupValues?.get(1) }
+        // Only the loose path pattern needs the whole page unescaped; the keyed patterns unescape their match.
+        val keyed =
+            KEYED_PLAYER_URL_PATTERNS.asSequence().mapNotNull {
+                it
+                    .find(html)
+                    ?.groupValues
+                    ?.get(1)
+                    ?.unescapeJs()
+            }
+        val loose =
+            sequence {
+                LOOSE_PLAYER_URL_PATTERN
+                    .find(html.unescapeJs())
+                    ?.groupValues
+                    ?.get(1)
+                    ?.let { yield(it) }
+            }
+        return (keyed + loose)
             .mapNotNull { path ->
                 validatePlayerUrl(
                     if (path.startsWith("http")) path else "https://www.youtube.com${if (path.startsWith('/')) path else "/$path"}",
@@ -169,14 +176,13 @@ public class YtConfigParserImpl(
             }.firstOrNull()
     }
 
-    internal fun extractPlayerId(script: String): String? =
-        Regex("/s/player/([a-zA-Z0-9_-]+)/").find(script.replace("\\/", "/"))?.groupValues?.get(1)
+    private fun String.unescapeJs(): String = replace("\\/", "/").replace("\\u0026", "&")
+
+    internal fun extractPlayerId(script: String): String? = PLAYER_ID_REGEX.find(script.replace("\\/", "/"))?.groupValues?.get(1)
 
     internal fun extractSignatureTimestamp(html: String): Int? =
-        listOf(
-            Regex("(?:signatureTimestamp|sts)\"?\\s*:\\s*([0-9]{5})"),
-            Regex("\"STS\":\\s*([0-9]{5})"),
-        ).asSequence()
+        STS_PATTERNS
+            .asSequence()
             .mapNotNull {
                 it
                     .find(html)
@@ -185,13 +191,11 @@ public class YtConfigParserImpl(
                     ?.toIntOrNull()
             }.firstOrNull()
 
-    internal fun extractClientVersion(html: String): String? =
-        Regex("\"INNERTUBE_CLIENT_VERSION\"\\s*:\\s*\"([^\"]+)\"").find(html)?.groupValues?.get(1)
+    internal fun extractClientVersion(html: String): String? = CLIENT_VERSION_REGEX.find(html)?.groupValues?.get(1)
 
-    internal fun extractEncryptedHostFlags(html: String): String? =
-        Regex("\"encryptedHostFlags\"\\s*:\\s*\"([^\"]+)\"").find(html)?.groupValues?.get(1)
+    internal fun extractEncryptedHostFlags(html: String): String? = ENCRYPTED_HOST_FLAGS_REGEX.find(html)?.groupValues?.get(1)
 
-    private fun extractVisitorData(html: String): String? = Regex("\"visitorData\"\\s*:\\s*\"([^\"]+)\"").find(html)?.groupValues?.get(1)
+    private fun extractVisitorData(html: String): String? = VISITOR_DATA_REGEX.find(html)?.groupValues?.get(1)
 
     private fun validatePlayerUrl(value: String): String? =
         runCatching { Url(value) }
@@ -250,5 +254,20 @@ public class YtConfigParserImpl(
         private val SAFE_VIDEO_ID = Regex("[A-Za-z0-9_-]{1,64}")
         private val EMBED_PATH = Regex("/embed/[A-Za-z0-9_-]{1,64}")
         private val PLAYER_PATH = Regex("/s/player/[A-Za-z0-9_-]+/.+\\.js")
+        private val KEYED_PLAYER_URL_PATTERNS =
+            listOf(
+                Regex("\"PLAYER_JS_URL\":\"([^\"]+)\""),
+                Regex("\"jsUrl\":\"([^\"]+)\""),
+            )
+        private val LOOSE_PLAYER_URL_PATTERN = Regex("(?<![A-Za-z0-9:/])(/s/player/[^\"'\\\\]+/[^\"'\\\\]*\\.js[^\"'\\\\]*)")
+        private val PLAYER_ID_REGEX = Regex("/s/player/([a-zA-Z0-9_-]+)/")
+        private val STS_PATTERNS =
+            listOf(
+                Regex("(?:signatureTimestamp|sts)\"?\\s*:\\s*([0-9]{5})"),
+                Regex("\"STS\":\\s*([0-9]{5})"),
+            )
+        private val CLIENT_VERSION_REGEX = Regex("\"INNERTUBE_CLIENT_VERSION\"\\s*:\\s*\"([^\"]+)\"")
+        private val ENCRYPTED_HOST_FLAGS_REGEX = Regex("\"encryptedHostFlags\"\\s*:\\s*\"([^\"]+)\"")
+        private val VISITOR_DATA_REGEX = Regex("\"visitorData\"\\s*:\\s*\"([^\"]+)\"")
     }
 }

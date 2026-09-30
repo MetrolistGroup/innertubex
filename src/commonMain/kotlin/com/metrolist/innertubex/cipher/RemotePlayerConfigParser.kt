@@ -180,3 +180,15 @@ internal fun faradayCipherPlayerUrl(playerUrl: String): String? =
     RemotePlayerConfigParser.extractPlayerHash(playerUrl)?.let { hash ->
         "https://www.youtube.com/s/player/$hash/player_ias.vflset/en_GB/base.js"
     }
+
+private val LOCALIZED_IAS_PLAYER_URL =
+    Regex("^https://www\\.youtube\\.com/s/player/([A-Za-z0-9_-]+)/player_ias\\.vflset/[A-Za-z]{2,3}(?:_[A-Za-z]{2,4})?/base\\.js$")
+
+/**
+ * Locale variants of the same `player_ias` build are functionally identical. Mapping them to the variant
+ * the remote configs are validated against lets every cipher path share one download and cache entry.
+ */
+internal fun canonicalPlayerUrl(playerUrl: String): String =
+    LOCALIZED_IAS_PLAYER_URL.matchEntire(playerUrl)?.let { match ->
+        "https://www.youtube.com/s/player/${match.groupValues[1]}/player_ias.vflset/en_GB/base.js"
+    } ?: playerUrl

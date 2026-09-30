@@ -6,6 +6,31 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+### Added
+
+- `YtConfigParserImpl` accepts an optional `cipherService` so its signature-timestamp
+  fallback reuses the cipher service's player-script download.
+
+### Changed
+
+- One extraction no longer resends an identical player request across its config-free,
+  cached-config, fresh-config and cookie passes.
+- The extraction director falls back to the next client instead of retrying transient
+  player failures, and HTTP 429 is only retried with a `Retry-After` of at most 5 seconds.
+- The default `InnerTubeExtractor` strategy now scores clients with the supplied
+  `ClientHealthMonitor`.
+- Locale variants of the same `player_ias` build share one download and cache entry,
+  and the full player script is only downloaded when no preprocessed EJS player is cached.
+- Missing GitHub preprocessed-player configs are cached for 15 minutes.
+- Cached watch-page configs depend only on locale and cookie mode and live for 3 hours.
+- SABR media payloads are copied once instead of twice.
+
+### Fixed
+
+- Visitor data fetched for a tokenized client is now published to the session and
+  carried into the remaining clients of the same batch.
+- Join line-wrapped visitor data before using it in requests.
+
 ## [0.7.3] - 2026-09-29
 
 ### Fixed

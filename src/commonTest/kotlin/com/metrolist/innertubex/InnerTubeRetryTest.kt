@@ -66,6 +66,33 @@ class InnerTubeRetryTest {
         }
 
     @Test
+    fun rateLimitIsRetriedOnlyWithShortRetryAfter() =
+        runBlocking {
+            var requests = 0
+            val delays = mutableListOf<kotlin.time.Duration>()
+            val client =
+                HttpClient(
+                    MockEngine {
+                        requests++
+                        when (requests) {
+                            1 -> respond("{}", HttpStatusCode.TooManyRequests, headersOf(HttpHeaders.RetryAfter, "2"))
+                            else -> respond("{}", HttpStatusCode.TooManyRequests, JSON_HEADERS)
+                        }
+                    },
+                ) {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
+
+            assertFailsWith<InnerTubeHttpException> {
+                InnerTube(client, retryDelay = { delays += it }).browse(YouTubeClient.WEB_REMIX, browseId = "test")
+            }
+
+            assertEquals(2, requests)
+            assertEquals(listOf(kotlin.time.Duration.parse("2s")), delays)
+            client.close()
+        }
+
+    @Test
     fun neverRetriesMutations() =
         runBlocking {
             var requests = 0

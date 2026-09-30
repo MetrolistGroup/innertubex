@@ -807,7 +807,8 @@ class InnerTubeExtractorTest {
 
                 assertNotNull(stream)
                 assertEquals(listOf(false, true), configModes)
-                assertEquals(5, playerRequests)
+                // The authenticated pass reuses the identical unplayable response instead of resending it.
+                assertEquals(4, playerRequests)
             } finally {
                 client.close()
             }
@@ -879,7 +880,7 @@ class InnerTubeExtractorTest {
                         useLoginCookies: Boolean,
                     ): PlayerConfig {
                         configModes += useLoginCookies
-                        return PlayerConfig("https://www.youtube.com/s/player/test/base.js", 123, null, null)
+                        return PlayerConfig("https://www.youtube.com/s/player/test/base.js", 123, "watch-visitor-$useLoginCookies", null)
                     }
                 }
             try {
@@ -1016,7 +1017,8 @@ class InnerTubeExtractorTest {
                 assertNotNull(stream)
                 assertEquals(141, stream.itag)
                 assertEquals(1, parser.calls)
-                assertEquals(2, playerRequests)
+                // The config-free response is reused once the watch config enables the cipher pass.
+                assertEquals(1, playerRequests)
                 assertEquals(listOf(listOf(141)), cipher.calls)
             } finally {
                 client.close()
@@ -1039,7 +1041,33 @@ class InnerTubeExtractorTest {
         }
 
     @Test
-    fun configFetchIsSharedAndSessionChangeInvalidatesIt() =
+    fun defaultStrategyScoresClientsWithTheSuppliedHealthMonitor() =
+        runBlocking {
+            val client = jsonClient(DIRECT_RESPONSE)
+            val health =
+                object : ClientHealthMonitor {
+                    var scored = 0
+
+                    override fun scoreAdjustment(
+                        clientId: String,
+                        scope: ClientHealthScope?,
+                    ): Int {
+                        scored++
+                        return 0
+                    }
+                }
+            try {
+                val innerTube = InnerTube(client, retryDelay = {})
+                InnerTubeExtractor(CountingParser(), YouTubeCipherService(client), innerTube, clientHealthMonitor = health)
+                    .extract("video", ContentHints())
+                assertTrue(health.scored > 0)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun configFetchIsSharedAndLocaleChangeInvalidatesIt() =
         runBlocking {
             val client = jsonClient(DIRECT_RESPONSE)
             val innerTube = InnerTube(client, retryDelay = {})
@@ -1049,6 +1077,9 @@ class InnerTubeExtractorTest {
             assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
             assertEquals(1, parser.calls)
             innerTube.visitorData = "new-session"
+            assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
+            assertEquals(1, parser.calls)
+            innerTube.locale = innerTube.locale.copy(hl = innerTube.locale.hl + "-x")
             assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
             assertEquals(2, parser.calls)
             client.close()
@@ -1071,7 +1102,7 @@ class InnerTubeExtractorTest {
                 ) {
                     install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
                 }
-            val parser = CountingParser()
+            val parser = CountingParser(freshVisitorPerFetch = true)
             val extractor = makeExtractor(client, InnerTube(client, retryDelay = {}), parser)
             try {
                 assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
@@ -1086,7 +1117,7 @@ class InnerTubeExtractorTest {
     @Test
     fun refreshedConfigRetainsBudgetAfterNativeAndCachedFailures() =
         runBlocking {
-            val parser = CountingParser()
+            val parser = CountingParser(freshVisitorPerFetch = true)
             var requests = 0
             val client =
                 HttpClient(
@@ -1109,7 +1140,8 @@ class InnerTubeExtractorTest {
                 assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
                 assertNotNull(extractor.extract("video", ContentHints()))
                 assertEquals(2, parser.calls)
-                assertTrue(requests > PlaybackClientCatalog.automaticManifests.size * 2 + 2)
+                // Repeated identical candidates are sent once per distinct config: native, cached and refreshed.
+                assertEquals(4, requests)
             } finally {
                 client.close()
             }
@@ -1250,7 +1282,7 @@ class InnerTubeExtractorTest {
                         useLoginCookies: Boolean,
                     ): PlayerConfig {
                         calls++
-                        if (calls == 1) innerTube.visitorData = "changed-session"
+                        if (calls == 1) innerTube.locale = innerTube.locale.copy(hl = innerTube.locale.hl + "-x")
                         return PlayerConfig("https://www.youtube.com/s/player/test/base.js", 123, null, null)
                     }
                 }
@@ -1695,6 +1727,8 @@ class InnerTubeExtractorTest {
 
     private class CountingParser(
         private val playerUrl: String = "https://www.youtube.com/s/player/test/base.js",
+        /** A real signed-out watch page issues a new visitor, which makes a refreshed config's player request differ. */
+        private val freshVisitorPerFetch: Boolean = false,
     ) : YtConfigParser {
         var calls = 0
 
@@ -1704,7 +1738,7 @@ class InnerTubeExtractorTest {
         ): PlayerConfig {
             calls++
             delay(1)
-            return PlayerConfig(playerUrl, 123, null, null)
+            return PlayerConfig(playerUrl, 123, "watch-visitor-$calls".takeIf { freshVisitorPerFetch }, null)
         }
     }
 

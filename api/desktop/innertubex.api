@@ -572,8 +572,8 @@ public final class com/metrolist/innertubex/extraction/YtConfigParser$DefaultImp
 }
 
 public final class com/metrolist/innertubex/extraction/YtConfigParserImpl : com/metrolist/innertubex/extraction/YtConfigParser {
-	public fun <init> (Lio/ktor/client/HttpClient;Lcom/metrolist/innertubex/InnerTube;Lcom/metrolist/innertubex/cipher/RemotePlayerConfigStore;Lcom/metrolist/innertubex/InnerTubeLogger;)V
-	public synthetic fun <init> (Lio/ktor/client/HttpClient;Lcom/metrolist/innertubex/InnerTube;Lcom/metrolist/innertubex/cipher/RemotePlayerConfigStore;Lcom/metrolist/innertubex/InnerTubeLogger;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Lio/ktor/client/HttpClient;Lcom/metrolist/innertubex/InnerTube;Lcom/metrolist/innertubex/cipher/RemotePlayerConfigStore;Lcom/metrolist/innertubex/InnerTubeLogger;Lcom/metrolist/innertubex/cipher/YouTubeCipherService;)V
+	public synthetic fun <init> (Lio/ktor/client/HttpClient;Lcom/metrolist/innertubex/InnerTube;Lcom/metrolist/innertubex/cipher/RemotePlayerConfigStore;Lcom/metrolist/innertubex/InnerTubeLogger;Lcom/metrolist/innertubex/cipher/YouTubeCipherService;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public fun fetchConfig (Ljava/lang/String;ZLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun fetchEmbeddedConfig (Ljava/lang/String;ZLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }

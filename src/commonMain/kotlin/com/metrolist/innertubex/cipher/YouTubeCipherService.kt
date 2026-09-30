@@ -120,15 +120,24 @@ class YouTubeCipherService(
         return remotePlayerConfigStore?.forceRefresh(missingHash = hash) ?: false
     }
 
-    suspend fun preloadPlayerCode(playerUrl: String) =
+    /** Shares the bounded player-script cache with other components that need the raw player code. */
+    internal suspend fun playerCode(playerUrl: String): String = getOrDownloadPlayerCode(canonicalPlayerUrl(playerUrl), cached = null).code
+
+    suspend fun preloadPlayerCode(playerUrl: String) = preloadCanonicalPlayerCode(canonicalPlayerUrl(playerUrl))
+
+    private suspend fun preloadCanonicalPlayerCode(playerUrl: String) =
         operationMutex.withLock {
             val startMs = Clock.System.now().toEpochMilliseconds()
             try {
-                val playerCode = getOrDownloadPlayerCode(playerUrl, cached = null)
-                ejs.solve(playerUrl, playerCode.code, listOf("sig" to listOf("prewarm")))
+                // Remote configs solve from the raw player code; EJS only needs it when no preprocessed player is cached.
+                if (remotePlayerConfigStore?.getConfig(playerUrl) != null) {
+                    getOrDownloadPlayerCode(playerUrl, cached = null)
+                } else {
+                    ejs.solve(playerUrl, { getOrDownloadPlayerCode(playerUrl, cached = null).code }, listOf("sig" to listOf("prewarm")))
+                }
                 logger.d(
                     TAG,
-                    "player JS preload done source=${playerCode.source} size=${playerCode.code.length} elapsed=${Clock.System.now().toEpochMilliseconds() - startMs}ms player=${playerUrl.logId()}",
+                    "player JS preload done elapsed=${Clock.System.now().toEpochMilliseconds() - startMs}ms player=${playerUrl.logId()}",
                 )
             } catch (e: CancellationException) {
                 throw e
@@ -150,23 +159,21 @@ class YouTubeCipherService(
     suspend fun processFormats(
         playerUrl: String,
         formats: List<Format>,
+    ): List<Format> = processCanonicalFormats(canonicalPlayerUrl(playerUrl), formats)
+
+    private suspend fun processCanonicalFormats(
+        playerUrl: String,
+        formats: List<Format>,
     ): List<Format> {
-        if (
-            formats.none {
-                !it.signatureCipher.isNullOrBlank() ||
-                    !it.cipher.isNullOrBlank() ||
-                    it.url?.extractNParameter() != null
-            }
-        ) {
-            return formats
-        }
+        val directNValues = formats.map { it.url?.extractNParameter() }
+        val cipherFormats = formats.count { !it.signatureCipher.isNullOrBlank() || !it.cipher.isNullOrBlank() }
+        val nFormats = directNValues.count { it != null }
+        if (cipherFormats == 0 && nFormats == 0) return formats
         return withContext(Dispatchers.Default) {
             operationMutex.withLock {
                 val totalStartMs = Clock.System.now().toEpochMilliseconds()
 
                 val cached = cacheMutex.withLock { solverCacheHitLocked(playerUrl) }
-                val cipherFormats = formats.count { !it.signatureCipher.isNullOrBlank() || !it.cipher.isNullOrBlank() }
-                val nFormats = formats.count { it.url?.extractNParameter() != null }
                 logger.d(
                     TAG,
                     "processFormats start formats=${formats.size} cipherFormats=$cipherFormats nFormats=$nFormats cachedSolver=${cached != null} player=${playerUrl.logId()}",
@@ -234,7 +241,7 @@ class YouTubeCipherService(
 
                 val sigChallenges = sigTasks.mapNotNull { it.params["s"] }.distinct()
                 val nChallengesFromCipherUrls = sigTasks.mapNotNull { it.params["url"]?.extractNParameter() }.distinct()
-                val directNChallenges = working.mapNotNull { it.url?.extractNParameter() }.distinct()
+                val directNChallenges = directNValues.filterNotNull().distinct()
                 val initialNChallenges = (nChallengesFromCipherUrls + directNChallenges).distinct()
                 var remoteNRequested = initialNChallenges.toSet()
                 val zemerSolved =
@@ -276,29 +283,25 @@ class YouTubeCipherService(
                     if (missingSigChallenges.isNotEmpty()) {
                         val sigStartMs = Clock.System.now().toEpochMilliseconds()
                         val ejsSig =
-                            playerCode()?.let { code ->
-                                ejs.solve(
-                                    playerUrl = playerUrl,
-                                    fullPlayerJs = code,
-                                    requestOrder =
-                                        buildList {
-                                            add("sig" to missingSigChallenges)
-                                            initialNChallenges
-                                                .filterNot { it in solvedNFromSignaturePass }
-                                                .takeIf { it.isNotEmpty() }
-                                                ?.let { add("n" to it) }
-                                        },
-                                    preferPreprocessed = preferLocalPreprocessed,
-                                )
-                            }
-                        if (ejsSig != null) {
-                            solvedSig += ejsSig.sigByChallenge
-                            solvedNFromSignaturePass += ejsSig.nByChallenge
-                            logger.d(
-                                TAG,
-                                "signature EJS done tasks=${sigTasks.size} unique=${sigChallenges.size} missing=${missingSigChallenges.size} solved=${ejsSig.sigByChallenge.size} nRemote=${solvedNFromSignaturePass.size} elapsed=${Clock.System.now().toEpochMilliseconds() - sigStartMs}ms player=${playerUrl.logId()}",
+                            ejs.solve(
+                                playerUrl = playerUrl,
+                                loadFullPlayerJs = { playerCode() },
+                                requestOrder =
+                                    buildList {
+                                        add("sig" to missingSigChallenges)
+                                        initialNChallenges
+                                            .filterNot { it in solvedNFromSignaturePass }
+                                            .takeIf { it.isNotEmpty() }
+                                            ?.let { add("n" to it) }
+                                    },
+                                preferPreprocessed = preferLocalPreprocessed,
                             )
-                        }
+                        solvedSig += ejsSig.sigByChallenge
+                        solvedNFromSignaturePass += ejsSig.nByChallenge
+                        logger.d(
+                            TAG,
+                            "signature EJS done tasks=${sigTasks.size} unique=${sigChallenges.size} missing=${missingSigChallenges.size} solved=${ejsSig.sigByChallenge.size} nRemote=${solvedNFromSignaturePass.size} elapsed=${Clock.System.now().toEpochMilliseconds() - sigStartMs}ms player=${playerUrl.logId()}",
+                        )
                     } else {
                         logger.d(
                             TAG,
@@ -383,21 +386,17 @@ class YouTubeCipherService(
                     if (missingNChallenges.isNotEmpty()) {
                         val nStartMs = Clock.System.now().toEpochMilliseconds()
                         val ejsN =
-                            playerCode()?.let { code ->
-                                ejs.solve(
-                                    playerUrl = playerUrl,
-                                    fullPlayerJs = code,
-                                    requestOrder = listOf("n" to missingNChallenges),
-                                    preferPreprocessed = preferLocalPreprocessed,
-                                )
-                            }
-                        if (ejsN != null) {
-                            solvedN += ejsN.nByChallenge
-                            logger.d(
-                                TAG,
-                                "n EJS done tasks=${nTasks.size} unique=${nChallenges.size} missing=${missingNChallenges.size} solved=${ejsN.nByChallenge.size} reused=${solvedNFromSignaturePass.size} elapsed=${Clock.System.now().toEpochMilliseconds() - nStartMs}ms player=${playerUrl.logId()}",
+                            ejs.solve(
+                                playerUrl = playerUrl,
+                                loadFullPlayerJs = { playerCode() },
+                                requestOrder = listOf("n" to missingNChallenges),
+                                preferPreprocessed = preferLocalPreprocessed,
                             )
-                        }
+                        solvedN += ejsN.nByChallenge
+                        logger.d(
+                            TAG,
+                            "n EJS done tasks=${nTasks.size} unique=${nChallenges.size} missing=${missingNChallenges.size} solved=${ejsN.nByChallenge.size} reused=${solvedNFromSignaturePass.size} elapsed=${Clock.System.now().toEpochMilliseconds() - nStartMs}ms player=${playerUrl.logId()}",
+                        )
                     } else {
                         logger.d(
                             TAG,
@@ -541,6 +540,11 @@ class YouTubeCipherService(
     suspend fun deobfuscateSignatureCipher(
         playerUrl: String,
         cipher: String,
+    ): String? = deobfuscateCanonicalSignatureCipher(canonicalPlayerUrl(playerUrl), cipher)
+
+    private suspend fun deobfuscateCanonicalSignatureCipher(
+        playerUrl: String,
+        cipher: String,
     ): String? =
         withContext(Dispatchers.Default) {
             operationMutex.withLock operation@{
@@ -601,6 +605,11 @@ class YouTubeCipherService(
      * @return The URL with processed n parameter or null if failed
      */
     suspend fun processNParameter(
+        playerUrl: String,
+        url: String,
+    ): String? = processCanonicalNParameter(canonicalPlayerUrl(playerUrl), url)
+
+    private suspend fun processCanonicalNParameter(
         playerUrl: String,
         url: String,
     ): String? =

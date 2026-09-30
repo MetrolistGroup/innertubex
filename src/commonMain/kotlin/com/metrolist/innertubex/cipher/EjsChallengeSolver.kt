@@ -109,12 +109,19 @@ internal class EjsChallengeSolver(
         fullPlayerJs: String,
         requestOrder: List<Pair<String, List<String>>>,
         preferPreprocessed: Boolean = true,
+    ): SolveResult = solve(playerUrl, { fullPlayerJs }, requestOrder, preferPreprocessed)
+
+    /** [loadFullPlayerJs] is only called when no usable preprocessed player is cached. */
+    suspend fun solve(
+        playerUrl: String,
+        loadFullPlayerJs: suspend () -> String?,
+        requestOrder: List<Pair<String, List<String>>>,
+        preferPreprocessed: Boolean = true,
     ): SolveResult {
         if (requestOrder.isEmpty() || requestOrder.all { it.second.isEmpty() }) {
             return SolveResult(emptyMap(), emptyMap(), null)
         }
-        if (fullPlayerJs.length > MAX_PLAYER_JS_LENGTH ||
-            requestOrder.sumOf { it.second.size } > MAX_CHALLENGES ||
+        if (requestOrder.sumOf { it.second.size } > MAX_CHALLENGES ||
             requestOrder.sumOf { (_, challenges) -> challenges.sumOf { it.length.toLong() } } >
             MAX_CHALLENGE_PAYLOAD_LENGTH ||
             requestOrder.any { (_, challenges) -> challenges.any { it.length > MAX_CHALLENGE_LENGTH } }
@@ -132,8 +139,9 @@ internal class EjsChallengeSolver(
                     null
                 }
 
+            var cachedResult = SolveResult(emptyMap(), emptyMap(), null)
             if (preprocessed != null) {
-                val cachedResult =
+                cachedResult =
                     try {
                         solveOnce(playerUrl, preprocessed, requestOrder, preprocessed = true)
                     } catch (e: CancellationException) {
@@ -143,9 +151,10 @@ internal class EjsChallengeSolver(
                     }
                 if (cachedResult.solvesAll(requestOrder)) return cachedResult
                 evictPreprocessedPlayer(playerUrl, cacheKey)
-                if (fullPlayerJs.isBlank()) return cachedResult
             }
 
+            val fullPlayerJs =
+                loadFullPlayerJs()?.takeIf { it.isNotBlank() && it.length <= MAX_PLAYER_JS_LENGTH } ?: return cachedResult
             solveOnce(playerUrl, fullPlayerJs, requestOrder, preprocessed = false).also { result ->
                 result.preprocessedPlayer?.let { persistPreprocessedPlayer(cacheKey, it) }
             }

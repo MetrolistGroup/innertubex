@@ -111,6 +111,7 @@ class InnerTube(
         private const val MAX_TV_BEARER_RESPONSE_BYTES = 4 * 1024 * 1024
 
         private val TRANSIENT_STATUS_CODES = setOf(408, 425, 429, 500, 502, 503, 504)
+        private const val MAX_RETRY_AFTER_MS = 5_000L
         private val STATS_HOSTS = setOf("s.youtube.com", "www.youtube.com", "music.youtube.com")
         private val STATS_PATHS = setOf("/api/stats/playback", "/api/stats/watchtime")
         private val MEDIA_REQUEST_HEADERS =
@@ -274,9 +275,12 @@ class InnerTube(
         expected: SessionSnapshot,
         updated: SessionSnapshot,
     ): Boolean {
-        if (updated == expected) return session.load() == expected
+        val current = session.load()
+        if (updated == expected) return current == expected
+        // Callers pass value copies, so match by equality; the CAS below still guards against races.
+        if (current != expected) return false
         val versioned = updated.copy(generation = expected.generation + 1)
-        if (!session.compareAndSet(expected, versioned)) return false
+        if (!session.compareAndSet(current, versioned)) return false
         while (true) {
             val published = mutableSessionFlow.value
             if (published.generation >= versioned.generation) break
@@ -462,7 +466,18 @@ class InnerTube(
         while (true) {
             try {
                 val response = block()
-                val retryableStatus = response.status.value in TRANSIENT_STATUS_CODES
+                // A 429 is only retried when the server says how long to wait, and not for long.
+                val retryAfterMs =
+                    if (response.status.value == 429) {
+                        response.headers[HttpHeaders.RetryAfter]
+                            ?.toLongOrNull()
+                            ?.times(1_000L)
+                            ?.takeIf { it in 0..MAX_RETRY_AFTER_MS }
+                    } else {
+                        null
+                    }
+                val retryableStatus =
+                    response.status.value in TRANSIENT_STATUS_CODES && (response.status.value != 429 || retryAfterMs != null)
                 if (!retryTransientFailures || !retryableStatus || attempt + 1 >= maxAttempts) {
                     if (attempt > 0 && !retryableStatus) {
                         logger.w(TAG, "$operation succeeded on retry ${attempt + 1}/$maxAttempts")
@@ -477,9 +492,9 @@ class InnerTube(
                 attempt++
                 logger.w(
                     TAG,
-                    "$operation returned HTTP ${response.status.value} on attempt $attempt/$maxAttempts, retrying in ${currentDelay}ms",
+                    "$operation returned HTTP ${response.status.value} on attempt $attempt/$maxAttempts, retrying in ${retryAfterMs ?: currentDelay}ms",
                 )
-                retryDelay(currentDelay.milliseconds)
+                retryDelay((retryAfterMs ?: currentDelay).milliseconds)
                 currentDelay = (currentDelay * factor).toLong()
             } catch (e: CancellationException) {
                 throw e
@@ -578,6 +593,7 @@ class InnerTube(
         requestVisitorData: String?,
         requestSession: SessionSnapshot,
         encryptedHostFlags: String? = null,
+        retryTransientFailures: Boolean = true,
     ): HttpResponse {
         val visitorDataForRequest = requestVisitorData ?: requestSession.visitorData
         val requestClient =
@@ -586,7 +602,7 @@ class InnerTube(
             } else {
                 client
             }
-        return executeRequest(operation = "player:${client.clientName}") {
+        return executeRequest(operation = "player:${client.clientName}", retryTransientFailures = retryTransientFailures) {
             val startTime = Clock.System.now().toEpochMilliseconds()
             val hasCookie = !requestSession.cookie.isNullOrBlank()
             val hasSapisid = !requestSession.sapisid.isNullOrBlank()
@@ -679,6 +695,30 @@ class InnerTube(
         requestSession: SessionSnapshot,
         encryptedHostFlags: String? = null,
     ): HttpResponse =
+        playerWithSessionBound(
+            client,
+            videoId,
+            playlistId,
+            signatureTimestamp,
+            poToken,
+            requestVisitorData,
+            requestSession,
+            encryptedHostFlags,
+            retryTransientFailures = true,
+        )
+
+    /** The extraction director falls back to another client instead of retrying the same one. */
+    internal suspend fun playerWithSessionBound(
+        client: YouTubeClient,
+        videoId: String,
+        playlistId: String?,
+        signatureTimestamp: Int?,
+        poToken: String?,
+        requestVisitorData: String?,
+        requestSession: SessionSnapshot,
+        encryptedHostFlags: String?,
+        retryTransientFailures: Boolean,
+    ): HttpResponse =
         withSessionBoundRequest(requestSession) {
             playerWithSession(
                 client,
@@ -689,6 +729,7 @@ class InnerTube(
                 requestVisitorData,
                 requestSession,
                 encryptedHostFlags,
+                retryTransientFailures,
             )
         }
 

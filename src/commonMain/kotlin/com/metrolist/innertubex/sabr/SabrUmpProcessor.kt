@@ -13,17 +13,23 @@ internal class SabrUmpProcessor(
     private var pendingMediaBytes = 0L
     private var responseBytes = 0L
 
-    fun feed(chunk: ByteArray): List<SabrEvent> {
-        accountResponseBytes(chunk.size)
-        return reader.feed(chunk).flatMap(::process)
-    }
+    fun feed(chunk: ByteArray): List<SabrEvent> = feed(chunk, chunk.size)
 
     internal fun feed(
         chunk: ByteArray,
         length: Int,
     ): List<SabrEvent> {
         accountResponseBytes(length)
-        return reader.feed(chunk, offset = 0, length = length).flatMap(::process)
+        val events = mutableListOf<SabrEvent>()
+        reader.feed(chunk, offset = 0, length = length) { type, data, from, to ->
+            // MEDIA payloads go straight from the reader buffer into the segment; other parts are small.
+            if (type == UmpPartType.MEDIA) {
+                appendMedia(data, from, to)
+            } else {
+                events += process(UmpPart(type, data.copyOfRange(from, to)))
+            }
+        }
+        return events
     }
 
     private fun accountResponseBytes(bytes: Int) {
@@ -64,7 +70,7 @@ internal class SabrUmpProcessor(
             }
 
             UmpPartType.MEDIA -> {
-                appendMedia(part.data)
+                appendMedia(part.data, 0, part.data.size)
                 emptyList()
             }
 
@@ -113,13 +119,17 @@ internal class SabrUmpProcessor(
             }
         }
 
-    private fun appendMedia(data: ByteArray) {
-        if (data.isEmpty()) throw SabrProtocolException("Empty UMP MEDIA part")
-        val headerId = data[0].toInt() and 0xff
+    private fun appendMedia(
+        data: ByteArray,
+        from: Int,
+        to: Int,
+    ) {
+        if (from >= to) throw SabrProtocolException("Empty UMP MEDIA part")
+        val headerId = data[from].toInt() and 0xff
         val segment =
             pendingSegments[headerId]
                 ?: throw SabrProtocolException("UMP MEDIA refers to unknown header ID $headerId")
-        val payloadSize = data.size - 1
+        val payloadSize = to - from - 1
         val destinationOffset = segment.byteCount.toInt()
         segment.byteCount += payloadSize
         if (segment.header.contentLength > 0 && segment.byteCount > segment.header.contentLength) {
@@ -137,10 +147,10 @@ internal class SabrUmpProcessor(
                 bytes = ByteArray(contentLength)
                 segment.bytes = bytes
             }
-            data.copyInto(bytes, destinationOffset = destinationOffset, startIndex = 1)
+            data.copyInto(bytes, destinationOffset = destinationOffset, startIndex = from + 1, endIndex = to)
         } else {
             reservePendingBytes(segment, payloadSize)
-            segment.chunks += data.copyOfRange(1, data.size)
+            segment.chunks += data.copyOfRange(from + 1, to)
         }
     }
 

@@ -24,6 +24,21 @@ internal class UmpReader(
         offset: Int,
         length: Int,
     ): List<UmpPart> {
+        val parts = mutableListOf<UmpPart>()
+        feed(chunk, offset, length) { type, data, from, to -> parts += UmpPart(type, data.copyOfRange(from, to)) }
+        return parts
+    }
+
+    /**
+     * Calls [onPart] with each complete part's payload as `data[from, to)`, without copying it.
+     * The range is only valid during the callback.
+     */
+    internal fun feed(
+        chunk: ByteArray,
+        offset: Int,
+        length: Int,
+        onPart: (type: Int, data: ByteArray, from: Int, to: Int) -> Unit,
+    ) {
         require(offset >= 0 && length >= 0 && offset <= chunk.size - length) { "Invalid UMP input range" }
         if (pendingSize.toLong() + length > MAX_PENDING_BYTES) {
             throw SabrProtocolException("Incomplete UMP part exceeded the pending byte limit")
@@ -33,9 +48,8 @@ internal class UmpReader(
             chunk.copyInto(buffer, destinationOffset = end, startIndex = offset, endIndex = offset + length)
             end += length
         }
-        if (pendingSize == 0) return emptyList()
+        if (pendingSize == 0) return
 
-        val parts = mutableListOf<UmpPart>()
         var parseOffset = start
         while (parseOffset < end) {
             val type = readUmpVarint(buffer, parseOffset, end) ?: break
@@ -45,7 +59,7 @@ internal class UmpReader(
             }
             val partEnd = size.nextOffset.toLong() + size.value
             if (partEnd > end) break
-            parts += UmpPart(type.value, buffer.copyOfRange(size.nextOffset, partEnd.toInt()))
+            onPart(type.value, buffer, size.nextOffset, partEnd.toInt())
             parseOffset = partEnd.toInt()
         }
 
@@ -54,7 +68,6 @@ internal class UmpReader(
             start = 0
             end = 0
         }
-        return parts
     }
 
     fun finish() {
