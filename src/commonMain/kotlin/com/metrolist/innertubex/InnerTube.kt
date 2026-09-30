@@ -22,6 +22,7 @@ import com.metrolist.innertubex.models.body.SubscribeBody
 import com.metrolist.innertubex.models.response.ImageUploadResponse
 import com.metrolist.innertubex.utils.parseCookieString
 import com.metrolist.innertubex.utils.sanitizeCookieString
+import com.metrolist.innertubex.utils.sanitizeVisitorData
 import com.metrolist.innertubex.utils.sha1
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
@@ -180,7 +181,7 @@ class InnerTube(
 
     var visitorData: String?
         get() = session.load().visitorData
-        set(value) = updateSession { it.copy(visitorData = value) }
+        set(value) = updateSession { it.copy(visitorData = sanitizeVisitorData(value)) }
 
     var dataSyncId: String?
         get() = session.load().dataSyncId
@@ -330,7 +331,7 @@ class InnerTube(
         val sanitizedCookie = cookie?.let(::sanitizeCookieString)
         updateSession { current ->
             current.copy(
-                visitorData = visitorData,
+                visitorData = sanitizeVisitorData(visitorData),
                 dataSyncId = dataSyncId,
                 authUser = sanitizeAuthUser(authUser),
                 cookie = sanitizedCookie,

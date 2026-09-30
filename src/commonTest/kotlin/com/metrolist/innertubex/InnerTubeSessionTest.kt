@@ -59,6 +59,36 @@ class InnerTubeSessionTest {
     }
 
     @Test
+    fun lineWrappedVisitorDataIsJoinedBeforePlayerRequest() =
+        runBlocking {
+            val engine = MockEngine { respondOk() }
+            val innerTube =
+                clientWithContentNegotiation(engine).also {
+                    it.replaceSession(
+                        cookie = null,
+                        visitorData = " Cgt-visitor_\r\n part%3D%3D\n",
+                        dataSyncId = null,
+                        authUser = "0",
+                        useLoginForBrowse = false,
+                    )
+                }
+
+            innerTube.player(YouTubeClient.VISIONOS, videoId = "video-id")
+
+            assertEquals("Cgt-visitor_part%3D%3D", engine.requestHistory.single().headers["X-Goog-Visitor-Id"])
+        }
+
+    @Test
+    fun visitorDataThatCannotBeSentAsHeaderIsDropped() {
+        val innerTube = InnerTube(HttpClient(MockEngine { respondOk() }))
+        innerTube.visitorData = "Cgt\u0000visitor"
+        assertNull(innerTube.visitorData)
+
+        innerTube.visitorData = "Cgtévisitor"
+        assertNull(innerTube.visitorData)
+    }
+
+    @Test
     fun sessionSnapshotStringDoesNotExposeCredentials() {
         val snapshot =
             InnerTube.SessionSnapshot(

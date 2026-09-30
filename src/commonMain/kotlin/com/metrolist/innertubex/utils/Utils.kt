@@ -12,6 +12,12 @@ public fun sanitizeCookieString(cookie: String): String {
         .trim()
 }
 
+/** Joins line-wrapped visitor data; returns null when the result cannot be sent as a single header token. */
+internal fun sanitizeVisitorData(visitorData: String?): String? =
+    visitorData
+        ?.filterNot(Char::isWhitespace)
+        ?.takeIf { value -> value.isNotEmpty() && value.all { it in '!'..'~' } }
+
 /** Parses a normalized Cookie-header value. The returned names and values remain sensitive. */
 public fun parseCookieString(cookie: String): Map<String, String> =
     sanitizeCookieString(cookie).split(";").map { it.trim() }.filter { it.isNotEmpty() }.associate {
