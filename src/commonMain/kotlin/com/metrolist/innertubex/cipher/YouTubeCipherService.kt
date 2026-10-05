@@ -872,10 +872,15 @@ class YouTubeCipherService(
         val solverScript = PlayerScriptParser.generateSolverScript(parseResult)
 
         val solverEngine = QuickJsEngine()
-        solverEngine.initialize()
-        solverEngine.setupYoutubeGlobals()
-        if (solverScript.isNotBlank()) {
-            solverEngine.execute(solverScript)
+        try {
+            solverEngine.initialize()
+            solverEngine.setupYoutubeGlobals()
+            if (solverScript.isNotBlank()) {
+                solverEngine.execute(solverScript)
+            }
+        } catch (e: Throwable) {
+            solverEngine.dispose()
+            throw e
         }
 
         val nSolver: suspend (String) -> String? = { input ->

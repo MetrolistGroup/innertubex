@@ -89,8 +89,9 @@ internal class QuickJsEngine {
             if (runtime != null) return@withLock
             val thread = newSingleThreadContext("InnerTubeX-QuickJS")
             try {
+                // Non-cancellable so a created runtime is never dropped before it is published.
                 val js =
-                    withContext(thread) {
+                    withContext(NonCancellable + thread) {
                         QuickJs.create(thread).also {
                             it.evaluationTimeoutMillis = EVALUATION_TIMEOUT_MS
                             it.memoryLimit = NATIVE_MEMORY_LIMIT_BYTES
