@@ -68,6 +68,43 @@ class EjsChallengeSolverTest {
         }
 
     @Test
+    fun reusesCompiledPreprocessedPlayerUntilAFullPlayerIsPreprocessed() =
+        runBlocking {
+            val engine = QuickJsEngine()
+            try {
+                val solver = EjsChallengeSolver(engine, InnerTubeLogger.NONE)
+                val counted =
+                    PLAYER_CODE.replace(
+                        "(function() {\n",
+                        "(function() {\nglobalThis.bodyRuns = (globalThis.bodyRuns || 0) + 1;\n",
+                    )
+
+                suspend fun bodyRuns() = engine.evaluate("globalThis.bodyRuns", maxResultLength = 8)
+
+                val preprocessed = solver.solve(PLAYER_URL, counted, listOf("sig" to listOf("abc"))).preprocessedPlayer
+                assertEquals("1", bodyRuns())
+                repeat(3) { i ->
+                    assertEquals("x${i}_done", solver.solve(PLAYER_URL, "", listOf("n" to listOf("x$i"))).nByChallenge["x$i"])
+                }
+                assertEquals("2", bodyRuns())
+
+                // A full-player solve releases compiled players, so the next cached solve compiles again.
+                solver.solve(OTHER_PLAYER_URL, counted, listOf("sig" to listOf("def")))
+                assertEquals("cba", solver.solve(PLAYER_URL, "", listOf("sig" to listOf("abc"))).sigByChallenge["abc"])
+                assertEquals("4", bodyRuns())
+
+                // The JS map keeps its own bound even when Kotlin bookkeeping is lost.
+                for (hash in listOf("aaaaaaaa", "bbbbbbbb", "cccccccc")) {
+                    solver.cachePreprocessedPlayer(PLAYER_URL.replace("12345678", hash), assertNotNull(preprocessed))
+                    solver.solve(PLAYER_URL.replace("12345678", hash), "", listOf("n" to listOf("y")))
+                }
+                assertEquals("2", engine.evaluate("__itxPlayers.size", maxResultLength = 8))
+            } finally {
+                engine.dispose()
+            }
+        }
+
+    @Test
     fun cacheKeysIsolatePlayerAndSolverVersions() {
         val bundleA = sha1("solver-a")
         val bundleB = sha1("solver-b")

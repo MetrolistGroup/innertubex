@@ -12,10 +12,22 @@ that `0.x` releases may contain breaking API changes.
   can run cipher solving out of process. `YouTubeCipherService` implements it. Kotlin callers are
   source compatible; the constructor's JVM signature changed.
 
+### Changed
+
+- EJS keeps the compiled n/sig functions of up to two preprocessed players, so repeated challenges
+  for the same player take about 1 ms instead of recompiling a ~4 MB script (~400 ms) each time.
+  A full-player preprocessing pass releases them first, since it needs nearly the whole QuickJS heap.
+- At most two preprocessed players are kept in memory (was four).
+- Watch and embed pages are streamed and read only until the player URL, visitor data, client
+  version and signature timestamp are known; the timestamp may come from the remote player
+  config. With a remote config this cuts a cold config fetch from ~0.9 s to ~0.2 s.
+
 ### Fixed
 
 - Each QuickJS runtime is created, used, and closed on its own dedicated thread, so its native
   stack limit is always measured from the thread that runs the JavaScript.
+- Bounded text fetches (pages, player scripts, remote configs, captions) now stream the body, so
+  their byte limits apply before the response is held in memory.
 - `gradlew.bat` is stored with LF endings again, as `.gitattributes` requires.
 
 ## [0.7.4] - 2026-09-30

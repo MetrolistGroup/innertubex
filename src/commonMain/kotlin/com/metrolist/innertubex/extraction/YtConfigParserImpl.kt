@@ -69,8 +69,24 @@ public class YtConfigParserImpl(
                 ?.joinToString("; ")
                 ?.takeIf { it.isNotEmpty() }
 
+        // The fields sit in the first ~60 KB of a ~1.4 MB streamed page; STS often only near its middle,
+        // so stop once it is either on the page or already known from the remote player config.
+        var storeStsPlayerUrl: String? = null
+        var storeSts: Int? = null
+        val hasConfig: suspend (String) -> Boolean = hasConfig@{ html ->
+            val playerUrl = extractPlayerUrl(html) ?: return@hasConfig false
+            if (extractVisitorData(html) == null || extractClientVersion(html) == null) return@hasConfig false
+            if (pageKind == "embed" && extractEncryptedHostFlags(html) == null) return@hasConfig false
+            if (extractSignatureTimestamp(html) != null) return@hasConfig true
+            if (storeStsPlayerUrl != playerUrl) {
+                storeStsPlayerUrl = playerUrl
+                storeSts = remotePlayerConfigStore?.getSignatureTimestamp(playerUrl)
+            }
+            storeSts != null
+        }
+
         suspend fun fetchHtml(requestCookie: String?) =
-            getText(Url(pageUrl), PAGE_MAX_BYTES) {
+            getText(Url(pageUrl), PAGE_MAX_BYTES, hasConfig) {
                 header(HttpHeaders.UserAgent, YouTubeClient.USER_AGENT_WEB)
                 header(HttpHeaders.Accept, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
                 referer?.let { header("Referer", it) }
@@ -208,11 +224,12 @@ public class YtConfigParserImpl(
     private suspend fun getText(
         url: Url,
         maxBytes: Int,
+        stopWhen: (suspend (String) -> Boolean)? = null,
         configure: io.ktor.client.request.HttpRequestBuilder.() -> Unit,
     ): String {
         var currentUrl = url
         repeat(MAX_REDIRECTS + 1) { redirectCount ->
-            val response = httpClient.getTextWithoutRedirects(currentUrl, maxBytes, configure)
+            val response = httpClient.getTextWithoutRedirects(currentUrl, maxBytes, stopWhen, configure)
             if (response.status.isSuccess()) return requireNotNull(response.body)
 
             val redirectUrl =
