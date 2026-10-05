@@ -44,7 +44,8 @@ class InnerTubeExtractor internal constructor(
 ) : StreamExtractor {
     constructor(
         configParser: YtConfigParser,
-        cipherService: YouTubeCipherService,
+        /** Usually a [YouTubeCipherService]; hosts may isolate cipher solving behind their own implementation. */
+        cipherService: ExtractionCipherService,
         innerTube: InnerTube,
         /** Defaults to a [ContentAwareFallbackStrategy] that scores clients with [clientHealthMonitor]. */
         fallbackStrategy: ClientFallbackStrategy? = null,
@@ -61,7 +62,7 @@ class InnerTubeExtractor internal constructor(
                 clientHealthMonitor = clientHealthMonitor,
                 logger = logger,
             ),
-        cipherService = DefaultExtractionCipherService(cipherService),
+        cipherService = cipherService,
         innerTube = innerTube,
         tokenProvider = tokenProvider ?: UnavailableTokenProvider,
         logger = logger,

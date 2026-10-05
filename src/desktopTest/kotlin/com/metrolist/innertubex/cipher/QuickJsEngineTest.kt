@@ -1,6 +1,9 @@
 package com.metrolist.innertubex.cipher
 
 import com.dokar.quickjs.QuickJsException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -18,7 +21,15 @@ class QuickJsEngineTest {
                 assertFailsWith<QuickJsException> {
                     engine.evaluate("(function recurse() { return recurse(); })()", maxResultLength = 1)
                 }
-                Unit
+                // Callers on other threads must still hit the limit measured on the runtime's own thread.
+                List(8) {
+                    async(Dispatchers.IO) {
+                        assertFailsWith<QuickJsException> {
+                            engine.evaluate("(function recurse() { return recurse(); })()", maxResultLength = 1)
+                        }
+                    }
+                }.awaitAll()
+                assertEquals("ok", engine.evaluate("'ok'", maxResultLength = 2))
             } finally {
                 engine.dispose()
             }

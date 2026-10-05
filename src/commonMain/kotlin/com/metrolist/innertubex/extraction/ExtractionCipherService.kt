@@ -1,9 +1,15 @@
 package com.metrolist.innertubex.extraction
 
-import com.metrolist.innertubex.cipher.YouTubeCipherService
 import com.metrolist.innertubex.models.response.PlayerResponse.StreamingData.Format
 
-internal interface ExtractionCipherService {
+/**
+ * Player cipher operations used by [InnerTubeExtractor].
+ *
+ * [com.metrolist.innertubex.cipher.YouTubeCipherService] is the in-process implementation. Hosts can
+ * supply their own implementation, for example one that runs the JavaScript solver in a separate
+ * process so a native engine crash cannot take down playback.
+ */
+interface ExtractionCipherService {
     suspend fun initialize()
 
     suspend fun preloadPlayerCode(playerUrl: String)
@@ -14,25 +20,4 @@ internal interface ExtractionCipherService {
         playerUrl: String,
         formats: List<Format>,
     ): List<Format>
-}
-
-internal class DefaultExtractionCipherService(
-    private val delegate: YouTubeCipherService,
-) : ExtractionCipherService {
-    override suspend fun initialize() {
-        delegate.initialize()
-    }
-
-    override suspend fun preloadPlayerCode(playerUrl: String) {
-        delegate.preloadPlayerCode(playerUrl)
-    }
-
-    override suspend fun prewarmEjs() {
-        delegate.prewarmEjs()
-    }
-
-    override suspend fun processFormats(
-        playerUrl: String,
-        formats: List<Format>,
-    ): List<Format> = delegate.processFormats(playerUrl, formats)
 }

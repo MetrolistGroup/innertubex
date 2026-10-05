@@ -2,6 +2,7 @@ package com.metrolist.innertubex.cipher
 
 import com.metrolist.innertubex.InnerTubeLogger
 import com.metrolist.innertubex.d
+import com.metrolist.innertubex.extraction.ExtractionCipherService
 import com.metrolist.innertubex.models.response.PlayerResponse.StreamingData.Format
 import com.metrolist.innertubex.utils.decodeQueryComponent
 import com.metrolist.innertubex.w
@@ -32,7 +33,7 @@ class YouTubeCipherService(
     private val httpClient: HttpClient,
     private val remotePlayerConfigStore: RemotePlayerConfigStore? = null,
     private val logger: InnerTubeLogger = InnerTubeLogger.NONE,
-) {
+) : ExtractionCipherService {
     private class PlayerScriptHttpException(
         status: Int,
         val retryable: Boolean,
@@ -90,7 +91,7 @@ class YouTubeCipherService(
     /**
      * Initialize the cipher service.
      */
-    suspend fun initialize() = operationMutex.withLock { initializeUnsafe() }
+    override suspend fun initialize() = operationMutex.withLock { initializeUnsafe() }
 
     /**
      * Installs optional persistent storage for generated EJS preprocessed players.
@@ -105,7 +106,7 @@ class YouTubeCipherService(
         engine.initialize()
     }
 
-    suspend fun prewarmEjs() = operationMutex.withLock { ejs.ensureLoaded() }
+    override suspend fun prewarmEjs() = operationMutex.withLock { ejs.ensureLoaded() }
 
     /**
      * Notify the remote config workflow that a deciphered stream was rejected by
@@ -123,7 +124,7 @@ class YouTubeCipherService(
     /** Shares the bounded player-script cache with other components that need the raw player code. */
     internal suspend fun playerCode(playerUrl: String): String = getOrDownloadPlayerCode(canonicalPlayerUrl(playerUrl), cached = null).code
 
-    suspend fun preloadPlayerCode(playerUrl: String) = preloadCanonicalPlayerCode(canonicalPlayerUrl(playerUrl))
+    override suspend fun preloadPlayerCode(playerUrl: String) = preloadCanonicalPlayerCode(canonicalPlayerUrl(playerUrl))
 
     private suspend fun preloadCanonicalPlayerCode(playerUrl: String) =
         operationMutex.withLock {
@@ -156,7 +157,7 @@ class YouTubeCipherService(
      * @param formats The streaming formats from the player response
      * @return List of formats with deobfuscated URLs
      */
-    suspend fun processFormats(
+    override suspend fun processFormats(
         playerUrl: String,
         formats: List<Format>,
     ): List<Format> = processCanonicalFormats(canonicalPlayerUrl(playerUrl), formats)
