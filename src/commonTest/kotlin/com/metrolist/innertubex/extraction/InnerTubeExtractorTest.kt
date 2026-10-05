@@ -1623,7 +1623,7 @@ class InnerTubeExtractorTest {
                 InnerTubeExtractor(
                     CountingParser(),
                     PlayerClientDirector(innerTube, fallback, tokenProvider),
-                    DefaultExtractionCipherService(YouTubeCipherService(client)),
+                    YouTubeCipherService(client),
                     innerTube,
                 )
 
@@ -1675,7 +1675,7 @@ class InnerTubeExtractorTest {
                 InnerTubeExtractor(
                     CountingParser(),
                     PlayerClientDirector(innerTube, fallback, tokenProvider),
-                    DefaultExtractionCipherService(YouTubeCipherService(client)),
+                    YouTubeCipherService(client),
                     innerTube,
                 )
 
@@ -1703,7 +1703,7 @@ class InnerTubeExtractorTest {
         innerTube: InnerTube,
         parser: YtConfigParser,
         fallback: com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy = DirectFallback,
-        cipherService: ExtractionCipherService = DefaultExtractionCipherService(YouTubeCipherService(client)),
+        cipherService: ExtractionCipherService = YouTubeCipherService(client),
         tvBearerProviderTimeoutMs: Long = 8_000,
         now: () -> Instant = { Clock.System.now() },
     ): InnerTubeExtractor =

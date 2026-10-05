@@ -6,6 +6,18 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+### Added
+
+- `ExtractionCipherService` is public and `InnerTubeExtractor` accepts any implementation, so hosts
+  can run cipher solving out of process. `YouTubeCipherService` implements it. Kotlin callers are
+  source compatible; the constructor's JVM signature changed.
+
+### Fixed
+
+- Each QuickJS runtime is created, used, and closed on its own dedicated thread, so its native
+  stack limit is always measured from the thread that runs the JavaScript.
+- `gradlew.bat` is stored with LF endings again, as `.gitattributes` requires.
+
 ## [0.7.4] - 2026-09-30
 
 ### Added
