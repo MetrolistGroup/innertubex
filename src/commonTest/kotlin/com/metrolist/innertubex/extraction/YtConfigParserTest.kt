@@ -7,8 +7,11 @@ import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import io.ktor.utils.io.ByteChannel
+import io.ktor.utils.io.writeStringUtf8
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
@@ -187,6 +190,33 @@ class YtConfigParserTest {
                     25,
                 ) { YtConfigParserImpl(client, InnerTube(client)).fetchConfig("video") }
             }
+            client.close()
+        }
+
+    @Test
+    fun stopsReadingWatchPageOnceConfigIsKnown() =
+        runBlocking {
+            val page = ByteChannel()
+            launch {
+                val fields =
+                    "{\"jsUrl\":\"/s/player/abc123/base.js\",\"STS\":20668," +
+                        "\"visitorData\":\"visitor\",\"INNERTUBE_CLIENT_VERSION\":\"2.0\"}"
+                // The rest of a real page streams slowly; this one never ends.
+                page.writeStringUtf8(fields + " ".repeat(40 * 1024))
+                page.flush()
+            }
+            val client =
+                HttpClient(
+                    MockEngine {
+                        respond(page, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "text/html"))
+                    },
+                )
+
+            val config = withTimeout(5_000) { YtConfigParserImpl(client, InnerTube(client)).fetchConfig("video") }
+
+            assertEquals("https://www.youtube.com/s/player/abc123/base.js", config.playerUrl)
+            assertEquals(20668, config.signatureTimestamp)
+            assertEquals("visitor", config.visitorData)
             client.close()
         }
 

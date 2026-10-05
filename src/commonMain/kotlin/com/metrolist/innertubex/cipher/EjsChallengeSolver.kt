@@ -35,7 +35,10 @@ internal class EjsChallengeSolver(
 ) {
     companion object {
         private const val TAG = "EjsChallengeSolver"
-        private const val MAX_PREPROCESSED_PLAYERS = 4
+        private const val MAX_PREPROCESSED_PLAYERS = 2
+
+        // Each compiled player keeps its whole closure alive inside the QuickJS heap.
+        private const val MAX_COMPILED_PLAYERS = 2
         private const val MAX_PLAYER_JS_LENGTH = 8 * 1024 * 1024
         private const val MAX_CHALLENGE_LENGTH = 64 * 1024
         private const val MAX_CHALLENGES = 256
@@ -58,6 +61,9 @@ internal class EjsChallengeSolver(
 
     private val preprocessedMutex = Mutex()
     private val preprocessedByPlayerUrl = LinkedHashMap<String, String>()
+
+    /** Player URLs whose preprocessed n/sig functions are compiled and kept in `__itxPlayers`. */
+    private val compiledPlayers = LinkedHashSet<String>()
     private var readPreprocessedPlayer: suspend (String) -> String? = { null }
     private var writePreprocessedPlayer: suspend (String, String?) -> Unit = { _, _ -> }
 
@@ -96,6 +102,26 @@ internal class EjsChallengeSolver(
             engine.execute(lib)
             engine.execute("Object.assign(globalThis, lib);")
             engine.execute(core)
+            // Mirrors the final step of jsc() for preprocessed players, but keeps the compiled
+            // functions so later challenges for the same player skip recompiling ~4 MB of JS.
+            engine.execute(
+                """
+                globalThis.__itxPlayers = new Map();
+                globalThis.__itxRun = function(fns, requests) {
+                  return {"type":"result","responses":requests.map(function(req) {
+                    if (req.type !== "n" && req.type !== "sig")
+                      return {"type":"error","error":"Unknown request type: " + req.type};
+                    var fn = fns[req.type];
+                    if (!fn) return {"type":"error","error":"Failed to extract " + req.type + " function"};
+                    try {
+                      return {"type":"result","data":Object.fromEntries(req.challenges.map(function(c) { return [c, fn(c)]; }))};
+                    } catch (e) {
+                      return {"type":"error","error":String(e)};
+                    }
+                  })};
+                };
+                """.trimIndent(),
+            )
             bootstrapped = true
             logger.d(TAG, "EJS bootstrap done elapsed=${Clock.System.now().toEpochMilliseconds() - startMs}ms")
         }
@@ -131,6 +157,19 @@ internal class EjsChallengeSolver(
 
         return try {
             ensureBootstrapped()
+            if (preferPreprocessed && preprocessedMutex.withLock { playerUrl in compiledPlayers }) {
+                val compiled =
+                    try {
+                        solveOnce(playerUrl, null, requestOrder, preprocessed = true)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        SolveResult(emptyMap(), emptyMap(), null)
+                    }
+                if (compiled.solvesAll(requestOrder)) return compiled
+                forgetCompiledPlayer(playerUrl)
+            }
+
             val cacheKey = bundleHash?.let { preprocessedPlayerCacheKey(playerUrl, it) }
             val preprocessed =
                 if (preferPreprocessed) {
@@ -166,9 +205,13 @@ internal class EjsChallengeSolver(
         }
     }
 
+    /**
+     * Solves with the full player ([preprocessed] false), a preprocessed player that is compiled and
+     * kept for later calls, or, when [playerInputText] is null, the already compiled player.
+     */
     private suspend fun solveOnce(
         playerUrl: String,
-        playerInputText: String,
+        playerInputText: String?,
         requestOrder: List<Pair<String, List<String>>>,
         preprocessed: Boolean,
     ): SolveResult {
@@ -189,29 +232,41 @@ internal class EjsChallengeSolver(
                 }
             }
         val requestsJson = payloadJson.encodeToString(JsonElement.serializer(), requests)
-        val playerInput = QuickJsEngine.jsStringLiteral(playerInputText)
-        val payloadPrefix =
-            if (preprocessed) {
-                "{\"type\":\"preprocessed\",\"preprocessed_player\":"
-            } else {
-                "{\"type\":\"player\",\"player\":"
-            }
-        val payloadSuffix =
-            if (preprocessed) {
-                ",\"requests\":$requestsJson}"
-            } else {
-                ",\"output_preprocessed\":true,\"requests\":$requestsJson}"
-            }
-        if (payloadPrefix.length + playerInput.length + payloadSuffix.length > MAX_PAYLOAD_LENGTH) {
+        val playerKey = QuickJsEngine.jsStringLiteral(playerUrl)
+        val playerInput = playerInputText?.let(QuickJsEngine::jsStringLiteral).orEmpty()
+        if (playerInput.length + requestsJson.length > MAX_PAYLOAD_LENGTH) {
             return SolveResult(emptyMap(), emptyMap(), null)
         }
+        val run =
+            when {
+                playerInputText == null -> {
+                    """
+                    var fns = __itxPlayers.get($playerKey);
+                    var r = fns ? __itxRun(fns, $requestsJson) : null;
+                    """
+                }
+
+                preprocessed -> {
+                    """
+                    var fns = {"n":null,"sig":null};
+                    Function("_result", $playerInput)(fns);
+                    __itxPlayers.set($playerKey, fns);
+                    var r = __itxRun(fns, $requestsJson);
+                    """
+                }
+
+                else -> {
+                    """
+                    var r = jsc({"type":"player","player":$playerInput,"output_preprocessed":true,"requests":$requestsJson});
+                    """
+                }
+            }
         // jsc() may return objects QuickJS JSON.stringify cannot handle (circular refs);
         // copy only plain string fields into a new tree before stringify.
         val js =
             """
             (function() {
-              var payload = $payloadPrefix$playerInput$payloadSuffix;
-              var r = jsc(payload);
+              $run
               if (!r) return JSON.stringify({"type":"error","error":"jsc returned null"});
               if (r.type === "error")
                 return JSON.stringify({"type":"error","error":String(r.error != null ? r.error : "")});
@@ -264,6 +319,14 @@ internal class EjsChallengeSolver(
             })()
             """
         val evaluateStartMs = Clock.System.now().toEpochMilliseconds()
+        when {
+            playerInputText == null -> Unit
+
+            preprocessed -> rememberCompiledPlayer(playerUrl)
+
+            // Preprocessing a full player needs nearly the whole QuickJS heap.
+            else -> forgetAllCompiledPlayers()
+        }
         val evaluated = engine.evaluate(js, MAX_RAW_OUTPUT_LENGTH, collectGarbage = !preprocessed)
         if (evaluated.length > MAX_RAW_OUTPUT_LENGTH) return SolveResult(emptyMap(), emptyMap(), null)
         val raw = evaluated.trim()
@@ -317,7 +380,39 @@ internal class EjsChallengeSolver(
         cacheKey: String?,
     ) {
         preprocessedMutex.withLock { preprocessedByPlayerUrl.remove(playerUrl) }
+        forgetCompiledPlayer(playerUrl)
         cacheKey?.let { safeWritePreprocessedPlayer(it, null) }
+    }
+
+    /** Tracks [playerUrl] before compiling it so a failed compile is still deleted on eviction. */
+    private suspend fun rememberCompiledPlayer(playerUrl: String) {
+        val evicted =
+            preprocessedMutex.withLock {
+                compiledPlayers.remove(playerUrl)
+                compiledPlayers.add(playerUrl)
+                buildList {
+                    while (compiledPlayers.size > MAX_COMPILED_PLAYERS) {
+                        val oldest = compiledPlayers.first()
+                        compiledPlayers.remove(oldest)
+                        add(oldest)
+                    }
+                }
+            }
+        evicted.forEach { deleteCompiledPlayer(it) }
+    }
+
+    private suspend fun forgetAllCompiledPlayers() {
+        preprocessedMutex
+            .withLock { compiledPlayers.toList().also { compiledPlayers.clear() } }
+            .forEach { deleteCompiledPlayer(it) }
+    }
+
+    private suspend fun forgetCompiledPlayer(playerUrl: String) {
+        if (preprocessedMutex.withLock { compiledPlayers.remove(playerUrl) }) deleteCompiledPlayer(playerUrl)
+    }
+
+    private suspend fun deleteCompiledPlayer(playerUrl: String) {
+        engine.evaluate("__itxPlayers.delete(${QuickJsEngine.jsStringLiteral(playerUrl)})", maxResultLength = 8, collectGarbage = true)
     }
 
     private suspend fun safeWritePreprocessedPlayer(
