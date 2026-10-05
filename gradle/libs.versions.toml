@@ -11,7 +11,7 @@ ktor = "3.6.0"
 ktlintGradle = "14.2.0"
 mavenPublish = "0.37.0"
 minSdk = "23"
-quickjs = "1.0.14"
+quickjs = "1.0.15"
 
 [libraries]
 junit4 = { module = "junit:junit", version.ref = "junit4" }
