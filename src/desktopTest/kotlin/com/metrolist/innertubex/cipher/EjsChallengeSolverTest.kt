@@ -81,7 +81,7 @@ class EjsChallengeSolverTest {
 
                 suspend fun bodyRuns() = engine.evaluate("globalThis.bodyRuns", maxResultLength = 8)
 
-                solver.solve(PLAYER_URL, counted, listOf("sig" to listOf("abc")))
+                val preprocessed = solver.solve(PLAYER_URL, counted, listOf("sig" to listOf("abc"))).preprocessedPlayer
                 assertEquals("1", bodyRuns())
                 repeat(3) { i ->
                     assertEquals("x${i}_done", solver.solve(PLAYER_URL, "", listOf("n" to listOf("x$i"))).nByChallenge["x$i"])
@@ -92,6 +92,13 @@ class EjsChallengeSolverTest {
                 solver.solve(OTHER_PLAYER_URL, counted, listOf("sig" to listOf("def")))
                 assertEquals("cba", solver.solve(PLAYER_URL, "", listOf("sig" to listOf("abc"))).sigByChallenge["abc"])
                 assertEquals("4", bodyRuns())
+
+                // The JS map keeps its own bound even when Kotlin bookkeeping is lost.
+                for (hash in listOf("aaaaaaaa", "bbbbbbbb", "cccccccc")) {
+                    solver.cachePreprocessedPlayer(PLAYER_URL.replace("12345678", hash), assertNotNull(preprocessed))
+                    solver.solve(PLAYER_URL.replace("12345678", hash), "", listOf("n" to listOf("y")))
+                }
+                assertEquals("2", engine.evaluate("__itxPlayers.size", maxResultLength = 8))
             } finally {
                 engine.dispose()
             }
