@@ -1,5 +1,7 @@
 jdk:
   - openjdk21
 
+# JitPack's SDKMAN OpenJDK 21.0.2 cannot open jar files on fresh-clone workers, so build with Temurin directly.
 install:
-  - ./gradlew clean allTests ktlintCheck apiCheck assemble publishToMavenLocal -PGROUP="$GROUP" -PPOM_ARTIFACT_ID="$ARTIFACT" -PVERSION_NAME="$VERSION" --no-build-cache --no-configuration-cache
+  - 'curl -sSL -o /tmp/temurin.tgz https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse && mkdir -p /tmp/temurin && tar -xzf /tmp/temurin.tgz -C /tmp/temurin --strip-components=1'
+  - 'export JAVA_HOME=/tmp/temurin PATH=/tmp/temurin/bin:$PATH && ./gradlew clean allTests ktlintCheck apiCheck assemble publishToMavenLocal -PGROUP="$GROUP" -PPOM_ARTIFACT_ID="$ARTIFACT" -PVERSION_NAME="$VERSION" --no-build-cache --no-configuration-cache'
