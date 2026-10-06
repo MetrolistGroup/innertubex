@@ -6,6 +6,13 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-10-07
+
+### Fixed
+
+- Republishes 0.8.0 again; the 0.8.0 and 0.8.1 JitPack builds failed on JitPack workers that could not
+  read jar files. No code changes.
+
 ## [0.8.1] - 2026-10-07
 
 ### Fixed
