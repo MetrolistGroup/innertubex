@@ -17,7 +17,13 @@ that `0.x` releases may contain breaking API changes.
 - EJS keeps the compiled n/sig functions of up to two preprocessed players, so repeated challenges
   for the same player take about 1 ms instead of recompiling a ~4 MB script (~400 ms) each time.
   A full-player preprocessing pass releases them first, since it needs nearly the whole QuickJS heap.
-- At most two preprocessed players are kept in memory (was four).
+- EJS closes its QuickJS runtime and thread after 20 seconds without solves and bootstraps again
+  on demand, releasing ~18 MB of native memory between bursts. Up to 256 solved n/sig results are
+  cached per player, so repeated challenges do not restart the runtime.
+- With persistent preprocessed-player storage, preprocessed players are no longer kept on the heap;
+  without it, at most one is kept (was four). Only the current raw player script is cached, and
+  parser solvers no longer retain it.
+- `YouTubeCipherService.initialize()` no longer creates a QuickJS runtime that nothing uses.
 - Watch and embed pages are streamed and read only until the player URL, visitor data, client
   version and signature timestamp are known; the timestamp may come from the remote player
   config. With a remote config this cuts a cold config fetch from ~0.9 s to ~0.2 s.

@@ -5,8 +5,17 @@ import com.metrolist.innertubex.d
 import com.metrolist.innertubex.utils.sha1
 import com.metrolist.innertubex.w
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -32,10 +41,13 @@ private val PREPROCESSED_CACHE_KEY_REGEX = Regex("[a-f0-9]{40}")
 internal class EjsChallengeSolver(
     private val engine: QuickJsEngine,
     private val logger: InnerTubeLogger,
+    private val idleTimeoutMs: Long = 20_000L,
 ) {
     companion object {
         private const val TAG = "EjsChallengeSolver"
-        private const val MAX_PREPROCESSED_PLAYERS = 2
+        private const val MAX_PREPROCESSED_PLAYERS = 1
+        private const val MAX_SOLVED_CHALLENGES = 256
+        private const val MAX_CACHED_CHALLENGE_LENGTH = 4096
 
         // Each compiled player keeps its whole closure alive inside the QuickJS heap.
         private const val MAX_COMPILED_PLAYERS = 2
@@ -55,11 +67,22 @@ internal class EjsChallengeSolver(
         val preprocessedPlayer: String?,
     )
 
-    private val initMutex = Mutex()
+    // Serialize whole solves, including bootstrap and cache I/O, against idle disposal.
+    private val operationMutex = Mutex()
+    private val idleScope = CoroutineScope(Dispatchers.Default)
+    private var idleJob: Job? = null
+
+    private data class ChallengeKey(
+        val playerUrl: String,
+        val kind: String,
+        val challenge: String,
+    )
+
+    private val solvedChallenges = LinkedHashMap<ChallengeKey, String>()
+    private var hasPersistentCache = false
     private var bootstrapped = false
     private var bundleHash: String? = null
 
-    private val preprocessedMutex = Mutex()
     private val preprocessedByPlayerUrl = LinkedHashMap<String, String>()
 
     /**
@@ -70,17 +93,57 @@ internal class EjsChallengeSolver(
     private var readPreprocessedPlayer: suspend (String) -> String? = { null }
     private var writePreprocessedPlayer: suspend (String, String?) -> Unit = { _, _ -> }
 
-    /** Ensures EJS lib/core are evaluated once (safe to call before loading parser _solve* scripts). */
-    suspend fun ensureLoaded() {
-        ensureBootstrapped()
+    /** Prewarms the runtime for the next burst of solves. */
+    suspend fun ensureLoaded() = withActivity { ensureBootstrapped() }
+
+    private suspend fun <T> withActivity(block: suspend () -> T): T =
+        operationMutex.withLock {
+            idleJob?.cancel()
+            try {
+                block()
+            } finally {
+                scheduleIdleRelease()
+            }
+        }
+
+    private fun scheduleIdleRelease() {
+        // This job captures only the solver, never a solve's multi-MB input or result.
+        idleJob =
+            idleScope.launch {
+                delay(idleTimeoutMs)
+                operationMutex.withLock {
+                    currentCoroutineContext().ensureActive()
+                    releaseRuntime()
+                    idleJob = null
+                }
+            }
     }
 
-    fun setPreprocessedPlayerCache(
+    private suspend fun releaseRuntime() {
+        bootstrapped = false
+        compiledPlayers.clear()
+        preprocessedByPlayerUrl.clear()
+        engine.dispose()
+    }
+
+    suspend fun dispose() =
+        withContext(NonCancellable) {
+            operationMutex.withLock {
+                idleJob?.cancel()
+                idleJob = null
+                solvedChallenges.clear()
+                releaseRuntime()
+            }
+        }
+
+    suspend fun setPreprocessedPlayerCache(
         read: suspend (String) -> String?,
         write: suspend (String, String?) -> Unit,
-    ) {
+    ) = operationMutex.withLock {
         readPreprocessedPlayer = read
         writePreprocessedPlayer = write
+        hasPersistentCache = true
+        preprocessedByPlayerUrl.clear()
     }
 
     suspend fun cachePreprocessedPlayer(
@@ -88,14 +151,20 @@ internal class EjsChallengeSolver(
         preprocessedPlayer: String,
     ) {
         if (preprocessedPlayer.isBlank() || preprocessedPlayer.length > MAX_PLAYER_JS_LENGTH) return
-        preprocessedMutex.withLock {
-            putPreprocessedPlayerLocked(playerUrl, preprocessedPlayer)
+        withActivity {
+            if (hasPersistentCache) {
+                ensureBundleHash()
+                persistPreprocessedPlayer(bundleHash?.let { preprocessedPlayerCacheKey(playerUrl, it) }, preprocessedPlayer)
+            }
+            // Keep one supplied player until its next solve, even if persistent storage fails.
+            preprocessedByPlayerUrl.clear()
+            preprocessedByPlayerUrl[playerUrl] = preprocessedPlayer
         }
     }
 
     private suspend fun ensureBootstrapped() {
-        initMutex.withLock {
-            if (bootstrapped) return
+        if (bootstrapped) return
+        try {
             val startMs = Clock.System.now().toEpochMilliseconds()
             engine.initialize()
             engine.setupYoutubeGlobals()
@@ -135,6 +204,15 @@ internal class EjsChallengeSolver(
             )
             bootstrapped = true
             logger.d(TAG, "EJS bootstrap done elapsed=${Clock.System.now().toEpochMilliseconds() - startMs}ms")
+        } catch (e: Throwable) {
+            releaseRuntime()
+            throw e
+        }
+    }
+
+    private fun ensureBundleHash() {
+        if (bundleHash == null) {
+            bundleHash = sha1(readYtEjsSolverScript("yt.solver.lib.min.js") + readYtEjsSolverScript("yt.solver.core.min.js"))
         }
     }
 
@@ -166,9 +244,55 @@ internal class EjsChallengeSolver(
             return SolveResult(emptyMap(), emptyMap(), null)
         }
 
+        return withActivity {
+            val cached = cachedChallenges(playerUrl, requestOrder)
+            if (preferPreprocessed && cached.solvesAll(requestOrder)) {
+                cached
+            } else {
+                solveUncached(playerUrl, loadFullPlayerJs, requestOrder, preferPreprocessed).also { result ->
+                    for ((kind, values) in listOf("sig" to result.sigByChallenge, "n" to result.nByChallenge)) {
+                        for ((challenge, value) in values) {
+                            if (playerUrl.length + challenge.length + value.length > MAX_CACHED_CHALLENGE_LENGTH) continue
+                            val key = ChallengeKey(playerUrl, kind, challenge)
+                            solvedChallenges.remove(key)
+                            solvedChallenges[key] = value
+                            while (solvedChallenges.size > MAX_SOLVED_CHALLENGES) solvedChallenges.remove(solvedChallenges.keys.first())
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun cachedChallenges(
+        playerUrl: String,
+        requestOrder: List<Pair<String, List<String>>>,
+    ): SolveResult {
+        val sig = mutableMapOf<String, String>()
+        val n = mutableMapOf<String, String>()
+        for ((kind, challenges) in requestOrder) {
+            for (challenge in challenges) {
+                val key = ChallengeKey(playerUrl, kind, challenge)
+                val value = solvedChallenges.remove(key) ?: continue
+                solvedChallenges[key] = value
+                when (kind) {
+                    "sig" -> sig[challenge] = value
+                    "n" -> n[challenge] = value
+                }
+            }
+        }
+        return SolveResult(sig, n, null)
+    }
+
+    private suspend fun solveUncached(
+        playerUrl: String,
+        loadFullPlayerJs: suspend () -> String?,
+        requestOrder: List<Pair<String, List<String>>>,
+        preferPreprocessed: Boolean,
+    ): SolveResult {
         return try {
             ensureBootstrapped()
-            if (preferPreprocessed && preprocessedMutex.withLock { playerUrl in compiledPlayers }) {
+            if (preferPreprocessed && playerUrl in compiledPlayers) {
                 val compiled =
                     try {
                         solveOnce(playerUrl, null, requestOrder, preprocessed = true)
@@ -332,7 +456,7 @@ internal class EjsChallengeSolver(
         when {
             playerInputText == null -> Unit
             preprocessed -> rememberCompiledPlayer(playerUrl)
-            else -> preprocessedMutex.withLock { compiledPlayers.clear() }
+            else -> compiledPlayers.clear()
         }
         val evaluated = engine.evaluate(js, MAX_RAW_OUTPUT_LENGTH, collectGarbage = !preprocessed)
         if (evaluated.length > MAX_RAW_OUTPUT_LENGTH) return SolveResult(emptyMap(), emptyMap(), null)
@@ -350,11 +474,9 @@ internal class EjsChallengeSolver(
         playerUrl: String,
         cacheKey: String?,
     ): String? {
-        preprocessedMutex.withLock {
-            preprocessedByPlayerUrl.remove(playerUrl)?.also {
-                preprocessedByPlayerUrl[playerUrl] = it
-                return it
-            }
+        preprocessedByPlayerUrl.remove(playerUrl)?.also {
+            if (!hasPersistentCache) preprocessedByPlayerUrl[playerUrl] = it
+            return it
         }
         cacheKey ?: return null
         val stored =
@@ -369,7 +491,7 @@ internal class EjsChallengeSolver(
             safeWritePreprocessedPlayer(cacheKey, null)
             return null
         }
-        preprocessedMutex.withLock { putPreprocessedPlayerLocked(playerUrl, stored) }
+        putPreprocessedPlayerLocked(playerUrl, stored)
         return stored
     }
 
@@ -386,22 +508,20 @@ internal class EjsChallengeSolver(
         playerUrl: String,
         cacheKey: String?,
     ) {
-        preprocessedMutex.withLock { preprocessedByPlayerUrl.remove(playerUrl) }
+        preprocessedByPlayerUrl.remove(playerUrl)
         forgetCompiledPlayer(playerUrl)
         cacheKey?.let { safeWritePreprocessedPlayer(it, null) }
     }
 
     /** Mirrors the LRU bound that `__itxCompile` applies to `__itxPlayers`. */
-    private suspend fun rememberCompiledPlayer(playerUrl: String) {
-        preprocessedMutex.withLock {
-            compiledPlayers.remove(playerUrl)
-            compiledPlayers.add(playerUrl)
-            while (compiledPlayers.size > MAX_COMPILED_PLAYERS) compiledPlayers.remove(compiledPlayers.first())
-        }
+    private fun rememberCompiledPlayer(playerUrl: String) {
+        compiledPlayers.remove(playerUrl)
+        compiledPlayers.add(playerUrl)
+        while (compiledPlayers.size > MAX_COMPILED_PLAYERS) compiledPlayers.remove(compiledPlayers.first())
     }
 
-    private suspend fun forgetCompiledPlayer(playerUrl: String) {
-        preprocessedMutex.withLock { compiledPlayers.remove(playerUrl) }
+    private fun forgetCompiledPlayer(playerUrl: String) {
+        compiledPlayers.remove(playerUrl)
     }
 
     private suspend fun safeWritePreprocessedPlayer(
@@ -417,7 +537,7 @@ internal class EjsChallengeSolver(
         }
     }
 
-    private suspend fun parseOutput(
+    private fun parseOutput(
         playerUrl: String,
         raw: String,
         requestOrder: List<Pair<String, List<String>>>,
@@ -442,7 +562,7 @@ internal class EjsChallengeSolver(
                 ?.takeIf { it.isNotBlank() }
                 ?.takeIf { it.length <= MAX_PLAYER_JS_LENGTH }
         if (preprocessed != null) {
-            preprocessedMutex.withLock { putPreprocessedPlayerLocked(playerUrl, preprocessed) }
+            putPreprocessedPlayerLocked(playerUrl, preprocessed)
         }
 
         val responses = root["responses"]?.jsonArray ?: JsonArray(emptyList())
@@ -490,6 +610,7 @@ internal class EjsChallengeSolver(
         playerUrl: String,
         preprocessedPlayer: String,
     ) {
+        if (hasPersistentCache) return
         preprocessedByPlayerUrl.remove(playerUrl)
         preprocessedByPlayerUrl[playerUrl] = preprocessedPlayer
         while (preprocessedByPlayerUrl.size > MAX_PREPROCESSED_PLAYERS) {

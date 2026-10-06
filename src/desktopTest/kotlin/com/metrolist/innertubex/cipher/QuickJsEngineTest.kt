@@ -1,9 +1,12 @@
 package com.metrolist.innertubex.cipher
 
 import com.dokar.quickjs.QuickJsException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -11,6 +14,20 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 
 class QuickJsEngineTest {
+    @Test
+    fun cancellationDuringInitializationDoesNotLoseTheCreatedRuntime() =
+        runBlocking {
+            val engine = QuickJsEngine()
+            try {
+                val initializing = launch(start = CoroutineStart.UNDISPATCHED) { engine.initialize() }
+                initializing.cancelAndJoin()
+                // Even if the caller is cancelled on the thread hop, ownership must be published.
+                assertEquals("1", engine.evaluate("1", maxResultLength = 1))
+            } finally {
+                engine.dispose()
+            }
+        }
+
     @Test
     fun recursiveJavascriptFailsWithoutOverflowingTheNativeStack() =
         runBlocking {

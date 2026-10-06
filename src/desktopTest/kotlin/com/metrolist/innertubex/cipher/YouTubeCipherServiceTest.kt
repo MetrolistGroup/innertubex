@@ -25,6 +25,34 @@ import kotlin.test.assertTrue
 
 class YouTubeCipherServiceTest {
     @Test
+    fun rawPlayerCacheKeepsOnlyTheCurrentPlayer() =
+        runBlocking {
+            var downloads = 0
+            val httpClient =
+                HttpClient(
+                    MockEngine {
+                        downloads++
+                        respond("player code", headers = headersOf(HttpHeaders.ContentType, ContentType.Text.Plain.toString()))
+                    },
+                )
+            val service = YouTubeCipherService(httpClient)
+            try {
+                val first = "https://www.youtube.com/s/player/12345678/player.js"
+                val second = "https://www.youtube.com/s/player/87654321/player.js"
+                service.initialize()
+                assertEquals("player code", service.playerCode(first))
+                assertEquals("player code", service.playerCode(first))
+                assertEquals(1, downloads)
+                service.playerCode(second)
+                service.playerCode(first)
+                assertEquals(3, downloads)
+            } finally {
+                service.dispose()
+                httpClient.close()
+            }
+        }
+
+    @Test
     fun directFormatsDoNotWaitForPlayerPreload() =
         runBlocking {
             val requestStarted = CompletableDeferred<Unit>()

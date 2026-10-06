@@ -197,7 +197,8 @@ internal class GitHubPlayerConfigClient(
     }
 
     private fun trimConfigCacheLocked() {
-        while (cachedConfigs.size > MAX_CONFIG_CACHE_ENTRIES) {
+        // A config may embed several MB of player code; retain only the current player.
+        while (cachedConfigs.size > 1) {
             val oldestKey = cachedConfigs.keys.firstOrNull() ?: break
             cachedConfigs.remove(oldestKey)
         }

@@ -87,21 +87,24 @@ internal class QuickJsEngine {
     suspend fun initialize() =
         mutex.withLock {
             if (runtime != null) return@withLock
-            val thread = newSingleThreadContext("InnerTubeX-QuickJS")
-            try {
-                // Non-cancellable so a created runtime is never dropped before it is published.
-                val js =
-                    withContext(NonCancellable + thread) {
-                        QuickJs.create(thread).also {
-                            it.evaluationTimeoutMillis = EVALUATION_TIMEOUT_MS
-                            it.memoryLimit = NATIVE_MEMORY_LIMIT_BYTES
-                            it.maxStackSize = MAX_STACK_SIZE_BYTES
+            // Keep publication non-cancellable too: returning from the dedicated thread can
+            // otherwise discard the newly created runtime when the caller has been cancelled.
+            withContext(NonCancellable) {
+                val thread = newSingleThreadContext("InnerTubeX-QuickJS")
+                try {
+                    val js =
+                        withContext(thread) {
+                            QuickJs.create(thread).also {
+                                it.evaluationTimeoutMillis = EVALUATION_TIMEOUT_MS
+                                it.memoryLimit = NATIVE_MEMORY_LIMIT_BYTES
+                                it.maxStackSize = MAX_STACK_SIZE_BYTES
+                            }
                         }
-                    }
-                runtime = Runtime(js, thread)
-            } catch (e: Throwable) {
-                thread.close()
-                throw e
+                    runtime = Runtime(js, thread)
+                } catch (e: Throwable) {
+                    thread.close()
+                    throw e
+                }
             }
         }
 

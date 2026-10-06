@@ -70,8 +70,6 @@ class YouTubeCipherService(
 
     private data class CachedSolver(
         val playerUrl: String,
-        /** Full player JS; used for EJS preprocessed-player cache and fallbacks. */
-        val playerCode: String,
         val engine: QuickJsEngine,
         val nSolver: suspend (String) -> String?,
         val sigSolver: suspend (String) -> String?,
@@ -91,7 +89,7 @@ class YouTubeCipherService(
     /**
      * Initialize the cipher service.
      */
-    override suspend fun initialize() = operationMutex.withLock { initializeUnsafe() }
+    override suspend fun initialize() = Unit
 
     /**
      * Installs optional persistent storage for generated EJS preprocessed players.
@@ -101,10 +99,6 @@ class YouTubeCipherService(
         read: suspend (String) -> String?,
         write: suspend (String, String?) -> Unit,
     ) = operationMutex.withLock { ejs.setPreprocessedPlayerCache(read, write) }
-
-    private suspend fun initializeUnsafe() {
-        engine.initialize()
-    }
 
     override suspend fun prewarmEjs() = operationMutex.withLock { ejs.ensureLoaded() }
 
@@ -122,7 +116,7 @@ class YouTubeCipherService(
     }
 
     /** Shares the bounded player-script cache with other components that need the raw player code. */
-    internal suspend fun playerCode(playerUrl: String): String = getOrDownloadPlayerCode(canonicalPlayerUrl(playerUrl), cached = null).code
+    internal suspend fun playerCode(playerUrl: String): String = getOrDownloadPlayerCode(canonicalPlayerUrl(playerUrl)).code
 
     override suspend fun preloadPlayerCode(playerUrl: String) = preloadCanonicalPlayerCode(canonicalPlayerUrl(playerUrl))
 
@@ -132,9 +126,9 @@ class YouTubeCipherService(
             try {
                 // Remote configs solve from the raw player code; EJS only needs it when no preprocessed player is cached.
                 if (remotePlayerConfigStore?.getConfig(playerUrl) != null) {
-                    getOrDownloadPlayerCode(playerUrl, cached = null)
+                    getOrDownloadPlayerCode(playerUrl)
                 } else {
-                    ejs.solve(playerUrl, { getOrDownloadPlayerCode(playerUrl, cached = null).code }, listOf("sig" to listOf("prewarm")))
+                    ejs.solve(playerUrl, { getOrDownloadPlayerCode(playerUrl).code }, listOf("sig" to listOf("prewarm")))
                 }
                 logger.d(
                     TAG,
@@ -189,7 +183,7 @@ class YouTubeCipherService(
                     playerCodeFailed?.let { return null }
                     return try {
                         val playerCodeStartMs = Clock.System.now().toEpochMilliseconds()
-                        val result = getOrDownloadPlayerCode(playerUrl, cached)
+                        val result = getOrDownloadPlayerCode(playerUrl)
                         playerCodeResult = result
                         logger.d(
                             TAG,
@@ -574,11 +568,10 @@ class YouTubeCipherService(
                     val solvedSig =
                         solver.sigSolver(signature).takeUnless { it.isNullOrBlank() }
                             ?: run {
-                                val pc = solver.playerCode
                                 val r =
                                     ejs.solve(
                                         playerUrl,
-                                        pc,
+                                        { getOrDownloadPlayerCode(playerUrl).code },
                                         listOf("sig" to listOf(signature)),
                                         preferPreprocessed = true,
                                     )
@@ -641,7 +634,7 @@ class YouTubeCipherService(
                                 val r =
                                     ejs.solve(
                                         playerUrl,
-                                        solver.playerCode,
+                                        { getOrDownloadPlayerCode(playerUrl).code },
                                         listOf("n" to listOf(nValue)),
                                         preferPreprocessed = true,
                                     )
@@ -678,7 +671,7 @@ class YouTubeCipherService(
         val faradayPlayerUrl = faradayCipherPlayerUrl(playerUrl) ?: return RemoteSolveResult(emptyMap(), emptyMap())
 
         return try {
-            val playerCode = getOrDownloadPlayerCode(faradayPlayerUrl, cached = null).code
+            val playerCode = getOrDownloadPlayerCode(faradayPlayerUrl).code
             val solver = getOrCreateZemerSolver(faradayPlayerUrl, playerCode, activeConfig, configStore.configEpoch)
             RemoteSolveResult(
                 sigByChallenge =
@@ -747,7 +740,7 @@ class YouTubeCipherService(
 
     private suspend fun getOrCreateSolver(playerUrl: String): CachedSolver {
         cacheMutex.withLock { solverCacheHitLocked(playerUrl) }?.let { return it }
-        val playerCode = getOrDownloadPlayerCode(playerUrl, cached = null).code
+        val playerCode = getOrDownloadPlayerCode(playerUrl).code
         return getOrCreateSolver(playerUrl, playerCode)
     }
 
@@ -760,7 +753,6 @@ class YouTubeCipherService(
             cacheMutex.withLock {
                 solverCacheHitLocked(playerUrl) ?: createSolver(playerUrl, playerCode).also { created ->
                     cache[playerUrl] = created
-                    playerCodeCache.remove(playerUrl)
                     evicted = trimSolverCacheLocked()
                 }
             }
@@ -768,12 +760,7 @@ class YouTubeCipherService(
         return solver
     }
 
-    private suspend fun getOrDownloadPlayerCode(
-        playerUrl: String,
-        cached: CachedSolver?,
-    ): PlayerCodeResult {
-        cached?.playerCode?.let { return PlayerCodeResult(it, "solver-cache") }
-
+    private suspend fun getOrDownloadPlayerCode(playerUrl: String): PlayerCodeResult {
         var cachedCode: String? = null
         var download: CompletableDeferred<String>? = null
         var ownsDownload = false
@@ -883,8 +870,10 @@ class YouTubeCipherService(
             throw e
         }
 
+        val hasNFunction = parseResult.nFunctionCode != null
+        val hasSigFunction = parseResult.sigFunctionCode != null
         val nSolver: suspend (String) -> String? = { input ->
-            if (parseResult.nFunctionCode != null) {
+            if (hasNFunction) {
                 try {
                     solverEngine.callFunction("_solveN", input)
                 } catch (e: CancellationException) {
@@ -898,7 +887,7 @@ class YouTubeCipherService(
         }
 
         val sigSolver: suspend (String) -> String? = { input ->
-            if (parseResult.sigFunctionCode != null) {
+            if (hasSigFunction) {
                 try {
                     solverEngine.callFunction("_solveSig", input)
                 } catch (e: CancellationException) {
@@ -911,7 +900,7 @@ class YouTubeCipherService(
             }
         }
 
-        return CachedSolver(playerUrl, playerCode, solverEngine, nSolver, sigSolver)
+        return CachedSolver(playerUrl, solverEngine, nSolver, sigSolver)
     }
 
     private fun solverCacheHitLocked(playerUrl: String): CachedSolver? = cache.remove(playerUrl)?.also { cache[playerUrl] = it }
@@ -935,7 +924,8 @@ class YouTubeCipherService(
     }
 
     private fun trimPlayerCodeCacheLocked() {
-        while (playerCodeCache.size > MAX_PLAYER_CACHE_ENTRIES) {
+        // Keep only the current raw player; parser solvers no longer retain another copy.
+        while (playerCodeCache.size > 1) {
             val oldestKey = playerCodeCache.keys.firstOrNull() ?: break
             playerCodeCache.remove(oldestKey)
         }
@@ -1062,7 +1052,7 @@ class YouTubeCipherService(
                 }
             cachedSolvers.forEach { it.engine.dispose() }
             cachedZemerSolvers.forEach { it.solver.dispose() }
-            engine.dispose()
+            ejs.dispose()
         }
 
     private fun String.logId(): String = RemotePlayerConfigParser.extractPlayerHash(this) ?: "unknown"
