@@ -6,6 +6,14 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-10-07
+
+### Fixed
+
+- JitPack builds use Temurin 21 instead of SDKMAN OpenJDK 21.0.2, which cannot open jar files on
+  JitPack's fresh-clone workers. 0.8.0 to 0.8.2 were never published to JitPack; this release ships
+  their changes.
+
 ## [0.8.2] - 2026-10-07
 
 ### Fixed
