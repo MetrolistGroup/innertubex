@@ -6,6 +6,8 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-07
+
 ### Added
 
 - `ExtractionCipherService` is public and `InnerTubeExtractor` accepts any implementation, so hosts
