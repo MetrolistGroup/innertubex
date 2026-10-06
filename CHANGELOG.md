@@ -6,6 +6,12 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-07
+
+### Fixed
+
+- Republishes 0.8.0, whose JitPack build failed on a transient JitPack error. No code changes.
+
 ## [0.8.0] - 2026-10-07
 
 ### Added
