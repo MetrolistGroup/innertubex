@@ -31,6 +31,31 @@ import kotlin.time.Duration.Companion.hours
 
 class PlayerClientDirectorTest {
     @Test
+    fun embeddedConfigVisitorOverridesSessionVisitor() =
+        runBlocking {
+            val sentVisitors = mutableListOf<String?>()
+            val client =
+                HttpClient(
+                    MockEngine { request ->
+                        sentVisitors += request.headers["X-Goog-Visitor-Id"]
+                        respond(PLAYER_RESPONSE, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
+                    },
+                ) {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
+            val innerTube = InnerTube(client, retryDelay = {}).also { it.visitorData = "session-visitor" }
+            val embedded = fixed(checkNotNull(PlaybackClientCatalog.findManifest("WEB_EMBEDDED_PLAYER")))
+
+            PlayerClientDirector(innerTube, embedded, NoTokenProvider)
+                .fetchPlayerResponses("video", PlayerConfig("player.js", 1, "embed-visitor", null, "flags"), ContentHints())
+            PlayerClientDirector(innerTube, embedded, NoTokenProvider)
+                .fetchPlayerResponses("video", PlayerConfig("player.js", 1, "page-visitor", null), ContentHints())
+
+            assertEquals(listOf<String?>("embed-visitor", "session-visitor"), sentVisitors)
+            client.close()
+        }
+
+    @Test
     fun authenticatedPremiumManualOverrideSkipsTokenMinting() =
         runBlocking {
             val client = client { PLAYER_RESPONSE }

@@ -101,8 +101,11 @@ internal class PlayerClientDirector(
     ): PlayerResponseBatch {
         val startTime = Clock.System.now().toEpochMilliseconds()
         val initialSession = innerTube.sessionSnapshot()
+        // Embed-page encryptedHostFlags are only honoured with the visitor that fetched that page.
+        val embedVisitorData = playerConfig.visitorData?.takeIf { it.isNotBlank() && !playerConfig.encryptedHostFlags.isNullOrBlank() }
         val requestVisitorData =
-            initialSession.visitorData?.takeIf { it.isNotBlank() }
+            embedVisitorData
+                ?: initialSession.visitorData?.takeIf { it.isNotBlank() }
                 ?: playerConfig.visitorData?.takeIf { it.isNotBlank() }
         var requestSession = initialSession.copy(visitorData = requestVisitorData)
         val authenticated = !requestSession.sapisid.isNullOrBlank()
