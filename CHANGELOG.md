@@ -6,6 +6,13 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- Audio selection prefers the original track on multi-language uploads. A dubbed track could
+  outrank the original by bitrate, and hosts that reject non-original audio failed playback.
+- Web Embedded player requests send the embed page's visitor with its encrypted host flags. Hosts
+  that persist a visitor sent their own, and YouTube answered every request as unavailable.
+
 ## [0.8.3] - 2026-10-07
 
 ### Fixed
