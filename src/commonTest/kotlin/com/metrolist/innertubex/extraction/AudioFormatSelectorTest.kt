@@ -8,6 +8,33 @@ import kotlin.test.assertNull
 
 class AudioFormatSelectorTest {
     @Test
+    fun prefersOriginalAudioTrackOverHigherBitrateDub() {
+        val dub =
+            Format(
+                itag = 251,
+                mimeType = "audio/webm; codecs=\"opus\"",
+                bitrate = 156_852,
+                url = "https://dub",
+                xtags = "Cg8KBWFjb250EgZkdWJiZWQKCgoEbGFuZxICaWQ",
+                audioTrack = Format.AudioTrack(id = "id.3", audioIsDefault = false),
+            )
+        val original =
+            dub.copy(
+                bitrate = 144_266,
+                url = "https://original",
+                xtags = "ChEKBWFjb250EghvcmlnaW5hbAoNCgRsYW5nEgVlbi1VUw",
+                audioTrack = Format.AudioTrack(id = "en-US.4", audioIsDefault = false),
+            )
+
+        AudioQuality.entries.filter { it != AudioQuality.MP4 }.forEach {
+            assertEquals("https://original", selectBestAudioFormat(listOf(dub, original), it)?.url)
+        }
+        val defaultOnly = original.copy(xtags = null, audioTrack = Format.AudioTrack(id = "en-US.4", audioIsDefault = true))
+        assertEquals("https://original", selectBestAudioFormat(listOf(dub, defaultOnly))?.url)
+        assertEquals("https://dub", selectBestAudioFormat(listOf(dub))?.url)
+    }
+
+    @Test
     fun prefersStereoAndHigherSampleRate() {
         val formats =
             listOf(
