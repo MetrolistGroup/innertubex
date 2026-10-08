@@ -6,6 +6,8 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-10-08
+
 ### Fixed
 
 - Audio selection prefers the original track on multi-language uploads. A dubbed track could
