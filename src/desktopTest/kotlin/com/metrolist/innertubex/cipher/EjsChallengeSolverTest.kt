@@ -217,7 +217,8 @@ class EjsChallengeSolverTest {
     fun idleReleaseStopsTheThreadAndCachedOutputsSurviveWithoutRestartingIt() =
         runBlocking {
             val engine = QuickJsEngine()
-            val solver = EjsChallengeSolver(engine, InnerTubeLogger.NONE, idleTimeoutMs = 100)
+            // Slow CI workers can idle-release a 100ms runtime before the thread count is sampled.
+            val solver = EjsChallengeSolver(engine, InnerTubeLogger.NONE, idleTimeoutMs = 1_000)
             val threadsBefore = quickJsThreads()
             val stored = mutableMapOf<String, String>()
             var reads = 0
