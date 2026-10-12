@@ -122,8 +122,10 @@ internal class PlayerClientDirector(
                 transportPreference =
                     when {
                         hints.isLive == true -> PlaybackTransportPreference.HLS
-                        hints.sabrFirst -> PlaybackTransportPreference.SABR
-                        hints.wantVideo -> PlaybackTransportPreference.DIRECT
+
+                        // Direct video needs a poToken and cipher pass; SABR video needs neither.
+                        hints.sabrFirst || hints.wantVideo -> PlaybackTransportPreference.SABR
+
                         else -> PlaybackTransportPreference.AUTO
                     },
                 excludedClients = excludedClients,

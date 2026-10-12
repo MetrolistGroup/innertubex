@@ -7,6 +7,7 @@ import com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy
 import com.metrolist.innertubex.extraction.strategy.ClientSelectionRequest
 import com.metrolist.innertubex.extraction.strategy.ClientSelectionResult
 import com.metrolist.innertubex.extraction.strategy.PlaybackClientCatalog
+import com.metrolist.innertubex.extraction.strategy.PlaybackTransportPreference
 import com.metrolist.innertubex.extraction.strategy.PoTokenProviderKind
 import com.metrolist.innertubex.extraction.strategy.SelectedClient
 import com.metrolist.innertubex.models.YouTubeClient
@@ -52,6 +53,34 @@ class PlayerClientDirectorTest {
                 .fetchPlayerResponses("video", PlayerConfig("player.js", 1, "page-visitor", null), ContentHints())
 
             assertEquals(listOf<String?>("embed-visitor", "session-visitor"), sentVisitors)
+            client.close()
+        }
+
+    @Test
+    fun videoRequestsPreferSabrTransport() =
+        runBlocking {
+            val client = client { PLAYER_RESPONSE }
+            val manifest = checkNotNull(PlaybackClientCatalog.findManifest("VISIONOS"))
+            val preferences = mutableListOf<PlaybackTransportPreference>()
+            val director =
+                PlayerClientDirector(
+                    InnerTube(client, retryDelay = {}).also { it.visitorData = "visitor" },
+                    object : ClientFallbackStrategy {
+                        override fun resolveClients(hints: ContentHints) = listOf(manifest.client)
+
+                        override fun selectClients(request: ClientSelectionRequest): ClientSelectionResult {
+                            preferences += request.transportPreference
+                            return ClientSelectionResult(listOf(SelectedClient(manifest.client, manifest)))
+                        }
+                    },
+                    NoTokenProvider,
+                )
+
+            listOf(ContentHints(wantVideo = true), ContentHints()).forEach {
+                director.fetchPlayerResponses("video", PlayerConfig("player.js", null, null, null), it)
+            }
+
+            assertEquals(listOf(PlaybackTransportPreference.SABR, PlaybackTransportPreference.AUTO), preferences)
             client.close()
         }
 
