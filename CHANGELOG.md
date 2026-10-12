@@ -6,6 +6,13 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-10-13
+
+### Fixed
+
+- Republishes 0.8.5; its JitPack build failed on a timing-sensitive QuickJS idle-release test. No
+  library code changes.
+
 ## [0.8.5] - 2026-10-13
 
 ### Changed
