@@ -6,6 +6,18 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-10-13
+
+### Changed
+
+- Video requests try SABR clients first. Direct video needs a poToken and a cipher pass, which took
+  over 10s on a cold start on low-end Android devices; VisionOS SABR returns video without either.
+
+### Fixed
+
+- Ciphered video formats whose `n` parameter was solved are no longer rejected. The check treated
+  any `n` as unresolved, so every cipher client failed video and extraction fell through.
+
 ## [0.8.4] - 2026-10-08
 
 ### Fixed
