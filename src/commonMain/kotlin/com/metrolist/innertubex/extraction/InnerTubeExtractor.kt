@@ -1234,7 +1234,8 @@ class InnerTubeExtractor internal constructor(
             val processedVideoFormat =
                 rawVideoCandidates.firstNotNullOfOrNull { candidate ->
                     processedFormats.firstOrNull {
-                        it.itag == candidate.itag && it.width != null && it.hasReadyVideoUrl()
+                        // processFormats keeps the solved n and nulls unresolved ones, so any URL left is ready.
+                        it.itag == candidate.itag && it.width != null && it.url?.let(::isAllowedMediaUrl) == true
                     }
                 }
             logger.d(

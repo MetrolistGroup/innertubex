@@ -557,6 +557,23 @@ class InnerTubeExtractorTest {
         }
 
     @Test
+    fun cipheredVideoWithSolvedNParameterIsSelected() =
+        runBlocking {
+            val client = jsonClient(CIPHERED_VIDEO_RESPONSE)
+            val stream =
+                makeExtractor(
+                    client = client,
+                    innerTube = InnerTube(client, retryDelay = {}),
+                    parser = CountingParser(),
+                    cipherService = RecordingCipherService(solvedQuery = "&n=solved"),
+                ).extract("video", ContentHints(isExplicit = true, wantVideo = true))
+
+            assertNotNull(stream)
+            assertEquals(136, stream.videoItag)
+            client.close()
+        }
+
+    @Test
     fun normalDirectPlaybackSkipsWatchPageAndCipherSetup() =
         runBlocking {
             val client = jsonClient(DIRECT_RESPONSE)
@@ -1813,7 +1830,9 @@ class InnerTubeExtractorTest {
         ): List<PlayerResponse.StreamingData.Format> = formats.filter(PlayerResponse.StreamingData.Format::isAudio)
     }
 
-    private class RecordingCipherService : ExtractionCipherService {
+    private class RecordingCipherService(
+        private val solvedQuery: String = "",
+    ) : ExtractionCipherService {
         val calls = mutableListOf<List<Int>>()
 
         override suspend fun initialize() {}
@@ -1828,7 +1847,7 @@ class InnerTubeExtractorTest {
         ): List<PlayerResponse.StreamingData.Format> {
             calls += formats.map { it.itag }
             return formats.map { format ->
-                format.copy(url = format.url ?: "https://r.googlevideo.com/videoplayback?itag=${format.itag}")
+                format.copy(url = format.url ?: "https://r.googlevideo.com/videoplayback?itag=${format.itag}$solvedQuery")
             }
         }
     }
