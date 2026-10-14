@@ -38,11 +38,54 @@ token, namespace registration, or GPG key is required.
 5. Commit the release changes through normal review.
 6. Create and push an annotated `vMAJOR.MINOR.PATCH` tag.
 7. Wait for the GitHub release workflow to finish.
-8. Request the tag from JitPack and verify its build log, POM, Android AAR,
-   desktop JAR, sources, documentation, and Gradle module metadata.
+8. Wait about a minute after pushing the tag, then request it from JitPack and
+   verify its build log, POM, Android AAR, desktop JAR, sources, documentation,
+   and Gradle module metadata. If the build fails, follow
+   [Failed JitPack Builds](#failed-jitpack-builds).
 9. Test the published coordinate in a clean consumer before announcing it.
 
 JitPack exposes `GROUP`, `ARTIFACT`, and `VERSION` to `jitpack.yml`. The build
 maps those values to Gradle publication properties so generated publications
 are exposed by JitPack as
 `com.github.MetrolistGroup.innertubex:innertubex:<tag>` for KMP consumers.
+
+## Failed JitPack Builds
+
+JitPack builds a tag once, on the first request for it, and caches the result.
+A failed build stays failed: requesting the tag again returns the cached error,
+and only a logged-in JitPack maintainer can clear it. A tag whose JitPack build
+failed is usually burned. This has happened four times, each time from a cause
+outside the library code:
+
+- v0.8.0 to v0.8.2: JitPack's SDKMAN OpenJDK 21.0.2 could not open jar files on
+  fresh-clone workers. `jitpack.yml` now downloads Temurin 21 instead.
+- v0.8.5: a timing-sensitive QuickJS idle-release test timed out on the worker.
+- v0.9.0: the worker failed to resolve the foojay settings plugin from any
+  repository, the first network fetch of the build.
+
+`jitpack.yml` retries the whole build up to three times, 30 seconds apart, so a
+transient worker failure no longer burns the tag. A failure on every attempt is
+real and must be fixed in the repository.
+
+Check the build without triggering it early. Requesting a tag in the same
+command that pushes it can cache `tagNotFound` for several minutes.
+
+```bash
+curl -s https://jitpack.io/api/builds/com.github.MetrolistGroup/innertubex/vMAJOR.MINOR.PATCH
+curl -s https://jitpack.io/com/github/MetrolistGroup/innertubex/vMAJOR.MINOR.PATCH/build.log
+```
+
+`"status" : "ok"` with a module list means it published. `"status" : "Error"`
+means it failed, and the build log shows why.
+
+If a tag failed:
+
+1. Never move, delete, or re-push the tag. JitPack and consumers may already
+   have cached it.
+2. Unblock consumers right away by pinning the tag's 10-character commit hash
+   (for example `innerTubeXVersion=5c2f6dc930`). JitPack builds a commit hash
+   as its own version, on a fresh request, with no cached failure.
+3. Fix the cause if it is in the repository, then release the next patch
+   version with a `CHANGELOG.md` entry saying which version it republishes.
+4. Move consumers from the commit hash to the new tag once JitPack reports it
+   as `ok`.

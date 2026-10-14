@@ -2,6 +2,9 @@ jdk:
   - openjdk21
 
 # JitPack's SDKMAN OpenJDK 21.0.2 cannot open jar files on fresh-clone workers, so build with Temurin directly.
+# JitPack builds a tag once and caches a failure forever, so transient worker failures (plugin or dependency
+# resolution, timing-sensitive tests) are retried here instead of burning the version. JitPack joins these lines
+# with ';' and uses the last exit code, so the loop ends on a status check rather than calling exit.
 install:
-  - 'curl -sSL -o /tmp/temurin.tgz https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse && mkdir -p /tmp/temurin && tar -xzf /tmp/temurin.tgz -C /tmp/temurin --strip-components=1'
-  - 'export JAVA_HOME=/tmp/temurin PATH=/tmp/temurin/bin:$PATH && ./gradlew clean allTests ktlintCheck apiCheck assemble publishToMavenLocal -PGROUP="$GROUP" -PPOM_ARTIFACT_ID="$ARTIFACT" -PVERSION_NAME="$VERSION" --no-build-cache --no-configuration-cache'
+  - 'curl -sSL --retry 5 --retry-delay 5 -o /tmp/temurin.tgz https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse && mkdir -p /tmp/temurin && tar -xzf /tmp/temurin.tgz -C /tmp/temurin --strip-components=1'
+  - 'export JAVA_HOME=/tmp/temurin PATH=/tmp/temurin/bin:$PATH; jitpack_status=1; for attempt in 1 2 3; do if ./gradlew clean allTests ktlintCheck apiCheck assemble publishToMavenLocal -PGROUP="$GROUP" -PPOM_ARTIFACT_ID="$ARTIFACT" -PVERSION_NAME="$VERSION" --no-build-cache --no-configuration-cache; then jitpack_status=0; break; fi; echo "JitPack build attempt $attempt failed"; ./gradlew --stop; sleep 30; done; test "$jitpack_status" -eq 0'
