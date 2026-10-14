@@ -28,7 +28,7 @@ class PlaybackClientStrategyTest {
 
     @Test
     fun requestedProbeClientsStayExplicitAndConservative() {
-        val ids = setOf("IOS_MUSIC", "ANDROID_KIDS", "ANDROID_PRODUCER", "MEDIA_CONNECT_FRONTEND")
+        val ids = setOf("IOS_MUSIC", "ANDROID_PRODUCER", "MEDIA_CONNECT_FRONTEND")
         val probes = ids.map { checkNotNull(PlaybackClientCatalog.findBenchmark(it)?.manifest) }
 
         assertTrue(probes.all { it.selectionMode == ClientSelectionMode.PROBE_ONLY })
@@ -243,7 +243,6 @@ class PlaybackClientStrategyTest {
             request.hints.copy(isKidsContent = true),
             request.hints.copy(isLive = true),
             request.hints.copy(isUploaded = true),
-            request.hints.copy(wantVideo = true),
         )) {
             assertTrue(strategy.selectClients(request.copy(hints = hints)).candidates.none { it.manifest?.id == "VISIONOS_SABR" })
         }
@@ -378,11 +377,11 @@ class PlaybackClientStrategyTest {
                         webViewAvailable = true,
                     ),
                 ).candidates
-        assertEquals("WEB_KIDS", candidates.first().manifest?.id)
+        assertEquals(listOf("ANDROID_KIDS", "WEB_KIDS"), candidates.take(2).map { it.manifest?.id })
     }
 
     @Test
-    fun legacyVisionosAutomaticSelectionIsLimitedToNormalAudio() {
+    fun legacyVisionosAutomaticSelectionIsLimitedToNormalAndExplicitAudio() {
         val strategy = ContentAwareFallbackStrategy()
         val request =
             ClientSelectionRequest(
@@ -391,7 +390,7 @@ class PlaybackClientStrategyTest {
                 availablePoTokenProviders = allProviders,
                 webViewAvailable = true,
             )
-        assertEquals(CapabilitySupport.LIMITED, PlaybackClientCatalog.findManifest("VISIONOS_0_1")?.content?.explicit)
+        assertEquals(CapabilitySupport.SUPPORTED, PlaybackClientCatalog.findManifest("VISIONOS_0_1")?.content?.explicit)
         assertEquals(ClientSelectionMode.PROBE_ONLY, PlaybackClientCatalog.findManifest("VISIONOS_0_1")?.selectionMode)
         assertTrue(strategy.selectClients(request.copy(hints = ContentHints())).candidates.none { it.manifest?.id == "VISIONOS_0_1" })
         assertEquals(
@@ -412,8 +411,17 @@ class PlaybackClientStrategyTest {
                 ).candidates
                 .none { it.manifest?.id == "VISIONOS_0_1" },
         )
+        assertEquals(
+            "VISIONOS_0_1",
+            strategy
+                .selectClients(request, premiumHighQuality = false, visitorDataAvailable = true)
+                .candidates
+                .first()
+                .manifest
+                ?.id,
+        )
         listOf(
-            ContentHints(isExplicit = true),
+            ContentHints(isExplicit = true, wantVideo = true),
             ContentHints(isKidsContent = true),
             ContentHints(isAgeRestricted = true),
             ContentHints(isLive = true),
@@ -435,6 +443,38 @@ class PlaybackClientStrategyTest {
                 .single()
                 .manifest
                 ?.id,
+        )
+    }
+
+    @Test
+    fun authenticatedVideoKeepsCookieLessSabrFirstUnlessPremium() {
+        val request =
+            ClientSelectionRequest(
+                hints = ContentHints(isExplicit = true, wantVideo = true),
+                authenticated = true,
+                availablePoTokenProviders = allProviders,
+                webViewAvailable = true,
+                transportPreference = PlaybackTransportPreference.SABR,
+            )
+        val strategy = ContentAwareFallbackStrategy()
+        listOf(request, request.copy(hints = ContentHints(wantVideo = true))).forEach {
+            assertEquals(
+                "VISIONOS_SABR",
+                strategy
+                    .selectClients(it)
+                    .candidates
+                    .first()
+                    .manifest
+                    ?.id,
+            )
+        }
+        assertTrue(
+            strategy
+                .selectClients(request.copy(premium = true))
+                .candidates
+                .first()
+                .manifest
+                ?.authentication != AuthenticationPolicy.UNSUPPORTED,
         )
     }
 

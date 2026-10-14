@@ -96,7 +96,7 @@ class ContentAwareFallbackStrategy(
                         PlaybackTransportPreference.AUTO -> {
                             when {
                                 it.client.useSabr -> 2
-                                request.hints.isKidsContent == true && it.client == YouTubeClient.WEB_KIDS -> 0
+                                request.hints.isKidsContent == true && it.client in kidsClients -> 0
                                 else -> 1
                             }
                         }
@@ -110,8 +110,10 @@ class ContentAwareFallbackStrategy(
                         }
                     }
                 }.thenBy {
+                    // Only Premium gains quality from cookies; cookie-less clients start video several times faster.
                     if (request.authenticated &&
-                        ((premiumHighQuality && request.premium) || request.hints.wantVideo) &&
+                        request.premium &&
+                        (premiumHighQuality || request.hints.wantVideo) &&
                         request.hints.isKidsContent != true &&
                         it.manifest?.authentication == AuthenticationPolicy.UNSUPPORTED
                     ) {
@@ -127,6 +129,8 @@ class ContentAwareFallbackStrategy(
             rejected = rejected.distinctBy { it.manifest.id }.sortedBy { it.manifest.id },
         )
     }
+
+    private val kidsClients = setOf(YouTubeClient.ANDROID_KIDS, YouTubeClient.WEB_KIDS)
 
     private fun hardRejectionReasons(
         manifest: PlaybackClientManifest,
@@ -151,10 +155,7 @@ class ContentAwareFallbackStrategy(
             if (checkContentSupport && manifest.id == "VISIONOS_0_1" &&
                 (request.hints.wantVideo || contentSupport != CapabilitySupport.SUPPORTED)
             ) {
-                add("legacy direct playback verified for normal audio only")
-            }
-            if (manifest.id in setOf("VISIONOS_0_1", "VISIONOS_SABR") && request.hints.isExplicit == true && request.hints.wantVideo) {
-                add("explicit video playback unverified")
+                add("legacy direct playback verified for normal and explicit audio only")
             }
             if (request.hints.wantVideo &&
                 manifest.transports.none { it == PlaybackTransport.DIRECT || it == PlaybackTransport.SABR }

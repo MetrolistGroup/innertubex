@@ -17,6 +17,7 @@ object PlaybackClientCatalog {
     private const val SOURCE_PLAYBACK_MATRIX = "Playback live matrix"
     private const val SOURCE_ANDROID_BENCHMARK = "Android playback benchmark (2026-08-13)"
     private const val SOURCE_ANDROID_SABR_BENCHMARK = "Android SABR benchmark (2026-08-20)"
+    private const val SOURCE_DEVICE_CLIENT_BENCHMARK = "Android device client benchmark (2026-10-14)"
     private const val SOURCE_YTDLP = "yt-dlp client inventory"
     private const val SOURCE_YOUTUBE_JS = "YouTube.js client constants"
     private const val SOURCE_HISTORICAL_CLIENTS = "YouTube-Internal-Clients survey (2022)"
@@ -121,15 +122,16 @@ object PlaybackClientCatalog {
                 selectionMode = ClientSelectionMode.PROBE_ONLY,
                 priority = 100,
                 transports = setOf(PlaybackTransport.DIRECT),
-                content = normalSongsOnlyContent().copy(explicit = CapabilitySupport.LIMITED),
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_PLAYBACK_MATRIX),
+                content = normalSongsOnlyContent().copy(explicit = CapabilitySupport.SUPPORTED),
+                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_PLAYBACK_MATRIX, SOURCE_DEVICE_CLIENT_BENCHMARK),
                 notes =
                     "September 2026 capture: two anonymous normal audio requests without visitorData were " +
                         "UNPLAYABLE; the same requests with watch-config visitorData returned direct audio " +
-                        "(one complete file, one initial range). One anonymous desktop normal sample passed " +
-                        "90-second decoded playback with backward and forward seeks. Public selection stays probe-only " +
-                        "without visitor context; internal automatic extraction tries visitor-backed normal audio only. " +
-                        "Earlier HTTP 400 reports and other content remain unverified.",
+                        "(one complete file, one initial range). October 2026 device benchmark: fastest client for " +
+                        "normal and non-age-gated explicit audio, signed in and out, with 90-second playback and " +
+                        "bidirectional seeks; age-gated and account-restricted explicit media fail in under a second. " +
+                        "Public selection stays probe-only without visitor context; internal automatic extraction " +
+                        "tries visitor-backed audio only. Earlier HTTP 400 reports and other content remain unverified.",
             ),
             manifest(
                 id = "ANDROID_VR_1_65_10",
@@ -704,12 +706,20 @@ object PlaybackClientCatalog {
                 selectionMode = ClientSelectionMode.AUTOMATIC,
                 priority = 0,
                 transports = setOf(PlaybackTransport.SABR),
-                content = normalSongsOnlyContent().copy(explicit = CapabilitySupport.LIMITED),
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_ANDROID_SABR_BENCHMARK, SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP),
+                content = normalSongsOnlyContent().copy(explicit = CapabilitySupport.SUPPORTED),
+                evidence =
+                    setOf(
+                        SOURCE_ANDROID_BENCHMARK,
+                        SOURCE_ANDROID_SABR_BENCHMARK,
+                        SOURCE_PLAYBACK_MATRIX,
+                        SOURCE_YTDLP,
+                        SOURCE_DEVICE_CLIENT_BENCHMARK,
+                    ),
                 notes =
                     "Passed both normal samples and one non-age-gated explicit audio sample with 90-second " +
-                        "playback and bidirectional seeks. Kids and age-gated media were rejected; explicit " +
-                        "support remains limited to reflect the single successful sample.",
+                        "playback and bidirectional seeks. October 2026 device benchmark: fastest SABR client for " +
+                        "audio and for 1080p normal and 2160p explicit video, signed in and out. Kids, age-gated, " +
+                        "and account-restricted media were rejected quickly.",
             ),
             manifest(
                 id = "TVHTML5_SABR",
@@ -882,14 +892,25 @@ object PlaybackClientCatalog {
             manifest(
                 id = "ANDROID_KIDS",
                 client = YouTubeClient.ANDROID_KIDS,
-                displayName = "Android Kids probe",
+                displayName = "Android Kids",
                 lifecycle = ClientLifecycle.EXPERIMENTAL,
-                selectionMode = ClientSelectionMode.PROBE_ONLY,
-                priority = 0,
+                selectionMode = ClientSelectionMode.AUTOMATIC,
+                priority = 60,
                 transports = setOf(PlaybackTransport.DIRECT),
-                content = unverifiedProbeContent(),
-                evidence = setOf(SOURCE_PYTUBEFIX, SOURCE_HISTORICAL_CLIENTS),
-                notes = "Historical Android Kids identity and app fields; playback and transport support are unverified.",
+                content =
+                    ClientContentCapabilities(
+                        normal = CapabilitySupport.UNSUPPORTED,
+                        explicit = CapabilitySupport.UNSUPPORTED,
+                        kids = CapabilitySupport.SUPPORTED,
+                        ageRestricted = CapabilitySupport.UNSUPPORTED,
+                        live = CapabilitySupport.UNSUPPORTED,
+                        uploads = CapabilitySupport.UNSUPPORTED,
+                    ),
+                evidence = setOf(SOURCE_PYTUBEFIX, SOURCE_HISTORICAL_CLIENTS, SOURCE_DEVICE_CLIENT_BENCHMARK),
+                notes =
+                    "Fastest made-for-kids client in the October 2026 device benchmark, signed in and out, with " +
+                        "90-second playback and bidirectional seeks and no token or cipher work; normal and explicit " +
+                        "media are rejected.",
             ),
             manifest(
                 id = "ANDROID_PRODUCER",

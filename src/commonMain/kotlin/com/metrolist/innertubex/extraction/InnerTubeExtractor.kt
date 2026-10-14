@@ -423,7 +423,7 @@ class InnerTubeExtractor internal constructor(
             hints.premium && audioQuality == AudioQuality.HIGH && innerTube.hasSapCookieAuth()
         val configFreeEligible =
             hints.playbackClientOverrideId == null && !hints.wantVideo &&
-                hints.isExplicit != true && hints.isAgeRestricted != true &&
+                hints.isAgeRestricted != true &&
                 hints.isUploaded != true && hints.isLive != true &&
                 !authenticatedPremiumHighQuality
         val deferConfigFree =

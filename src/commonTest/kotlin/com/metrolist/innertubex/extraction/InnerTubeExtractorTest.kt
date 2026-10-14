@@ -637,14 +637,16 @@ class InnerTubeExtractorTest {
             val innerTube = InnerTube(client, retryDelay = {}).also { it.visitorData = "session-visitor" }
             val parser = CountingParser()
             try {
-                val stream =
-                    makeExtractor(
-                        client,
-                        innerTube,
-                        parser,
-                        fallback = ContentAwareFallbackStrategy(),
-                    ).extract("video", ContentHints())
-                assertEquals("VISIONOS_0_1__nopo", assertNotNull(stream).profileId)
+                listOf(ContentHints(), ContentHints(isExplicit = true)).forEach { hints ->
+                    val stream =
+                        makeExtractor(
+                            client,
+                            innerTube,
+                            parser,
+                            fallback = ContentAwareFallbackStrategy(),
+                        ).extract("video", hints)
+                    assertEquals("VISIONOS_0_1__nopo", assertNotNull(stream).profileId)
+                }
                 assertEquals(0, parser.calls)
             } finally {
                 client.close()
@@ -1090,14 +1092,14 @@ class InnerTubeExtractorTest {
             val innerTube = InnerTube(client, retryDelay = {})
             val parser = CountingParser()
             val extractor = makeExtractor(client, innerTube, parser)
-            assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
-            assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
+            assertNotNull(extractor.extract("video", ContentHints(isAgeRestricted = true)))
+            assertNotNull(extractor.extract("video", ContentHints(isAgeRestricted = true)))
             assertEquals(1, parser.calls)
             innerTube.visitorData = "new-session"
-            assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
+            assertNotNull(extractor.extract("video", ContentHints(isAgeRestricted = true)))
             assertEquals(1, parser.calls)
             innerTube.locale = innerTube.locale.copy(hl = innerTube.locale.hl + "-x")
-            assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
+            assertNotNull(extractor.extract("video", ContentHints(isAgeRestricted = true)))
             assertEquals(2, parser.calls)
             client.close()
         }
@@ -1122,8 +1124,8 @@ class InnerTubeExtractorTest {
             val parser = CountingParser(freshVisitorPerFetch = true)
             val extractor = makeExtractor(client, InnerTube(client, retryDelay = {}), parser)
             try {
-                assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
-                assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
+                assertNotNull(extractor.extract("video", ContentHints(isAgeRestricted = true)))
+                assertNotNull(extractor.extract("video", ContentHints(isAgeRestricted = true)))
                 assertEquals(2, parser.calls)
                 assertEquals(3, requests)
             } finally {
@@ -1154,7 +1156,7 @@ class InnerTubeExtractorTest {
                 }
             try {
                 val extractor = makeExtractor(client, InnerTube(client, retryDelay = {}), parser, fallback)
-                assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
+                assertNotNull(extractor.extract("video", ContentHints(isAgeRestricted = true)))
                 assertNotNull(extractor.extract("video", ContentHints()))
                 assertEquals(2, parser.calls)
                 // Repeated identical candidates are sent once per distinct config: native, cached and refreshed.
@@ -1266,9 +1268,9 @@ class InnerTubeExtractorTest {
             val extractor = makeExtractor(client, innerTube, parser)
 
             assertNotNull(extractor.extract("video", ContentHints(playbackClientOverrideId = "VISIONOS_0_1")))
-            assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
+            assertNotNull(extractor.extract("video", ContentHints(isAgeRestricted = true)))
             assertNotNull(extractor.extract("video", ContentHints(playbackClientOverrideId = "VISIONOS_0_1")))
-            assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
+            assertNotNull(extractor.extract("video", ContentHints(isAgeRestricted = true)))
 
             assertEquals(listOf(false, true), modes)
             client.close()
@@ -1306,9 +1308,9 @@ class InnerTubeExtractorTest {
             val extractor = makeExtractor(client, innerTube, parser)
 
             assertFailsWith<CancellationException> {
-                extractor.extract("video", ContentHints(isExplicit = true))
+                extractor.extract("video", ContentHints(isAgeRestricted = true))
             }
-            assertNotNull(extractor.extract("video", ContentHints(isExplicit = true)))
+            assertNotNull(extractor.extract("video", ContentHints(isAgeRestricted = true)))
             assertEquals(2, calls)
             client.close()
         }
@@ -1547,7 +1549,7 @@ class InnerTubeExtractorTest {
                     tokenProvider = tokenProvider,
                 )
 
-            assertNotNull(withTimeout(5_000) { extractor.extract("video", ContentHints(isExplicit = true)) })
+            assertNotNull(withTimeout(5_000) { extractor.extract("video", ContentHints(isAgeRestricted = true)) })
             assertEquals(1, tokenCalls)
             client.close()
         }
@@ -1765,6 +1767,15 @@ class InnerTubeExtractorTest {
 
     private object WebRemixFallback : com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy {
         override fun resolveClients(hints: ContentHints) = listOf(YouTubeClient.WEB_REMIX)
+
+        // Like the catalog, keep the token-minting client out of the config-free fast path.
+        override fun selectClients(request: com.metrolist.innertubex.extraction.strategy.ClientSelectionRequest) =
+            if (request.fastPathOnly) {
+                com.metrolist.innertubex.extraction.strategy
+                    .ClientSelectionResult(emptyList())
+            } else {
+                super.selectClients(request)
+            }
     }
 
     private object IosFallback : com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy {
