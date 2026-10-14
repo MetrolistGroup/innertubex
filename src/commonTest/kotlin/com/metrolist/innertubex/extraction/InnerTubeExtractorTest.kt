@@ -1242,8 +1242,10 @@ class InnerTubeExtractorTest {
                     tokenProvider,
                 )
             try {
+                // coroutineScope only returns once the never-ending prefetch is cancelled; the prefetch may be
+                // cancelled before it is dispatched when the direct path completes without suspending.
                 assertNotNull(withTimeout(1_000) { extractor.extract("video", ContentHints(isExplicit = true)) })
-                assertEquals(1, tokenCalls)
+                assertTrue(tokenCalls <= 1)
             } finally {
                 client.close()
             }
