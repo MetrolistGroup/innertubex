@@ -76,6 +76,58 @@ class SabrCoreTest {
     }
 
     @Test
+    fun videoBootstrapListsOneVariantPerHeightAndRetargetsVideoOnly() {
+        fun video(
+            itag: Int,
+            height: Int,
+            bitrate: Int,
+            lastModified: String? = "200",
+        ) = PlayerResponse.StreamingData.Format(
+            itag = itag,
+            mimeType = "video/mp4",
+            bitrate = bitrate,
+            width = height * 16 / 9,
+            height = height,
+            lastModified = lastModified,
+        )
+        val selected = video(136, 720, 1_000_000)
+        val base = bootstrapPlayerResponse()
+        val streaming = checkNotNull(base.streamingData)
+        val response =
+            base.copy(
+                streamingData =
+                    streaming.copy(
+                        adaptiveFormats =
+                            streaming.adaptiveFormats +
+                                listOf(
+                                    selected,
+                                    video(247, 720, 1_500_000),
+                                    video(137, 1080, 2_500_000).copy(averageBitrate = 1_800_000),
+                                    video(135, 480, 500_000, null),
+                                ),
+                    ),
+            )
+
+        val bootstrap =
+            response.toSabrBootstrap(
+                clientId = 3,
+                clientVersion = "1",
+                audioFormat = bootstrapAudioFormat(),
+                videoFormat = selected,
+            )
+
+        assertEquals(listOf(144 to 160, 720 to 136, 1080 to 137), bootstrap.videoVariants.map { it.height to it.format.itag })
+        val retargeted = bootstrap.withVideoVariant(bootstrap.videoVariants.last())
+        assertEquals(137, retargeted.selectedVideoFormat?.itag)
+        assertEquals(1080, retargeted.selectedVideoHeight)
+        assertEquals(1_800_000, retargeted.selectedVideoBitrate)
+        assertEquals(bootstrap.audioFormat, retargeted.audioFormat)
+        assertTrue(bootstrap.videoPlaybackUstreamerConfig.contentEquals(retargeted.videoPlaybackUstreamerConfig))
+        assertFailsWith<IllegalArgumentException> { bootstrap.withVideoVariant(bootstrap.videoVariants.last().copy(height = 2160)) }
+        assertTrue(base.toSabrBootstrap(clientId = 3, clientVersion = "1", audioFormat = bootstrapAudioFormat()).videoVariants.isEmpty())
+    }
+
+    @Test
     fun sabrUrlRejectsUnexpectedPathsAndUserInfo() {
         assertFailsWith<SabrProtocolException> {
             requireAllowedSabrUrl("https://example.googlevideo.com/not-videoplayback")

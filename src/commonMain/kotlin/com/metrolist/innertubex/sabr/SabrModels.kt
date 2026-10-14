@@ -35,7 +35,22 @@ data class SabrBootstrap(
     val poToken: ByteArray? = null,
     val requestUserAgent: String? = null,
     val requestOrigin: String? = null,
+    /** Video renditions this session can also stream, one per height, lowest first. */
+    val videoVariants: List<SabrVideoVariant> = emptyList(),
 ) {
+    /** Returns this session retargeted at [variant]; audio and session state are unchanged. */
+    fun withVideoVariant(variant: SabrVideoVariant): SabrBootstrap {
+        require(variant in videoVariants) { "Video variant is not part of this SABR session" }
+        return copy(
+            selectedVideoFormat = variant.format,
+            selectedVideoWidth = variant.width,
+            selectedVideoHeight = variant.height,
+            selectedVideoContentLengthBytes = variant.contentLengthBytes,
+            selectedVideoMimeType = variant.mimeType,
+            selectedVideoBitrate = variant.bitrate,
+        )
+    }
+
     override fun equals(other: Any?): Boolean =
         other is SabrBootstrap &&
             videoId == other.videoId &&
@@ -59,6 +74,7 @@ data class SabrBootstrap(
             isDrc == other.isDrc &&
             requestUserAgent == other.requestUserAgent &&
             requestOrigin == other.requestOrigin &&
+            videoVariants == other.videoVariants &&
             if (poToken == null) other.poToken == null else other.poToken != null && poToken.contentEquals(other.poToken)
 
     override fun hashCode(): Int =
@@ -84,8 +100,19 @@ data class SabrBootstrap(
             poToken?.contentHashCode(),
             requestUserAgent,
             requestOrigin,
+            videoVariants,
         ).hashCode()
 }
+
+data class SabrVideoVariant(
+    val format: SabrFormatId,
+    val width: Int?,
+    val height: Int,
+    /** Average bitrate when YouTube reports one, otherwise the peak bitrate. */
+    val bitrate: Int,
+    val mimeType: String,
+    val contentLengthBytes: Long?,
+)
 
 internal enum class SabrMediaType {
     AUDIO,
@@ -180,6 +207,8 @@ data class SabrResponseDiagnostics(
     val maxTimeSinceLastRequestMs: Long,
     val backoffTimeMs: Long,
     val responseBytes: Long = 0,
+    /** Time spent waiting for response body bytes, for throughput estimates. */
+    val networkReadMs: Long = 0,
     val selectedMediaBytes: Long = 0,
     val cumulativeMediaBytes: Long = 0,
     val selectedSegmentCount: Int = 0,

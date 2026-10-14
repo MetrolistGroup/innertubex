@@ -3806,35 +3806,37 @@ public final class com/metrolist/innertubex/models/response/PlayerResponse$Strea
 public final class com/metrolist/innertubex/models/response/PlayerResponse$StreamingData$Format {
 	public static final field Companion Lcom/metrolist/innertubex/models/response/PlayerResponse$StreamingData$Format$Companion;
 	public fun <init> ()V
-	public fun <init> (ILjava/lang/String;Ljava/lang/String;ILjava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Long;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Double;Ljava/lang/String;Ljava/lang/String;Lcom/metrolist/innertubex/models/response/PlayerResponse$StreamingData$Format$AudioTrack;ZLjava/lang/String;Ljava/lang/String;)V
-	public synthetic fun <init> (ILjava/lang/String;Ljava/lang/String;ILjava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Long;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Double;Ljava/lang/String;Ljava/lang/String;Lcom/metrolist/innertubex/models/response/PlayerResponse$StreamingData$Format$AudioTrack;ZLjava/lang/String;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (ILjava/lang/String;Ljava/lang/String;ILjava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Long;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Double;Ljava/lang/String;Ljava/lang/String;Lcom/metrolist/innertubex/models/response/PlayerResponse$StreamingData$Format$AudioTrack;ZLjava/lang/String;Ljava/lang/String;)V
+	public synthetic fun <init> (ILjava/lang/String;Ljava/lang/String;ILjava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Long;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Double;Ljava/lang/String;Ljava/lang/String;Lcom/metrolist/innertubex/models/response/PlayerResponse$StreamingData$Format$AudioTrack;ZLjava/lang/String;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1 ()I
 	public final fun component10 ()Ljava/lang/String;
-	public final fun component11 ()Ljava/lang/Integer;
+	public final fun component11 ()Ljava/lang/String;
 	public final fun component12 ()Ljava/lang/Integer;
-	public final fun component13 ()Ljava/lang/Double;
-	public final fun component14 ()Ljava/lang/String;
+	public final fun component13 ()Ljava/lang/Integer;
+	public final fun component14 ()Ljava/lang/Double;
 	public final fun component15 ()Ljava/lang/String;
-	public final fun component16 ()Lcom/metrolist/innertubex/models/response/PlayerResponse$StreamingData$Format$AudioTrack;
-	public final fun component17 ()Z
-	public final fun component18 ()Ljava/lang/String;
+	public final fun component16 ()Ljava/lang/String;
+	public final fun component17 ()Lcom/metrolist/innertubex/models/response/PlayerResponse$StreamingData$Format$AudioTrack;
+	public final fun component18 ()Z
 	public final fun component19 ()Ljava/lang/String;
 	public final fun component2 ()Ljava/lang/String;
+	public final fun component20 ()Ljava/lang/String;
 	public final fun component3 ()Ljava/lang/String;
 	public final fun component4 ()I
 	public final fun component5 ()Ljava/lang/Integer;
 	public final fun component6 ()Ljava/lang/Integer;
-	public final fun component7 ()Ljava/lang/Long;
-	public final fun component8 ()Ljava/lang/String;
+	public final fun component7 ()Ljava/lang/Integer;
+	public final fun component8 ()Ljava/lang/Long;
 	public final fun component9 ()Ljava/lang/String;
-	public final fun copy (ILjava/lang/String;Ljava/lang/String;ILjava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Long;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Double;Ljava/lang/String;Ljava/lang/String;Lcom/metrolist/innertubex/models/response/PlayerResponse$StreamingData$Format$AudioTrack;ZLjava/lang/String;Ljava/lang/String;)Lcom/metrolist/innertubex/models/response/PlayerResponse$StreamingData$Format;
-	public static synthetic fun copy$default (Lcom/metrolist/innertubex/models/response/PlayerResponse$StreamingData$Format;ILjava/lang/String;Ljava/lang/String;ILjava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Long;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Double;Ljava/lang/String;Ljava/lang/String;Lcom/metrolist/innertubex/models/response/PlayerResponse$StreamingData$Format$AudioTrack;ZLjava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lcom/metrolist/innertubex/models/response/PlayerResponse$StreamingData$Format;
+	public final fun copy (ILjava/lang/String;Ljava/lang/String;ILjava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Long;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Double;Ljava/lang/String;Ljava/lang/String;Lcom/metrolist/innertubex/models/response/PlayerResponse$StreamingData$Format$AudioTrack;ZLjava/lang/String;Ljava/lang/String;)Lcom/metrolist/innertubex/models/response/PlayerResponse$StreamingData$Format;
+	public static synthetic fun copy$default (Lcom/metrolist/innertubex/models/response/PlayerResponse$StreamingData$Format;ILjava/lang/String;Ljava/lang/String;ILjava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Long;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Double;Ljava/lang/String;Ljava/lang/String;Lcom/metrolist/innertubex/models/response/PlayerResponse$StreamingData$Format$AudioTrack;ZLjava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lcom/metrolist/innertubex/models/response/PlayerResponse$StreamingData$Format;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getApproxDurationMs ()Ljava/lang/String;
 	public final fun getAudioChannels ()Ljava/lang/Integer;
 	public final fun getAudioQuality ()Ljava/lang/String;
 	public final fun getAudioSampleRate ()Ljava/lang/Integer;
 	public final fun getAudioTrack ()Lcom/metrolist/innertubex/models/response/PlayerResponse$StreamingData$Format$AudioTrack;
+	public final fun getAverageBitrate ()Ljava/lang/Integer;
 	public final fun getBitrate ()I
 	public final fun getCipher ()Ljava/lang/String;
 	public final fun getContentLength ()Ljava/lang/Long;
@@ -4179,8 +4181,8 @@ public final class com/metrolist/innertubex/sabr/SabrAudioStream {
 }
 
 public final class com/metrolist/innertubex/sabr/SabrBootstrap {
-	public fun <init> (Ljava/lang/String;Ljava/lang/String;[BILjava/lang/String;Lcom/metrolist/innertubex/sabr/SabrFormatId;Lcom/metrolist/innertubex/sabr/SabrFormatId;ILcom/metrolist/innertubex/sabr/SabrFormatId;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Long;Ljava/lang/String;Ljava/lang/Integer;JLjava/lang/Long;Ljava/lang/String;Ljava/lang/String;Z[BLjava/lang/String;Ljava/lang/String;)V
-	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;[BILjava/lang/String;Lcom/metrolist/innertubex/sabr/SabrFormatId;Lcom/metrolist/innertubex/sabr/SabrFormatId;ILcom/metrolist/innertubex/sabr/SabrFormatId;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Long;Ljava/lang/String;Ljava/lang/Integer;JLjava/lang/Long;Ljava/lang/String;Ljava/lang/String;Z[BLjava/lang/String;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;[BILjava/lang/String;Lcom/metrolist/innertubex/sabr/SabrFormatId;Lcom/metrolist/innertubex/sabr/SabrFormatId;ILcom/metrolist/innertubex/sabr/SabrFormatId;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Long;Ljava/lang/String;Ljava/lang/Integer;JLjava/lang/Long;Ljava/lang/String;Ljava/lang/String;Z[BLjava/lang/String;Ljava/lang/String;Ljava/util/List;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;[BILjava/lang/String;Lcom/metrolist/innertubex/sabr/SabrFormatId;Lcom/metrolist/innertubex/sabr/SabrFormatId;ILcom/metrolist/innertubex/sabr/SabrFormatId;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Long;Ljava/lang/String;Ljava/lang/Integer;JLjava/lang/Long;Ljava/lang/String;Ljava/lang/String;Z[BLjava/lang/String;Ljava/lang/String;Ljava/util/List;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1 ()Ljava/lang/String;
 	public final fun component10 ()Ljava/lang/Integer;
 	public final fun component11 ()Ljava/lang/Integer;
@@ -4196,6 +4198,7 @@ public final class com/metrolist/innertubex/sabr/SabrBootstrap {
 	public final fun component20 ()[B
 	public final fun component21 ()Ljava/lang/String;
 	public final fun component22 ()Ljava/lang/String;
+	public final fun component23 ()Ljava/util/List;
 	public final fun component3 ()[B
 	public final fun component4 ()I
 	public final fun component5 ()Ljava/lang/String;
@@ -4203,8 +4206,8 @@ public final class com/metrolist/innertubex/sabr/SabrBootstrap {
 	public final fun component7 ()Lcom/metrolist/innertubex/sabr/SabrFormatId;
 	public final fun component8 ()I
 	public final fun component9 ()Lcom/metrolist/innertubex/sabr/SabrFormatId;
-	public final fun copy (Ljava/lang/String;Ljava/lang/String;[BILjava/lang/String;Lcom/metrolist/innertubex/sabr/SabrFormatId;Lcom/metrolist/innertubex/sabr/SabrFormatId;ILcom/metrolist/innertubex/sabr/SabrFormatId;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Long;Ljava/lang/String;Ljava/lang/Integer;JLjava/lang/Long;Ljava/lang/String;Ljava/lang/String;Z[BLjava/lang/String;Ljava/lang/String;)Lcom/metrolist/innertubex/sabr/SabrBootstrap;
-	public static synthetic fun copy$default (Lcom/metrolist/innertubex/sabr/SabrBootstrap;Ljava/lang/String;Ljava/lang/String;[BILjava/lang/String;Lcom/metrolist/innertubex/sabr/SabrFormatId;Lcom/metrolist/innertubex/sabr/SabrFormatId;ILcom/metrolist/innertubex/sabr/SabrFormatId;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Long;Ljava/lang/String;Ljava/lang/Integer;JLjava/lang/Long;Ljava/lang/String;Ljava/lang/String;Z[BLjava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lcom/metrolist/innertubex/sabr/SabrBootstrap;
+	public final fun copy (Ljava/lang/String;Ljava/lang/String;[BILjava/lang/String;Lcom/metrolist/innertubex/sabr/SabrFormatId;Lcom/metrolist/innertubex/sabr/SabrFormatId;ILcom/metrolist/innertubex/sabr/SabrFormatId;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Long;Ljava/lang/String;Ljava/lang/Integer;JLjava/lang/Long;Ljava/lang/String;Ljava/lang/String;Z[BLjava/lang/String;Ljava/lang/String;Ljava/util/List;)Lcom/metrolist/innertubex/sabr/SabrBootstrap;
+	public static synthetic fun copy$default (Lcom/metrolist/innertubex/sabr/SabrBootstrap;Ljava/lang/String;Ljava/lang/String;[BILjava/lang/String;Lcom/metrolist/innertubex/sabr/SabrFormatId;Lcom/metrolist/innertubex/sabr/SabrFormatId;ILcom/metrolist/innertubex/sabr/SabrFormatId;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Long;Ljava/lang/String;Ljava/lang/Integer;JLjava/lang/Long;Ljava/lang/String;Ljava/lang/String;Z[BLjava/lang/String;Ljava/lang/String;Ljava/util/List;ILjava/lang/Object;)Lcom/metrolist/innertubex/sabr/SabrBootstrap;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getAudioFormat ()Lcom/metrolist/innertubex/sabr/SabrFormatId;
 	public final fun getAudioTrackId ()Ljava/lang/String;
@@ -4227,9 +4230,11 @@ public final class com/metrolist/innertubex/sabr/SabrBootstrap {
 	public final fun getServerAbrStreamingUrl ()Ljava/lang/String;
 	public final fun getVideoId ()Ljava/lang/String;
 	public final fun getVideoPlaybackUstreamerConfig ()[B
+	public final fun getVideoVariants ()Ljava/util/List;
 	public fun hashCode ()I
 	public final fun isDrc ()Z
 	public fun toString ()Ljava/lang/String;
+	public final fun withVideoVariant (Lcom/metrolist/innertubex/sabr/SabrVideoVariant;)Lcom/metrolist/innertubex/sabr/SabrBootstrap;
 }
 
 public final class com/metrolist/innertubex/sabr/SabrBootstrapFactoryKt {
@@ -4524,8 +4529,8 @@ public final class com/metrolist/innertubex/sabr/SabrRecoveryAction : java/lang/
 }
 
 public final class com/metrolist/innertubex/sabr/SabrResponseDiagnostics {
-	public fun <init> (IJLjava/lang/Long;Ljava/util/List;Ljava/util/List;Ljava/util/List;Ljava/util/List;ZILjava/util/Set;Ljava/util/Set;JJJJJJJIIIILjava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V
-	public synthetic fun <init> (IJLjava/lang/Long;Ljava/util/List;Ljava/util/List;Ljava/util/List;Ljava/util/List;ZILjava/util/Set;Ljava/util/Set;JJJJJJJIIIILjava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (IJLjava/lang/Long;Ljava/util/List;Ljava/util/List;Ljava/util/List;Ljava/util/List;ZILjava/util/Set;Ljava/util/Set;JJJJJJJJIIIILjava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V
+	public synthetic fun <init> (IJLjava/lang/Long;Ljava/util/List;Ljava/util/List;Ljava/util/List;Ljava/util/List;ZILjava/util/Set;Ljava/util/Set;JJJJJJJJIIIILjava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1 ()I
 	public final fun component10 ()Ljava/util/Set;
 	public final fun component11 ()Ljava/util/Set;
@@ -4536,17 +4541,18 @@ public final class com/metrolist/innertubex/sabr/SabrResponseDiagnostics {
 	public final fun component16 ()J
 	public final fun component17 ()J
 	public final fun component18 ()J
-	public final fun component19 ()I
+	public final fun component19 ()J
 	public final fun component2 ()J
 	public final fun component20 ()I
 	public final fun component21 ()I
 	public final fun component22 ()I
-	public final fun component23 ()Ljava/lang/Integer;
+	public final fun component23 ()I
 	public final fun component24 ()Ljava/lang/Integer;
 	public final fun component25 ()Ljava/lang/Integer;
-	public final fun component26 ()Ljava/lang/String;
+	public final fun component26 ()Ljava/lang/Integer;
 	public final fun component27 ()Ljava/lang/String;
 	public final fun component28 ()Ljava/lang/String;
+	public final fun component29 ()Ljava/lang/String;
 	public final fun component3 ()Ljava/lang/Long;
 	public final fun component4 ()Ljava/util/List;
 	public final fun component5 ()Ljava/util/List;
@@ -4554,8 +4560,8 @@ public final class com/metrolist/innertubex/sabr/SabrResponseDiagnostics {
 	public final fun component7 ()Ljava/util/List;
 	public final fun component8 ()Z
 	public final fun component9 ()I
-	public final fun copy (IJLjava/lang/Long;Ljava/util/List;Ljava/util/List;Ljava/util/List;Ljava/util/List;ZILjava/util/Set;Ljava/util/Set;JJJJJJJIIIILjava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Lcom/metrolist/innertubex/sabr/SabrResponseDiagnostics;
-	public static synthetic fun copy$default (Lcom/metrolist/innertubex/sabr/SabrResponseDiagnostics;IJLjava/lang/Long;Ljava/util/List;Ljava/util/List;Ljava/util/List;Ljava/util/List;ZILjava/util/Set;Ljava/util/Set;JJJJJJJIIIILjava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lcom/metrolist/innertubex/sabr/SabrResponseDiagnostics;
+	public final fun copy (IJLjava/lang/Long;Ljava/util/List;Ljava/util/List;Ljava/util/List;Ljava/util/List;ZILjava/util/Set;Ljava/util/Set;JJJJJJJJIIIILjava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Lcom/metrolist/innertubex/sabr/SabrResponseDiagnostics;
+	public static synthetic fun copy$default (Lcom/metrolist/innertubex/sabr/SabrResponseDiagnostics;IJLjava/lang/Long;Ljava/util/List;Ljava/util/List;Ljava/util/List;Ljava/util/List;ZILjava/util/Set;Ljava/util/Set;JJJJJJJJIIIILjava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lcom/metrolist/innertubex/sabr/SabrResponseDiagnostics;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getActiveContextTypes ()Ljava/util/Set;
 	public final fun getBackoffTimeMs ()J
@@ -4570,6 +4576,7 @@ public final class com/metrolist/innertubex/sabr/SabrResponseDiagnostics {
 	public final fun getInitializationReceived ()Z
 	public final fun getMaxTimeSinceLastRequestMs ()J
 	public final fun getMinAudioReadaheadMs ()J
+	public final fun getNetworkReadMs ()J
 	public final fun getNoProgressRequestCount ()I
 	public final fun getObservedPlaybackPositionMs ()Ljava/lang/Long;
 	public final fun getPlaybackCookieSize ()I
@@ -4607,6 +4614,27 @@ public final class com/metrolist/innertubex/sabr/SabrVideoStream {
 	public synthetic fun <init> (Lio/ktor/client/HttpClient;Lcom/metrolist/innertubex/sabr/SabrBootstrap;ILkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function2;JLcom/metrolist/innertubex/InnerTubeLogger;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun bytes ()Lkotlinx/coroutines/flow/Flow;
 	public final fun chunks ()Lkotlinx/coroutines/flow/Flow;
+}
+
+public final class com/metrolist/innertubex/sabr/SabrVideoVariant {
+	public fun <init> (Lcom/metrolist/innertubex/sabr/SabrFormatId;Ljava/lang/Integer;IILjava/lang/String;Ljava/lang/Long;)V
+	public final fun component1 ()Lcom/metrolist/innertubex/sabr/SabrFormatId;
+	public final fun component2 ()Ljava/lang/Integer;
+	public final fun component3 ()I
+	public final fun component4 ()I
+	public final fun component5 ()Ljava/lang/String;
+	public final fun component6 ()Ljava/lang/Long;
+	public final fun copy (Lcom/metrolist/innertubex/sabr/SabrFormatId;Ljava/lang/Integer;IILjava/lang/String;Ljava/lang/Long;)Lcom/metrolist/innertubex/sabr/SabrVideoVariant;
+	public static synthetic fun copy$default (Lcom/metrolist/innertubex/sabr/SabrVideoVariant;Lcom/metrolist/innertubex/sabr/SabrFormatId;Ljava/lang/Integer;IILjava/lang/String;Ljava/lang/Long;ILjava/lang/Object;)Lcom/metrolist/innertubex/sabr/SabrVideoVariant;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getBitrate ()I
+	public final fun getContentLengthBytes ()Ljava/lang/Long;
+	public final fun getFormat ()Lcom/metrolist/innertubex/sabr/SabrFormatId;
+	public final fun getHeight ()I
+	public final fun getMimeType ()Ljava/lang/String;
+	public final fun getWidth ()Ljava/lang/Integer;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
 }
 
 public final class com/metrolist/innertubex/utils/Sha1Kt {

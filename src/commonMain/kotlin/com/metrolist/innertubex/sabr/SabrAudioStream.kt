@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.map
+import kotlin.time.TimeSource
 
 /** Fixed-format, audio-only SABR transport. */
 @ExperimentalSabrApi
@@ -275,6 +276,7 @@ private class SabrMediaStream(
                                 )
                             var responseMediaBytes = 0L
                             var responseBytes = 0L
+                            var networkReadMs = 0L
                             var responseInitializationReceived = false
                             var responseInitSegmentCount = 0
                             val selectedHeaderSequences = mutableListOf<Int>()
@@ -494,7 +496,10 @@ private class SabrMediaStream(
                             val readBuffer = ByteArray(64 * 1024)
                             try {
                                 while (true) {
+                                    // Only time spent waiting on the network counts; emitting can block on player readahead.
+                                    val readStart = TimeSource.Monotonic.markNow()
                                     val count = channel.readAvailable(readBuffer, 0, readBuffer.size)
+                                    networkReadMs += readStart.elapsedNow().inWholeMilliseconds
                                     if (count == -1) break
                                     if (count == 0) continue
                                     responseBytes += count
@@ -577,6 +582,7 @@ private class SabrMediaStream(
                                     maxTimeSinceLastRequestMs = maxTimeSinceLastRequestMs,
                                     backoffTimeMs = backoffTimeMs,
                                     responseBytes = responseBytes,
+                                    networkReadMs = networkReadMs,
                                     httpStatus = response.status.value,
                                     selectedMediaBytes = newSegmentsBytes,
                                     cumulativeMediaBytes = cumulativeMediaBytes,

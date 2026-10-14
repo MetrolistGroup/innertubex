@@ -35,6 +35,7 @@ data class PlayerResponse(
             val url: String? = null,
             val mimeType: String = "",
             val bitrate: Int = 0,
+            val averageBitrate: Int? = null,
             val width: Int? = null,
             val height: Int? = null,
             val contentLength: Long? = null,

@@ -1,5 +1,6 @@
 package com.metrolist.innertubex.sabr
 
+import com.metrolist.innertubex.extraction.selectBestVideoFormat
 import com.metrolist.innertubex.models.YouTubeClient
 import com.metrolist.innertubex.models.response.PlayerResponse
 import io.ktor.http.URLProtocol
@@ -70,6 +71,26 @@ fun PlayerResponse.toSabrBootstrap(
         "Selected SABR video format has no last-modified identity"
     }
     val videoId = requireNotNull(videoDetails?.videoId) { "Player response has no video ID" }
+    val videoVariants =
+        if (videoFormat == null) {
+            emptyList()
+        } else {
+            streaming.adaptiveFormats
+                .filter { !it.isAudio && (it.height ?: 0) > 0 && (it.lastModified?.toLongOrNull() ?: 0L) > 0L }
+                .groupBy { it.height }
+                .values
+                .mapNotNull { selectBestVideoFormat(it, requireUrl = false) }
+                .map {
+                    SabrVideoVariant(
+                        format = it.toSabrFormatId(),
+                        width = it.width,
+                        height = checkNotNull(it.height),
+                        bitrate = it.averageBitrate?.takeIf { average -> average > 0 } ?: it.bitrate,
+                        mimeType = it.mimeType.substringBefore(';').trim(),
+                        contentLengthBytes = it.contentLength,
+                    )
+                }.sortedBy { it.height }
+        }
 
     return SabrBootstrap(
         videoId = videoId,
@@ -102,6 +123,7 @@ fun PlayerResponse.toSabrBootstrap(
             },
         requestUserAgent = requestUserAgent,
         requestOrigin = requestOrigin,
+        videoVariants = videoVariants,
     )
 }
 
