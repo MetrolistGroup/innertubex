@@ -6,6 +6,13 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-14
+
+### Fixed
+
+- Republishes 0.9.0; its JitPack build failed to resolve the foojay settings plugin on the build
+  worker. JitPack now retries a failed build up to three times. No library code changes.
+
 ## [0.9.0] - 2026-10-14
 
 ### Changed
