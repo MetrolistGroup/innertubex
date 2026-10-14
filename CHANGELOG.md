@@ -6,6 +6,15 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-10-14
+
+### Added
+
+- `SabrBootstrap.videoVariants` lists one video rendition per height, and `withVideoVariant`
+  retargets a session at one of them without touching audio or session state.
+- `SabrResponseDiagnostics.networkReadMs` reports time spent waiting on response bytes, for
+  throughput estimates. `PlayerResponse` formats now parse `averageBitrate`.
+
 ## [0.9.1] - 2026-10-14
 
 ### Fixed
