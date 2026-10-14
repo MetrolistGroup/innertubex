@@ -6,6 +6,17 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-14
+
+### Changed
+
+- Automatic client selection follows measured startup times from a device benchmark of every client:
+  - Explicit audio uses the config-free fast path and visionOS 0.1 (0.5s instead of 11-33s).
+    Age-gated and account-restricted tracks fail there in under a second, then fall back.
+  - Android Kids is selected for kids content ahead of Web Kids (0.6s instead of 4.7s).
+  - Signed-in video keeps visionOS SABR first unless the request is Premium (4.5s instead of 19s).
+  - visionOS SABR is allowed for explicit video.
+
 ## [0.8.6] - 2026-10-13
 
 ### Fixed
