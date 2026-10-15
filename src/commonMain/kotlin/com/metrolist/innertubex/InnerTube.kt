@@ -309,7 +309,7 @@ class InnerTube(
         expected: SessionSnapshot,
         current: SessionSnapshot,
     ): Boolean =
-        expected == current ||
+        expected.generation == current.generation ||
             (
                 expected.visitorData == null && current.visitorData != null &&
                     current.generation == expected.generation + 1 &&
