@@ -22,7 +22,10 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -31,6 +34,142 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class InnerTubeSessionTest {
+    @Test
+    fun invalidationCancelsOnlyRequestAndPreservesHostAndSibling() =
+        runBlocking {
+            for (close in listOf(false, true)) {
+                val started = CompletableDeferred<Unit>()
+                val engine =
+                    MockEngine {
+                        started.complete(Unit)
+                        CompletableDeferred<Unit>().await()
+                        respondOk()
+                    }
+                val innerTube = clientWithContentNegotiation(engine)
+                val host =
+                    launch {
+                        val sibling = launch { CompletableDeferred<Unit>().await() }
+                        try {
+                            assertFailsWith<CancellationException> { innerTube.likeVideo(YouTubeClient.WEB, "video") }
+                            assertTrue(isActive)
+                            assertTrue(sibling.isActive)
+                        } finally {
+                            sibling.cancelAndJoin()
+                        }
+                    }
+                started.await()
+                if (close) innerTube.close() else innerTube.cookie = "SAPISID=new"
+                withTimeout(2_000) { host.join() }
+                assertFalse(host.isCancelled)
+                innerTube.close()
+                innerTube.httpClient.close()
+            }
+        }
+
+    @Test
+    fun authenticatedReadsCannotRetryAfterLogout() =
+        runBlocking {
+            for (search in listOf(false, true)) {
+                val engine = MockEngine { respond("{}", HttpStatusCode.ServiceUnavailable) }
+                val client = HttpClient(engine) { install(ContentNegotiation) { json() } }
+                lateinit var innerTube: InnerTube
+                innerTube = InnerTube(client, retryDelay = { innerTube.cookie = null })
+                innerTube.cookie = "SAPISID=old"
+                assertFailsWith<CancellationException> {
+                    if (search) {
+                        innerTube.search(YouTubeClient.WEB, "query")
+                    } else {
+                        innerTube.browse(YouTubeClient.WEB, "library", setLogin = true)
+                    }
+                }
+                assertEquals(1, engine.requestHistory.size)
+                innerTube.close()
+                client.close()
+            }
+        }
+
+    @Test
+    fun accountSwitchCancelsEveryAccountRead() =
+        runBlocking {
+            val reads: List<suspend (InnerTube) -> Unit> =
+                listOf(
+                    { it.accountMenu(YouTubeClient.WEB) },
+                    { it.accountsList(YouTubeClient.WEB) },
+                    { it.player(YouTubeClient.WEB, "video") },
+                    { it.next(YouTubeClient.WEB, "video") },
+                    { it.getQueue(YouTubeClient.WEB, listOf("video"), null) },
+                    { it.getSearchSuggestions(YouTubeClient.WEB, "query", setLogin = true) },
+                )
+            for (read in reads) {
+                val started = CompletableDeferred<Unit>()
+                val engine =
+                    MockEngine {
+                        started.complete(Unit)
+                        CompletableDeferred<Unit>().await()
+                        respondOk()
+                    }
+                val innerTube =
+                    clientWithContentNegotiation(engine).also {
+                        it.cookie = "SAPISID=old"
+                        it.useLoginForBrowse = true
+                    }
+                val result = async { read(innerTube) }
+                started.await()
+                innerTube.cookie = "SAPISID=new"
+                withTimeout(2_000) { assertFailsWith<CancellationException> { result.await() } }
+                innerTube.close()
+                innerTube.httpClient.close()
+            }
+        }
+
+    @Test
+    fun initialVisitorPublicationPreservesConcurrentPlayerAndMutation() =
+        runBlocking {
+            val started = kotlinx.coroutines.channels.Channel<Unit>(2)
+            val release = CompletableDeferred<Unit>()
+            val engine =
+                MockEngine { request ->
+                    if (request.url.encodedPath == "/sw.js_data") {
+                        respond(serviceWorkerResponse("visitor"), HttpStatusCode.OK)
+                    } else {
+                        started.send(Unit)
+                        release.await()
+                        respondOk()
+                    }
+                }
+            val innerTube = clientWithContentNegotiation(engine)
+            val player = async { innerTube.player(YouTubeClient.WEB, "video") }
+            val mutation = async { innerTube.likeVideo(YouTubeClient.WEB, "video") }
+            repeat(2) { started.receive() }
+            assertEquals("visitor", innerTube.fetchFreshVisitorData())
+            release.complete(Unit)
+            assertEquals(HttpStatusCode.OK, player.await().status)
+            assertEquals(HttpStatusCode.OK, mutation.await().status)
+            innerTube.close()
+            innerTube.httpClient.close()
+        }
+
+    @Test
+    fun visitorReplacementAndLocaleChangesStillInvalidateRequests() =
+        runBlocking {
+            for (changeLocale in listOf(false, true)) {
+                val started = CompletableDeferred<Unit>()
+                val engine =
+                    MockEngine {
+                        started.complete(Unit)
+                        CompletableDeferred<Unit>().await()
+                        respondOk()
+                    }
+                val innerTube = clientWithContentNegotiation(engine).also { it.visitorData = "existing" }
+                val result = async { innerTube.likeVideo(YouTubeClient.WEB, "video") }
+                started.await()
+                if (changeLocale) innerTube.locale = YouTubeLocale("PL", "pl") else innerTube.visitorData = "replacement"
+                assertFailsWith<CancellationException> { result.await() }
+                innerTube.close()
+                innerTube.httpClient.close()
+            }
+        }
+
     @Test
     fun cookieHeaderPrefixIsNormalizedBeforeSending() =
         runBlocking {

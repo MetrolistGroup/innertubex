@@ -60,8 +60,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -286,18 +288,29 @@ class InnerTube(
             if (published.generation >= versioned.generation) break
             if (mutableSessionFlow.compareAndSet(published, versioned)) break
         }
-        cancelStaleSessionRequests(versioned.generation)
+        cancelStaleSessionRequests(versioned)
         return true
     }
 
-    private fun cancelStaleSessionRequests(currentGeneration: Long) {
+    private fun sessionIsCompatible(
+        expected: SessionSnapshot,
+        current: SessionSnapshot,
+    ): Boolean =
+        expected == current ||
+            (
+                expected.visitorData == null && current.visitorData != null &&
+                    current.generation == expected.generation + 1 &&
+                    expected.copy(visitorData = current.visitorData, generation = current.generation) == current
+            )
+
+    private fun cancelStaleSessionRequests(current: SessionSnapshot) {
         while (true) {
             val requests = sessionBoundRequests.load()
-            val active = requests.filter { it.session.generation >= currentGeneration }
+            val active = requests.filter { it.session.generation > current.generation || sessionIsCompatible(it.session, current) }
             if (!sessionBoundRequests.compareAndSet(requests, active)) continue
             requests
                 .asSequence()
-                .filter { it.session.generation < currentGeneration }
+                .filter { it !in active }
                 .forEach { it.job.cancel(CancellationException("InnerTube session changed")) }
             return
         }
@@ -306,24 +319,28 @@ class InnerTube(
     private suspend fun <T> withSessionBoundRequest(
         requestSession: SessionSnapshot,
         block: suspend () -> T,
-    ): T {
-        val job = currentCoroutineContext()[Job] ?: return block()
-        val request = SessionBoundRequest(requestSession, job)
-        while (true) {
-            if (session.load().generation != requestSession.generation) throw CancellationException("InnerTube session changed")
-            val requests = sessionBoundRequests.load()
-            if (sessionBoundRequests.compareAndSet(requests, requests + request)) break
-        }
-        try {
-            if (session.load().generation != requestSession.generation) throw CancellationException("InnerTube session changed")
-            return block()
-        } finally {
+    ): T =
+        coroutineScope {
+            val job = currentCoroutineContext()[Job]!!
+            val request = SessionBoundRequest(requestSession, job)
             while (true) {
+                if (!sessionIsCompatible(requestSession, session.load())) throw CancellationException("InnerTube session changed")
                 val requests = sessionBoundRequests.load()
-                if (request !in requests || sessionBoundRequests.compareAndSet(requests, requests - request)) break
+                if (sessionBoundRequests.compareAndSet(requests, requests + request)) break
+            }
+            try {
+                if (!sessionIsCompatible(requestSession, session.load())) throw CancellationException("InnerTube session changed")
+                val result = block()
+                currentCoroutineContext().ensureActive()
+                if (!sessionIsCompatible(requestSession, session.load())) throw CancellationException("InnerTube session changed")
+                result
+            } finally {
+                while (true) {
+                    val requests = sessionBoundRequests.load()
+                    if (request !in requests || sessionBoundRequests.compareAndSet(requests, requests - request)) break
+                }
             }
         }
-    }
 
     fun replaceSession(
         cookie: String?,
@@ -454,6 +471,7 @@ class InnerTube(
 
     private suspend fun executeRequest(
         operation: String = "request",
+        requestSession: SessionSnapshot? = null,
         retryTransientFailures: Boolean = true,
         requireSuccess: Boolean = true,
         maxAttempts: Int = 3,
@@ -461,10 +479,16 @@ class InnerTube(
         factor: Double = 2.0,
         block: suspend () -> HttpResponse,
     ): HttpResponse {
+        if (requestSession != null) {
+            return withSessionBoundRequest(requestSession) {
+                executeRequest(operation, null, retryTransientFailures, requireSuccess, maxAttempts, initialDelay, factor, block)
+            }
+        }
         var currentDelay = initialDelay
         var attempt = 0
         while (true) {
             try {
+                currentCoroutineContext().ensureActive()
                 val response = block()
                 // A 429 is only retried when the server says how long to wait, and not for long.
                 val retryAfterMs =
@@ -538,7 +562,10 @@ class InnerTube(
         val requestSession = sessionSnapshot()
         val setLoginForRequest = setLogin || requestSession.useLoginForBrowse
         val visitorDataForRequest = requestSession.visitorData.takeUnless { requestSession.regionOverrideActive }
-        return executeRequest(operation = "browse") {
+        return executeRequest(
+            operation = "browse",
+            requestSession = requestSession.takeIf { setLoginForRequest && client.loginSupported },
+        ) {
             httpClient.post("browse") {
                 ytClient(
                     client,
@@ -573,7 +600,7 @@ class InnerTube(
         requestVisitorData: String? = null,
         encryptedHostFlags: String? = null,
     ): HttpResponse =
-        playerWithSession(
+        playerWithSessionBound(
             client,
             videoId,
             playlistId,
@@ -828,7 +855,7 @@ class InnerTube(
     ): HttpResponse {
         val requestSession = sessionSnapshot()
         val setLoginForRequest = requestSession.useLoginForBrowse
-        return executeRequest(operation = "next") {
+        return executeRequest(operation = "next", requestSession = requestSession.takeIf { setLoginForRequest && client.loginSupported }) {
             httpClient.post("next") {
                 ytClient(
                     client,
@@ -1030,7 +1057,10 @@ class InnerTube(
         val requestSession = sessionSnapshot()
         val setLoginForRequest = setLogin ?: true
         val visitorDataForRequest = requestSession.visitorData.takeUnless { requestSession.regionOverrideActive }
-        return executeRequest(operation = "search") {
+        return executeRequest(
+            operation = "search",
+            requestSession = requestSession.takeIf { setLoginForRequest && client.loginSupported },
+        ) {
             httpClient.post("search") {
                 ytClient(
                     client,
@@ -1065,7 +1095,10 @@ class InnerTube(
         setLogin: Boolean = false,
     ): HttpResponse {
         val requestSession = sessionSnapshot()
-        return executeRequest(operation = "getSearchSuggestions") {
+        return executeRequest(
+            operation = "getSearchSuggestions",
+            requestSession = requestSession.takeIf { setLogin && client.loginSupported },
+        ) {
             httpClient.post("music/get_search_suggestions") {
                 ytClient(client, requestSession, setLogin = setLogin, includeAccountCookies = setLogin)
                 setBody(
@@ -1108,7 +1141,10 @@ class InnerTube(
     ): HttpResponse {
         val requestSession = sessionSnapshot()
         val setLoginForRequest = requestSession.useLoginForBrowse
-        return executeRequest(operation = "getQueue") {
+        return executeRequest(
+            operation = "getQueue",
+            requestSession = requestSession.takeIf { setLoginForRequest && client.loginSupported },
+        ) {
             httpClient.post("music/get_queue") {
                 ytClient(
                     client,
@@ -1160,7 +1196,7 @@ class InnerTube(
 
     suspend fun accountMenu(client: YouTubeClient): HttpResponse {
         val requestSession = sessionSnapshot()
-        return executeRequest(operation = "accountMenu", requireSuccess = false) {
+        return executeRequest(operation = "accountMenu", requestSession = requestSession, requireSuccess = false) {
             httpClient.post("account/account_menu") {
                 ytClient(client, requestSession, setLogin = true)
                 setBody(
@@ -1174,7 +1210,7 @@ class InnerTube(
 
     suspend fun accountsList(client: YouTubeClient): HttpResponse {
         val requestSession = sessionSnapshot()
-        return executeRequest(operation = "accountsList", requireSuccess = false) {
+        return executeRequest(operation = "accountsList", requestSession = requestSession, requireSuccess = false) {
             httpClient.post("account/accounts_list") {
                 ytClient(client, requestSession, setLogin = true)
                 setBody(
