@@ -6,6 +6,52 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-15
+
+### Fixed
+
+- EJS signature and n-challenge solving works on iOS. Native QuickJS now runs on a dedicated
+  16 MiB thread; the 512 KiB Kotlin/Native worker stack overflowed on the solver bundle.
+- Credentials and signed URLs:
+  - Playback-statistics redirects no longer forward the account cookie.
+  - Media-length probes don't follow redirects.
+  - Player and remote-config URLs must use port 443 without userinfo.
+  - Signed URLs and PO-token bytes are redacted from model `toString` output.
+- Account reads and extraction stay bound to the session they started with:
+  - Old-account media URLs are never paired with new-account cookies.
+  - A replaced visitor cancels the extraction.
+- Session invalidation cancels only the affected request, not the host coroutine.
+- Playlist thumbnail uploads use the `playlist_image_upload` endpoint.
+- `fetchFreshVisitorData` can't hang after `close()`, and its fallbacks are bounded.
+- Permanent HTTP errors aren't retried when the host client uses `expectSuccess = true`.
+- Cipher:
+  - One malformed cipher parameter no longer drops every format.
+  - A parser initialization failure falls back to EJS.
+  - The fallback parser matches functions by call site.
+- Extraction:
+  - Failed signed-out watch pages still try the embedded-player fallback.
+  - The direct-audio fast path respects track identity, so dubbed tracks aren't mistaken for the original.
+  - The audio selector never returns a video format.
+  - HLS streams keep their expiry.
+- SABR:
+  - Each flow collection gets its own request state.
+  - Streams missing their opening segment are rejected.
+  - Header, object and control-field sizes are bounded.
+  - Fractional tick overflow is detected.
+- The URL parser accepts `m.youtube.com`.
+
+### Changed
+
+- Remote responses are capped while streaming instead of after Ktor buffers them.
+- EJS keeps preprocessed players across idle release and partial remote-config solves.
+  Replacing a player invalidates its compiled functions and cached results.
+- Players are passed to QuickJS through a binding instead of an escaped string literal.
+- Player-config fetches are serialized per key, and PO-token warmup runs alongside them.
+- Unavailable PO tokens are remembered per identity.
+- Disabled transports are dropped before any player request.
+- Player JSON is decoded off the caller's dispatcher.
+- SABR reuses request writers and decodes control parts without copying.
+
 ## [0.9.2] - 2026-10-14
 
 ### Added
