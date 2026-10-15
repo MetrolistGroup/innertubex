@@ -3,9 +3,8 @@ package com.metrolist.innertubex.cipher
 /**
  * Parser for extracting cipher functions from YouTube player JavaScript.
  *
- * Heuristic extraction similar in spirit to yt-dlp: find split/join transform
- * functions and the object helpers they use. N-transform and signature decipher
- * often share a similar shape; we disambiguate by order (second match) and body checks.
+ * Extract split/join transforms only when a direct parameter setter identifies their role.
+ * Unknown or ambiguous call-site shapes are left to the other solvers.
  */
 internal object PlayerScriptParser {
     data class ParseResult(
@@ -21,49 +20,20 @@ internal object PlayerScriptParser {
     private val functionPattern =
         Regex("""(?:var\s+)?([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*function\s*\(\s*a\s*\)\s*\{""")
 
-    /**
-     * N-parameter transform: first split/join-style function in the player is often (not always) the n-function.
-     */
-    fun extractNFunction(playerCode: String): Pair<String?, String?> = extractSplitJoinByIndex(playerCode, index = 0)
+    private val splitPattern = Regex("""a\s*=\s*a\.split\s*\(\s*""\s*\)""")
+    private val joinPattern = Regex("""return\s+a\.join\s*\(\s*""\s*\)""")
+    private val nCallPattern = Regex("""\.set\(\s*["']n["']\s*,\s*([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(""")
+    private val sigCallPattern =
+        Regex("""\.set\(\s*["'](?:signature|sig)["']\s*,\s*(?:encodeURIComponent\s*\(\s*)?([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(""")
 
-    /**
-     * Signature decipher: next split/join function after the n-transform that has distinct body.
-     */
-    fun extractSigFunction(
+    private fun selectFunction(
         playerCode: String,
-        nCode: String?,
-    ): Pair<String?, String?> {
-        val matches = splitJoinFunctions(playerCode)
-        for (i in 1 until matches.size) {
-            val functionName = matches[i].name
-            val func = extractFunctionByName(playerCode, functionName) ?: continue
-            if (func != nCode) return func to functionName
-        }
-        if (matches.isNotEmpty() && nCode == null) {
-            extractSplitJoinByIndex(playerCode, index = 1).let { if (it.first != null) return it }
-        }
-
-        val altPattern =
-            Regex("""(?s)function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(\s*a\s*\)\s*\{[^{}]*a\s*[=.][^{}]*reverse[^{}]*\}""")
-        altPattern.findAll(playerCode).forEach { m ->
-            val funcName = m.groupValues[1]
-            val func = extractFunctionByName(playerCode, funcName)
-            if (func != null && func != nCode && (func.contains("reverse") || func.contains("splice") || func.contains("slice"))) {
-                return func to funcName
-            }
-        }
-        return null to null
-    }
-
-    private fun extractSplitJoinByIndex(
-        playerCode: String,
-        index: Int,
-    ): Pair<String?, String?> {
-        val matches = splitJoinFunctions(playerCode)
-        if (matches.size <= index) return null to null
-        val functionName = matches[index].name
-        val func = extractFunctionByName(playerCode, functionName) ?: return null to null
-        return func to functionName
+        candidates: List<FunctionMatch>,
+        callPattern: Regex,
+    ): FunctionMatch? {
+        val names = callPattern.findAll(playerCode).map { it.groupValues[1] }.toSet()
+        val name = names.singleOrNull() ?: return null
+        return candidates.singleOrNull { it.name == name }
     }
 
     fun extractHelperFunctions(playerCode: String): Map<String, String> {
@@ -89,38 +59,16 @@ internal object PlayerScriptParser {
     }
 
     fun parse(playerCode: String): ParseResult {
-        val (nCode, nInv) = extractNFunction(playerCode)
-        val (sigCode, sigInv) = extractSigFunction(playerCode, nCode)
+        val candidates = splitJoinFunctions(playerCode)
+        val n = selectFunction(playerCode, candidates, nCallPattern)
+        val sig = selectFunction(playerCode, candidates, sigCallPattern)
         return ParseResult(
-            nFunctionCode = nCode,
-            nInvoker = nInv,
-            sigFunctionCode = sigCode,
-            sigInvoker = sigInv,
-            helperFunctions = extractHelperFunctions(playerCode),
+            nFunctionCode = n?.code,
+            nInvoker = n?.name,
+            sigFunctionCode = sig?.code,
+            sigInvoker = sig?.name,
+            helperFunctions = if (n != null || sig != null) extractHelperFunctions(playerCode) else emptyMap(),
         )
-    }
-
-    private fun extractFunctionByName(
-        playerCode: String,
-        functionName: String,
-    ): String? {
-        val patterns =
-            listOf(
-                Regex("""(?s)var\s+${Regex.escape(functionName)}\s*=\s*function\s*\([^)]*\)\s*\{"""),
-                Regex("""(?s)function\s+${Regex.escape(functionName)}\s*\([^)]*\)\s*\{"""),
-                Regex("""(?s)${Regex.escape(functionName)}\s*=\s*function\s*\([^)]*\)\s*\{"""),
-            )
-        for (pattern in patterns) {
-            val match = pattern.find(playerCode)
-            if (match != null) {
-                val startIdx = match.range.first
-                val endIdx = findFunctionEnd(playerCode, startIdx)
-                if (endIdx > startIdx) {
-                    return playerCode.substring(startIdx, endIdx)
-                }
-            }
-        }
-        return null
     }
 
     private fun findFunctionEnd(
@@ -269,10 +217,10 @@ internal object PlayerScriptParser {
                 val end = findFunctionEnd(code, match.range.first)
                 if (end <= match.range.first) return@mapNotNull null
                 val body = code.substring(match.range.first, end)
-                if (Regex("""a\s*=\s*a\.split\s*\(\s*""\s*\)""").containsMatchIn(body) &&
-                    Regex("""return\s+a\.join\s*\(\s*""\s*\)""").containsMatchIn(body)
+                if (splitPattern.containsMatchIn(body) &&
+                    joinPattern.containsMatchIn(body)
                 ) {
-                    FunctionMatch(match.groupValues[1])
+                    FunctionMatch(match.groupValues[1], body)
                 } else {
                     null
                 }
@@ -280,6 +228,7 @@ internal object PlayerScriptParser {
 
     private data class FunctionMatch(
         val name: String,
+        val code: String,
     )
 
     private val REGEX_PREFIX_KEYWORDS =

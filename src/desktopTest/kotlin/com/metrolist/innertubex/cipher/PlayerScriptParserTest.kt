@@ -7,6 +7,32 @@ import kotlin.test.assertNull
 
 class PlayerScriptParserTest {
     @Test
+    fun resolvesRolesFromCallSitesRegardlessOfDeclarationOrderOrUnrelatedCandidates() {
+        val n = "var n=function(a){a=a.split(\"\");a=a.slice(1);return a.join(\"\")};"
+        val sig = "var sig=function(a){a=a.split(\"\");a.reverse();return a.join(\"\")};"
+        val unrelated = "var other=function(a){a=a.split(\"\");a.pop();return a.join(\"\")};"
+        for (declarations in listOf(sig + n, n + sig, unrelated + sig + n)) {
+            val result =
+                PlayerScriptParser.parse(
+                    declarations + "params.set('n', n(value));params.set('signature', encodeURIComponent(sig(value)));",
+                )
+            assertEquals("n", result.nInvoker)
+            assertEquals("sig", result.sigInvoker)
+        }
+    }
+
+    @Test
+    fun orderOnlyAndConflictingCallSitesAreRejected() {
+        val code =
+            "var sig=function(a){a=a.split(\"\");a.reverse();return a.join(\"\")};" +
+                "var n=function(a){a=a.split(\"\");a.pop();return a.join(\"\")};"
+        val ambiguous = PlayerScriptParser.parse(code)
+        assertNull(ambiguous.nInvoker)
+        assertNull(ambiguous.sigInvoker)
+        assertNull(PlayerScriptParser.parse(code + "params.set('n', sig(value));params.set('n', n(value));").nInvoker)
+    }
+
+    @Test
     fun extractsFunctionsAcrossLiteralsCommentsRegexAndTemplateExpressions() {
         val code =
             """
@@ -18,6 +44,8 @@ class PlayerScriptParserTest {
               a.reverse();
               return a.join("")
             }
+            params.set("n", n(value));
+            params.set("signature", sig(value));
             """.trimIndent()
 
         val result = PlayerScriptParser.parse(code)
@@ -31,8 +59,8 @@ class PlayerScriptParserTest {
     @Test
     fun escapedQuoteParityDoesNotEndFunctionEarly() {
         val code = "var f = function(a){a=a.split(\"\"); var s = 'a\\\\'; var o = {x: 1}; return a.join(\"\")}"
-        val result = PlayerScriptParser.extractNFunction(code)
-        assertContains(result.first!!, "var o = {x: 1}")
+        val result = PlayerScriptParser.parse(code + "params.set(\"n\", f(value));")
+        assertContains(result.nFunctionCode!!, "var o = {x: 1}")
     }
 
     @Test
@@ -41,8 +69,8 @@ class PlayerScriptParserTest {
             "var f=function(a){a=a.split(\"\");var r=function(){return /}/.test(\"}\")};" +
                 "if(a.length) /* } */ /}/.test(\"}\");return a.join(\"\")}"
 
-        assertContains(PlayerScriptParser.extractNFunction(code).first!!, "return /}/")
-        assertContains(PlayerScriptParser.extractNFunction(code).first!!, "if(a.length) /* } */ /}/")
-        assertNull(PlayerScriptParser.extractNFunction("var f=function(a){a=a.split(\"\");return a.join(\"\")").first)
+        assertContains(PlayerScriptParser.parse(code + "params.set(\"n\", f(value));").nFunctionCode!!, "return /}/")
+        assertContains(PlayerScriptParser.parse(code + "params.set(\"n\", f(value));").nFunctionCode!!, "if(a.length) /* } */ /}/")
+        assertNull(PlayerScriptParser.parse("var f=function(a){a=a.split(\"\");return a.join(\"\")").nFunctionCode)
     }
 }
