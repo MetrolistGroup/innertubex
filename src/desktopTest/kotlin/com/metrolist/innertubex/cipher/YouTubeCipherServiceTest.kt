@@ -11,15 +11,19 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -96,6 +100,48 @@ class YouTubeCipherServiceTest {
             } finally {
                 service.dispose()
                 http.close()
+            }
+        }
+
+    @Test
+    fun cancelledDownloadReleasesWaitersAndReservationUnderLockContention() =
+        runBlocking {
+            val started = CompletableDeferred<Unit>()
+            var attempts = 0
+            val client =
+                HttpClient(
+                    MockEngine {
+                        if (++attempts == 1) {
+                            started.complete(Unit)
+                            awaitCancellation()
+                        }
+                        respond("retry code")
+                    },
+                )
+            val service = YouTubeCipherService(client)
+            val owner = async { service.playerCode(PLAYER_URL) }
+            try {
+                started.await()
+                val waiter = async(start = CoroutineStart.UNDISPATCHED) { service.playerCode(PLAYER_URL) }
+                val mutex = privateField<Mutex>(service, "cacheMutex")
+                mutex.lock()
+                try {
+                    owner.cancel()
+                    withTimeout(5_000) {
+                        assertFailsWith<CancellationException> { waiter.await() }
+                    }
+                } finally {
+                    mutex.unlock()
+                }
+                withTimeout(5_000) {
+                    owner.join()
+                    assertEquals("retry code", service.playerCode(PLAYER_URL))
+                }
+                assertEquals(2, attempts)
+            } finally {
+                owner.cancelAndJoin()
+                service.dispose()
+                client.close()
             }
         }
 

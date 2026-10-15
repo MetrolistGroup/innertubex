@@ -13,6 +13,7 @@ import io.ktor.http.Url
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -789,21 +790,15 @@ class YouTubeCipherService(
             }
             activeDownload.complete(playerCode)
             return PlayerCodeResult(playerCode, "downloaded")
-        } catch (e: CancellationException) {
-            cacheMutex.withLock {
-                if (playerCodeDownloads[playerUrl] === activeDownload) {
-                    playerCodeDownloads.remove(playerUrl)
-                }
-            }
-            activeDownload.completeExceptionally(e)
-            throw e
         } catch (e: Exception) {
-            cacheMutex.withLock {
-                if (playerCodeDownloads[playerUrl] === activeDownload) {
-                    playerCodeDownloads.remove(playerUrl)
+            withContext(NonCancellable) {
+                activeDownload.completeExceptionally(e)
+                cacheMutex.withLock {
+                    if (playerCodeDownloads[playerUrl] === activeDownload) {
+                        playerCodeDownloads.remove(playerUrl)
+                    }
                 }
             }
-            activeDownload.completeExceptionally(e)
             throw e
         }
     }
