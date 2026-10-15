@@ -25,8 +25,12 @@ import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
@@ -42,6 +46,39 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
 class InnerTubeExtractorTest {
+    @Test
+    fun visitorPublicationDuringCipherKeepsCapturedUploadHeaders() =
+        runBlocking {
+            val client = jsonClient(DIRECT_RESPONSE.replace("?expire=", "?n=source&expire="))
+            val innerTube = InnerTube(client, retryDelay = {}).also { it.cookie = "SAPISID=original" }
+            val initial = innerTube.sessionSnapshot()
+            val cipher =
+                object : ExtractionCipherService {
+                    override suspend fun initialize() {}
+
+                    override suspend fun preloadPlayerCode(playerUrl: String) {}
+
+                    override suspend fun prewarmEjs() {}
+
+                    override suspend fun processFormats(
+                        playerUrl: String,
+                        formats: List<PlayerResponse.StreamingData.Format>,
+                    ): List<PlayerResponse.StreamingData.Format> {
+                        innerTube.visitorData = "published-visitor"
+                        return formats.map { it.copy(url = it.url?.replace("n=source", "n=solved")) }
+                    }
+                }
+            try {
+                val stream =
+                    makeExtractor(client, innerTube, CountingParser(), WebRemixFallback, cipher)
+                        .extract("video", ContentHints(isUploaded = true))
+                assertEquals(initial.cookie, checkNotNull(stream).headers["Cookie"])
+                assertEquals(initial.locale.acceptLanguageHeader(), stream.headers["Accept-Language"])
+            } finally {
+                client.close()
+            }
+        }
+
     @Test
     fun unusableUntokenizedProfileCanRetryWithToken() =
         runBlocking {
@@ -94,6 +131,95 @@ class InnerTubeExtractorTest {
         }
 
     @Test
+    fun accountOrLocaleChangeDuringCipherCancelsOrdinaryUploadExtraction() =
+        runBlocking {
+            for (changeCookie in listOf(true, false)) {
+                val client = jsonClient(DIRECT_RESPONSE.replace("?expire=", "?n=source&expire="))
+                val innerTube = InnerTube(client, retryDelay = {}).also { it.cookie = "SAPISID=original" }
+                val cipher =
+                    object : ExtractionCipherService {
+                        override suspend fun initialize() {}
+
+                        override suspend fun preloadPlayerCode(playerUrl: String) {}
+
+                        override suspend fun prewarmEjs() {}
+
+                        override suspend fun processFormats(
+                            playerUrl: String,
+                            formats: List<PlayerResponse.StreamingData.Format>,
+                        ): List<PlayerResponse.StreamingData.Format> {
+                            if (changeCookie) {
+                                innerTube.cookie = "SAPISID=replacement"
+                            } else {
+                                innerTube.locale = innerTube.locale.copy(hl = innerTube.locale.hl + "-x")
+                            }
+                            return formats.map { it.copy(url = it.url?.replace("n=source", "n=solved")) }
+                        }
+                    }
+                try {
+                    assertFailsWith<CancellationException> {
+                        makeExtractor(client, innerTube, CountingParser(), WebRemixFallback, cipher)
+                            .extract("video", ContentHints(isUploaded = true))
+                    }
+                } finally {
+                    client.close()
+                }
+            }
+        }
+
+    @Test
+    fun accountChangeDuringGvsOnlyMintCancelsReusedResponse() =
+        runBlocking {
+            var playerRequests = 0
+            val client =
+                HttpClient(
+                    MockEngine {
+                        playerRequests++
+                        respond(DIRECT_RESPONSE, HttpStatusCode.OK, headersOf("Content-Type", "application/json"))
+                    },
+                ) { install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) } }
+            val innerTube =
+                InnerTube(client, retryDelay = {}).also {
+                    it.cookie = "SAPISID=original"
+                    it.visitorData = "visitor"
+                }
+            val manifest = checkNotNull(PlaybackClientCatalog.findManifest("WEB_REMIX"))
+            val fallback =
+                object : ClientFallbackStrategy {
+                    override fun resolveClients(hints: ContentHints) = listOf(manifest.client)
+
+                    override fun selectClients(request: ClientSelectionRequest) =
+                        ClientSelectionResult(listOf(SelectedClient(manifest.client, manifest)))
+                }
+            val provider =
+                object : TokenProvider {
+                    override val capabilities = TokenProviderCapabilities(setOf(PoTokenProviderKind.WEB_BOTGUARD))
+
+                    override suspend fun getPoToken(
+                        videoId: String,
+                        visitorData: String,
+                        cookie: String?,
+                    ): PoTokenResult {
+                        innerTube.cookie = "SAPISID=replacement"
+                        return PoTokenResult("", "stream", visitorData)
+                    }
+                }
+            try {
+                val extractor =
+                    InnerTubeExtractor(
+                        CountingParser(),
+                        PlayerClientDirector(innerTube, fallback, provider),
+                        AudioOnlyCipherService,
+                        innerTube,
+                    )
+                assertFailsWith<CancellationException> { extractor.extract("video", ContentHints(isUploaded = true)) }
+                assertEquals(1, playerRequests)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
     fun authenticatedCacheInvalidatesCookieChangesButKeepsVisitorChanges() =
         runBlocking {
             val client = jsonClient(DIRECT_RESPONSE)
@@ -108,6 +234,138 @@ class InnerTubeExtractorTest {
                 innerTube.cookie = "SAPISID=replacement"
                 assertNotNull(extractor.extract("video", ContentHints(isUploaded = true)))
                 assertEquals(2, parser.calls)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun prewarmStartsKnownVisitorTokenAndBothConfigsConcurrently() =
+        runBlocking {
+            val client = jsonClient(DIRECT_RESPONSE)
+            val innerTube =
+                InnerTube(client, retryDelay = {}).also {
+                    it.cookie = "SAPISID=session"
+                    it.visitorData = "visitor"
+                }
+            val tokenStarted = CompletableDeferred<Unit>()
+            val anonymousStarted = CompletableDeferred<Unit>()
+            val authenticatedStarted = CompletableDeferred<Unit>()
+            val provider =
+                object : TokenProvider {
+                    override val capabilities = TokenProviderCapabilities(setOf(PoTokenProviderKind.WEB_BOTGUARD))
+
+                    override suspend fun getPoToken(
+                        videoId: String,
+                        visitorData: String,
+                        cookie: String?,
+                    ): PoTokenResult {
+                        tokenStarted.complete(Unit)
+                        anonymousStarted.await()
+                        authenticatedStarted.await()
+                        return PoTokenResult("", "stream", visitorData)
+                    }
+                }
+            val parser =
+                object : YtConfigParser {
+                    override suspend fun fetchConfig(
+                        videoId: String,
+                        useLoginCookies: Boolean,
+                    ): PlayerConfig {
+                        (if (useLoginCookies) authenticatedStarted else anonymousStarted).complete(Unit)
+                        tokenStarted.await()
+                        (if (useLoginCookies) anonymousStarted else authenticatedStarted).await()
+                        return PlayerConfig("", 123, null, null)
+                    }
+                }
+            try {
+                val extractor =
+                    InnerTubeExtractor(
+                        parser,
+                        PlayerClientDirector(innerTube, DirectFallback, provider),
+                        AudioOnlyCipherService,
+                        innerTube,
+                        tokenProvider = provider,
+                    )
+                withTimeout(2_000) { extractor.prewarm() }
+                assertTrue(tokenStarted.isCompleted && anonymousStarted.isCompleted && authenticatedStarted.isCompleted)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun authenticatedConfigFetchDoesNotBlockAnonymousCacheHit() =
+        runBlocking {
+            val client = jsonClient(DIRECT_RESPONSE)
+            val innerTube = InnerTube(client, retryDelay = {})
+            val authenticatedStarted = CompletableDeferred<Unit>()
+            val parser =
+                object : YtConfigParser {
+                    override suspend fun fetchConfig(
+                        videoId: String,
+                        useLoginCookies: Boolean,
+                    ): PlayerConfig {
+                        if (useLoginCookies) {
+                            authenticatedStarted.complete(Unit)
+                            awaitCancellation()
+                        }
+                        return PlayerConfig("", 123, null, null)
+                    }
+                }
+            val extractor = makeExtractor(client, innerTube, parser, cipherService = AudioOnlyCipherService)
+            try {
+                assertNotNull(extractor.extract("video", ContentHints(isAgeRestricted = true)))
+                innerTube.cookie = "SAPISID=session"
+                val prewarm = launch { extractor.prewarm() }
+                try {
+                    withTimeout(2_000) {
+                        authenticatedStarted.await()
+                        assertNotNull(extractor.extract("video", ContentHints(playbackClientOverrideId = "VISIONOS")))
+                        Unit
+                    }
+                } finally {
+                    prewarm.cancelAndJoin()
+                }
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun sameKeyConfigFetchIsSharedAndCancellationAllowsRetry() =
+        runBlocking {
+            val client = jsonClient(DIRECT_RESPONSE)
+            val started = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            var calls = 0
+            val parser =
+                object : YtConfigParser {
+                    override suspend fun fetchConfig(
+                        videoId: String,
+                        useLoginCookies: Boolean,
+                    ): PlayerConfig {
+                        calls++
+                        started.complete(Unit)
+                        release.await()
+                        return PlayerConfig("", 123, null, null)
+                    }
+                }
+            val extractor = makeExtractor(client, InnerTube(client, retryDelay = {}), parser, cipherService = AudioOnlyCipherService)
+            try {
+                val cancelled = launch { extractor.extract("cancelled", ContentHints(isAgeRestricted = true)) }
+                started.await()
+                cancelled.cancelAndJoin()
+                withTimeout(2_000) {
+                    val first =
+                        async(start = CoroutineStart.UNDISPATCHED) { extractor.extract("video", ContentHints(isAgeRestricted = true)) }
+                    val second =
+                        async(start = CoroutineStart.UNDISPATCHED) { extractor.extract("video", ContentHints(isAgeRestricted = true)) }
+                    release.complete(Unit)
+                    assertNotNull(first.await())
+                    assertNotNull(second.await())
+                }
+                assertEquals(2, calls)
             } finally {
                 client.close()
             }

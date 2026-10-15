@@ -113,7 +113,8 @@ class InnerTubeExtractor internal constructor(
         }
 
     private val playerConfigCache = mutableMapOf<Boolean, CachedPlayerConfig>()
-    private val playerConfigFetchMutex = Mutex()
+    private val playerConfigCacheMutex = Mutex()
+    private val playerConfigFetchMutexes = mapOf(false to Mutex(), true to Mutex())
 
     /**
      * Optionally compares a fresh, host-authorized TV player response with ordinary playback discovery.
@@ -228,6 +229,15 @@ class InnerTubeExtractor internal constructor(
         }
     }
 
+    private fun currentExtractionSession(expected: InnerTube.SessionSnapshot): InnerTube.SessionSnapshot {
+        val current = innerTube.sessionSnapshot()
+        if (current.generation == expected.generation) return expected
+        return current.visitorData
+            ?.takeIf(String::isNotBlank)
+            ?.let { innerTube.sessionSnapshotWithVisitorData(expected, it) }
+            ?: throw CancellationException("InnerTube session changed")
+    }
+
     private fun ExtractedStream.isStrictlyHigherQualityThan(baseline: ExtractedStream?): Boolean {
         baseline ?: return true
         val audioBitrate = bitrate?.takeIf { it > 0 } ?: return false
@@ -238,79 +248,66 @@ class InnerTubeExtractor internal constructor(
     override suspend fun prewarm() {
         val startMs = Clock.System.now().toEpochMilliseconds()
         try {
-            val initialSession = innerTube.sessionSnapshot()
-            val fetchedVisitorData =
-                if (tokenProvider.capabilities.providers.isNotEmpty()) {
-                    initialSession.visitorData ?: innerTube.fetchFreshVisitorData(initialSession)
-                } else {
-                    null
-                }
-
-            suspend fun fetchConfig(useLoginCookies: Boolean) =
-                playerConfigFetchMutex.withLock {
-                    getCachedPlayerConfigLocked(
-                        useLoginCookies = useLoginCookies,
-                        nowMs = Clock.System.now().toEpochMilliseconds(),
-                    )?.config
-                        ?: run {
-                            val expectedIdentity = configIdentity(useLoginCookies)
-                            val config = configParser.fetchConfig(PREWARM_VIDEO_ID, useLoginCookies)
-                            if (configIdentity(useLoginCookies) != expectedIdentity) {
-                                throw CancellationException("InnerTube session changed")
-                            }
-                            cachePlayerConfig(
-                                useLoginCookies = useLoginCookies,
-                                config = config,
-                                identity = expectedIdentity,
-                            ).config
-                        }
-                }
-            val configs =
-                coroutineScope {
-                    val defaultConfigFetch = async { fetchConfig(useLoginCookies = false) }
-                    cipherService.initialize()
-                    buildList {
-                        add(defaultConfigFetch.await())
-                        if (innerTube.hasSapCookieAuth()) {
-                            try {
-                                add(fetchConfig(useLoginCookies = true))
-                            } catch (e: CancellationException) {
-                                throw e
-                            } catch (e: Exception) {
-                                logger.w(
-                                    TAG,
-                                    "authenticated player config prewarm failed",
-                                    details = mapOf("exceptionType" to (e::class.simpleName ?: "unknown")),
-                                )
-                            }
-                        }
-                    }
-                }
             coroutineScope {
-                val session = innerTube.sessionSnapshot()
-                val tokenWarmup =
-                    (session.visitorData ?: configs.firstNotNullOfOrNull(PlayerConfig::visitorData) ?: fetchedVisitorData)
-                        ?.takeIf { it.isNotBlank() && tokenProvider.capabilities.providers.isNotEmpty() }
-                        ?.let { visitorData ->
-                            async {
+                val initialSession = innerTube.sessionSnapshot()
+                val fetchedVisitorData =
+                    if (tokenProvider.capabilities.providers.isNotEmpty()) {
+                        initialSession.visitorData ?: innerTube.fetchFreshVisitorData(initialSession)
+                    } else {
+                        null
+                    }
+                val session = currentExtractionSession(initialSession)
+
+                fun warmToken(visitorData: String?) =
+                    visitorData?.takeIf { it.isNotBlank() && tokenProvider.capabilities.providers.isNotEmpty() }?.let {
+                        async {
+                            currentExtractionSession(session)
+                            val token =
                                 withTimeoutOrNull(PO_TOKEN_PREFETCH_TIMEOUT) {
                                     try {
-                                        tokenProvider.getPoToken(PREWARM_VIDEO_ID, visitorData, session.cookie)
+                                        tokenProvider.getPoToken(PREWARM_VIDEO_ID, it, session.cookie)
                                     } catch (e: CancellationException) {
                                         throw e
                                     } catch (_: Exception) {
                                         null
                                     }
                                 }
+                            currentExtractionSession(session)
+                            token
+                        }
+                    }
+                val earlyTokenWarmup = warmToken(fetchedVisitorData)
+                val defaultConfigFetch = async { fetchPlayerConfig(PREWARM_VIDEO_ID, false, requestSession = session).config }
+                val authenticatedConfigFetch =
+                    if (!session.sapisid.isNullOrBlank()) {
+                        async {
+                            try {
+                                fetchPlayerConfig(PREWARM_VIDEO_ID, true, requestSession = session).config
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                logger.w(
+                                    TAG,
+                                    "authenticated player config prewarm failed",
+                                    details =
+                                        mapOf("exceptionType" to (e::class.simpleName ?: "unknown")),
+                                )
+                                null
                             }
                         }
-                // ponytail: prewarm the authenticated player when available.
-                // Warm both only if normal cipher fallbacks become common.
+                    } else {
+                        null
+                    }
+                cipherService.initialize()
+                val configs = listOfNotNull(defaultConfigFetch.await(), authenticatedConfigFetch?.await())
+                currentExtractionSession(session)
+                val tokenWarmup = earlyTokenWarmup ?: warmToken(configs.firstNotNullOfOrNull(PlayerConfig::visitorData))
                 configs
                     .asReversed()
                     .firstOrNull { it.playerUrl.isNotBlank() }
                     ?.let { cipherService.preloadPlayerCode(it.playerUrl) }
                 tokenWarmup?.await()
+                currentExtractionSession(session)
             }
         } catch (e: CancellationException) {
             throw e
@@ -335,7 +332,7 @@ class InnerTubeExtractor internal constructor(
             )
         return try {
             coroutineScope {
-                val session = innerTube.sessionSnapshot()
+                val session = diagnostics.session
                 val prefetchedPoToken =
                     if (
                         hints.isExplicit == true && hints.playbackClientOverrideId == null &&
@@ -365,7 +362,7 @@ class InnerTubeExtractor internal constructor(
                         totalStart,
                         diagnostics,
                         prefetchedPoToken,
-                    )
+                    ).also { diagnostics.ensureSessionCurrent() }
                 } finally {
                     prefetchedPoToken?.cancel()
                 }
@@ -594,6 +591,7 @@ class InnerTubeExtractor internal constructor(
         audioQuality: AudioQuality,
         diagnostics: ExtractionDiagnostics,
     ): ExtractedStream? {
+        diagnostics.ensureSessionCurrent()
         val configStart = Clock.System.now().toEpochMilliseconds()
         val config =
             try {
@@ -605,6 +603,7 @@ class InnerTubeExtractor internal constructor(
                 logger.w(TAG, "embedded config unavailable", details = mapOf("exceptionType" to (error::class.simpleName ?: "unknown")))
                 return null
             }
+        diagnostics.ensureSessionCurrent()
         if (config.encryptedHostFlags.isNullOrBlank()) {
             logger.w(TAG, "embedded config missing encrypted host flags")
             return null
@@ -688,6 +687,7 @@ class InnerTubeExtractor internal constructor(
         prefetchedPoToken: Deferred<PoTokenResult?>? = null,
         tvBearerCredential: TvBearerCredential? = null,
     ): ExtractedStream? {
+        diagnostics.ensureSessionCurrent()
         val nowMs = Clock.System.now().toEpochMilliseconds()
         val cachedConfig = getCachedPlayerConfig(useLoginCookies, nowMs)
         if (cachedConfig != null) {
@@ -721,24 +721,10 @@ class InnerTubeExtractor internal constructor(
         }
 
         val configStart = Clock.System.now().toEpochMilliseconds()
-        var fetchedFreshConfig = false
-        val freshCachedConfig =
-            playerConfigFetchMutex.withLock {
-                if (cachedConfig != null && playerConfigCache[useLoginCookies] === cachedConfig) {
-                    playerConfigCache.remove(useLoginCookies)
-                }
-                if (diagnostics.requestBudget.remaining <= 0) return null
-                getCachedPlayerConfigLocked(useLoginCookies, Clock.System.now().toEpochMilliseconds())
-                    ?: run {
-                        val expectedIdentity = configIdentity(useLoginCookies)
-                        val config = configParser.fetchConfig(videoId, useLoginCookies)
-                        if (configIdentity(useLoginCookies) != expectedIdentity) {
-                            throw CancellationException("InnerTube session changed")
-                        }
-                        fetchedFreshConfig = true
-                        cachePlayerConfig(useLoginCookies, config, expectedIdentity)
-                    }
-            }
+        if (diagnostics.requestBudget.remaining <= 0) return null
+        diagnostics.ensureSessionCurrent()
+        val freshCachedConfig = fetchPlayerConfig(videoId, useLoginCookies, cachedConfig, diagnostics.session)
+        diagnostics.ensureSessionCurrent()
         diagnostics.usedAuthenticatedWatchPage =
             diagnostics.usedAuthenticatedWatchPage || freshCachedConfig.usedLoginCookies
         logger.d(
@@ -746,7 +732,7 @@ class InnerTubeExtractor internal constructor(
             "watch page config ready",
             details =
                 mapOf(
-                    "fetched" to fetchedFreshConfig.toString(),
+                    "fetched" to (freshCachedConfig !== cachedConfig).toString(),
                     "authenticated" to freshCachedConfig.usedLoginCookies.toString(),
                     "elapsedMs" to (Clock.System.now().toEpochMilliseconds() - configStart).toString(),
                 ),
@@ -765,11 +751,37 @@ class InnerTubeExtractor internal constructor(
         )
     }
 
+    private suspend fun fetchPlayerConfig(
+        videoId: String,
+        useLoginCookies: Boolean,
+        unusableConfig: CachedPlayerConfig? = null,
+        requestSession: InnerTube.SessionSnapshot,
+    ): CachedPlayerConfig =
+        playerConfigFetchMutexes.getValue(useLoginCookies).withLock {
+            currentExtractionSession(requestSession)
+            playerConfigCacheMutex
+                .withLock {
+                    if (unusableConfig != null && playerConfigCache[useLoginCookies] === unusableConfig) {
+                        playerConfigCache.remove(useLoginCookies)
+                    }
+                    getCachedPlayerConfigLocked(useLoginCookies, Clock.System.now().toEpochMilliseconds())
+                }?.let { return@withLock it }
+            val expectedIdentity = configIdentity(useLoginCookies)
+            val config = configParser.fetchConfig(videoId, useLoginCookies)
+            currentExtractionSession(requestSession)
+            playerConfigCacheMutex.withLock {
+                if (configIdentity(useLoginCookies) != expectedIdentity) {
+                    throw CancellationException("InnerTube session changed")
+                }
+                cachePlayerConfig(useLoginCookies, config, expectedIdentity)
+            }
+        }
+
     private suspend fun getCachedPlayerConfig(
         useLoginCookies: Boolean,
         nowMs: Long,
     ): CachedPlayerConfig? =
-        playerConfigFetchMutex.withLock {
+        playerConfigCacheMutex.withLock {
             getCachedPlayerConfigLocked(useLoginCookies, nowMs)
         }
 
@@ -813,6 +825,7 @@ class InnerTubeExtractor internal constructor(
         prefetchedPoToken: Deferred<PoTokenResult?>? = null,
         tvBearerCredential: TvBearerCredential? = null,
     ): ExtractedStream? {
+        diagnostics.ensureSessionCurrent()
         if (diagnostics.requestBudget.remaining <= 0) return null
         logger.d(
             TAG,
@@ -839,6 +852,7 @@ class InnerTubeExtractor internal constructor(
                 prefetchedPoToken = prefetchedPoToken,
                 tvBearerCredential = tvBearerCredential,
             )
+        diagnostics.ensureSessionCurrent()
         diagnostics.failures += batch.failures
         diagnostics.requestFailures += batch.requestFailures
         diagnostics.attempts += batch.attempts
@@ -933,7 +947,8 @@ class InnerTubeExtractor internal constructor(
                                             cipher = null,
                                         ),
                                     ),
-                            ).firstOrNull()
+                            ).also { diagnostics.ensureSessionCurrent() }
+                            .firstOrNull()
                             ?.url
                     } else {
                         rawSabrUrl
@@ -1009,7 +1024,7 @@ class InnerTubeExtractor internal constructor(
                     sabrBootstrap = bootstrap,
                     sabrVideoBootstrap = bootstrap.takeIf { videoFormat != null },
                     availableVideoHeights = availableVideoHeights,
-                ).withResponseMetadata(response)
+                ).withResponseMetadata(response).also { diagnostics.ensureSessionCurrent() }
             }
 
             val hlsManifestUrl =
@@ -1032,6 +1047,7 @@ class InnerTubeExtractor internal constructor(
                     videoUrl = hlsManifestUrl,
                     headers =
                         buildHeaders(
+                            diagnostics,
                             result.clientName,
                             result.userAgent,
                             hlsManifestUrl,
@@ -1052,7 +1068,7 @@ class InnerTubeExtractor internal constructor(
                     rangeChunkSizeBytes = mediaRangeChunkSize(result.clientName),
                     playbackTracking = playbackTracking,
                     streamDiagnostics = diagnostics.snapshot(),
-                ).withResponseMetadata(response)
+                ).withResponseMetadata(response).also { diagnostics.ensureSessionCurrent() }
             }
 
             val directAudioItags =
@@ -1118,6 +1134,7 @@ class InnerTubeExtractor internal constructor(
                     val expiresAt = expireSeconds?.let { Instant.fromEpochSeconds(it) }
                     val directHeaders =
                         buildHeaders(
+                            diagnostics,
                             result.clientName,
                             result.userAgent,
                             directUrl,
@@ -1190,7 +1207,7 @@ class InnerTubeExtractor internal constructor(
                         videoItag = directFastPathVideo?.itag,
                         videoContentLengthBytes = videoContentLength,
                         availableVideoHeights = availableVideoHeights,
-                    ).withResponseMetadata(response)
+                    ).withResponseMetadata(response).also { diagnostics.ensureSessionCurrent() }
                 }
             }
 
@@ -1226,10 +1243,11 @@ class InnerTubeExtractor internal constructor(
             val rawVideoCandidates = listOfNotNull(preferredRawVideoFormat, rawVideoFallback)
             val formatsForCipher = audioFormatsForCipher + rawVideoCandidates
             var processedFormats =
-                cipherService.processFormats(
-                    playerUrl = playerConfig.playerUrl,
-                    formats = formatsForCipher,
-                )
+                cipherService
+                    .processFormats(
+                        playerUrl = playerConfig.playerUrl,
+                        formats = formatsForCipher,
+                    ).also { diagnostics.ensureSessionCurrent() }
             val processedVideoFormat =
                 rawVideoCandidates.firstNotNullOfOrNull { candidate ->
                     processedFormats.firstOrNull {
@@ -1259,10 +1277,11 @@ class InnerTubeExtractor internal constructor(
             if (audioFormat == null && audioFormatsForCipher.size != rawAudioFormats.size) {
                 val fallbackCipherStart = Clock.System.now().toEpochMilliseconds()
                 processedFormats =
-                    cipherService.processFormats(
-                        playerUrl = playerConfig.playerUrl,
-                        formats = rawAudioFormats,
-                    )
+                    cipherService
+                        .processFormats(
+                            playerUrl = playerConfig.playerUrl,
+                            formats = rawAudioFormats,
+                        ).also { diagnostics.ensureSessionCurrent() }
                 logger.d(
                     TAG,
                     "cipher fallback completed",
@@ -1321,6 +1340,7 @@ class InnerTubeExtractor internal constructor(
             val expiresAt = expireSeconds?.let { Instant.fromEpochSeconds(it) }
             val directHeaders =
                 buildHeaders(
+                    diagnostics,
                     result.clientName,
                     result.userAgent,
                     url,
@@ -1395,7 +1415,7 @@ class InnerTubeExtractor internal constructor(
                 videoItag = processedVideoFormat?.itag,
                 videoContentLengthBytes = videoContentLength,
                 availableVideoHeights = availableVideoHeights,
-            ).withResponseMetadata(response)
+            ).withResponseMetadata(response).also { diagnostics.ensureSessionCurrent() }
         }
 
         // Fallback to HLS if no playable direct URLs were found across all clients
@@ -1420,7 +1440,7 @@ class InnerTubeExtractor internal constructor(
                     videoId = videoId,
                     audioUrl = hlsManifestUrl,
                     videoUrl = hlsManifestUrl,
-                    headers = buildHeaders(fallbackResult.clientName, fallbackResult.userAgent),
+                    headers = buildHeaders(diagnostics, fallbackResult.clientName, fallbackResult.userAgent),
                     loudnessDb = null,
                     expiresAt = hlsExpiry(checkNotNull(fallbackResult.response.streamingData), hlsManifestUrl),
                     contentLengthBytes = null,
@@ -1439,7 +1459,7 @@ class InnerTubeExtractor internal constructor(
                             .toPlaybackTrackingData(clientPlaybackNonce)
                             .takeUnless { fallbackResult.bearerAuthenticated },
                     streamDiagnostics = diagnostics.snapshot(),
-                ).withResponseMetadata(fallbackResult.response)
+                ).withResponseMetadata(fallbackResult.response).also { diagnostics.ensureSessionCurrent() }
             }
         }
 
@@ -1466,9 +1486,16 @@ class InnerTubeExtractor internal constructor(
         )
     }
 
-    private class ExtractionDiagnostics(
+    private inner class ExtractionDiagnostics(
         maxPlayerRequests: Int,
     ) {
+        var session = innerTube.sessionSnapshot()
+            private set
+
+        fun ensureSessionCurrent() {
+            session = currentExtractionSession(session)
+        }
+
         val requestBudget = PlayerRequestBudget(maxPlayerRequests)
         val failures = mutableListOf<PlayabilityFailure>()
         val requestFailures = mutableListOf<Throwable>()
@@ -1519,16 +1546,19 @@ class InnerTubeExtractor internal constructor(
     }
 
     private fun buildHeaders(
+        diagnostics: ExtractionDiagnostics,
         clientName: String,
         userAgent: String,
         mediaUrl: String? = null,
         includeLoginCookies: Boolean = false,
     ): Map<String, String> {
+        diagnostics.ensureSessionCurrent()
+        val session = diagnostics.session
         val headers = linkedMapOf<String, String>()
         if (clientName != "ANDROID_VR" && clientName != "VISIONOS" && clientName != "TVHTML5_SIMPLY") {
             headers["User-Agent"] = userAgent
             headers["Accept"] = "*/*"
-            headers["Accept-Language"] = innerTube.locale.acceptLanguageHeader()
+            headers["Accept-Language"] = session.locale.acceptLanguageHeader()
 
             when (clientName) {
                 "WEB_REMIX" -> {
@@ -1555,9 +1585,7 @@ class InnerTubeExtractor internal constructor(
             }
         }
         if (includeLoginCookies && mediaUrl?.let(::isAllowedMediaUrl) == true) {
-            innerTube
-                .sessionSnapshot()
-                .cookie
+            session.cookie
                 ?.takeIf(String::isNotBlank)
                 ?.let { headers["Cookie"] = it }
         }
