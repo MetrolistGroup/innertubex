@@ -62,6 +62,17 @@ class ExtractionFoundationTest {
     }
 
     @Test
+    fun nonceReplacementOnlyChangesTheActualQuery() {
+        val base = "https://r1.googlevideo.com/videoplayback"
+        val nonce = "abcdefghijklmnop"
+        assertEquals("$base?cpn=$nonce#note?cpn=old", replaceClientPlaybackNonce("$base#note?cpn=old", nonce))
+        assertEquals(
+            "$base?sig=a%2Fb&cpn=$nonce#note&cpn=fragment",
+            replaceClientPlaybackNonce("$base?sig=a%2Fb&cpn=old#note&cpn=fragment", nonce),
+        )
+    }
+
+    @Test
     fun capabilityChangesHaveDistinctValueAndStateFlowSemantics() {
         val original = ContentHints()
         val state = kotlinx.coroutines.flow.MutableStateFlow(original)
