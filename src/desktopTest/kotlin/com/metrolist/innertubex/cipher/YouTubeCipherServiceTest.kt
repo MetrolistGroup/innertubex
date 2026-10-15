@@ -25,6 +25,78 @@ import kotlin.test.assertTrue
 
 class YouTubeCipherServiceTest {
     @Test
+    fun partialRemoteSuccessStillReusesCachedPreprocessedPlayer() =
+        runBlocking {
+            val code =
+                """
+                (function(g){
+                  g.X=class {
+                    constructor(url){this.n=url.split('=')[1]}
+                    get(){return this.n === 'value' ? this.n : 'valid_n_value'}
+                  };
+                  function S(a,b,input){return 'sig_'+input}
+                })(_yt_player);
+                """.trimIndent()
+            val repository =
+                object : PlayerConfigRepository {
+                    override val enabled = true
+                    override val defaultSourceUrl = "https://raw.githubusercontent.com/MetrolistGroup/faraday/main/player_configs.json"
+                    override val sourceUrl = defaultSourceUrl
+                    override var cachedJson = ""
+                    override var cachedAtMs = 0L
+                    override var cachedSourceUrl = ""
+                    override var cachedEtag = ""
+                }
+            var playerDownloads = 0
+            val http =
+                HttpClient(
+                    MockEngine { request ->
+                        when {
+                            request.url.host == "www.youtube.com" -> {
+                                playerDownloads++
+                                respond(code)
+                            }
+
+                            request.url.encodedPath.endsWith("/player_configs.json") -> {
+                                respond("""{"schemaVersion":1,"players":{"abcdef12":{"sig":"S(1,2,INPUT)","nClass":"X","sts":1}}}""")
+                            }
+
+                            else -> {
+                                respond("unavailable", HttpStatusCode.NotFound)
+                            }
+                        }
+                    },
+                )
+            val service = YouTubeCipherService(http, RemotePlayerConfigStore(http, repository))
+            var reads = 0
+            service.setPreprocessedPlayerCache(
+                read = {
+                    reads++
+                    "_result.n = function(c) { return c + '_done'; };"
+                },
+                write = { _, _ -> },
+            )
+            try {
+                val format =
+                    PlayerResponse.StreamingData.Format(
+                        itag = 140,
+                        signatureCipher = "s=abc&sp=sig&url=https%3A%2F%2Fexample.googlevideo.com%2Fvideoplayback%3Fn%3Dvalue",
+                        mimeType = "audio/mp4",
+                    )
+                val solved = service.processFormats("https://www.youtube.com/s/player/abcdef12/base.js", listOf(format))
+                assertEquals(1, solved.size)
+                val url = io.ktor.http.Url(solved.single().url!!)
+                assertEquals("sig_abc", url.parameters["sig"])
+                assertEquals("value_done", url.parameters["n"])
+                assertEquals(1, playerDownloads)
+                assertEquals(1, reads)
+            } finally {
+                service.dispose()
+                http.close()
+            }
+        }
+
+    @Test
     fun rawPlayerCacheKeepsOnlyTheCurrentPlayer() =
         runBlocking {
             var downloads = 0

@@ -227,15 +227,13 @@ internal class EjsChallengeSolver(
         playerUrl: String,
         fullPlayerJs: String,
         requestOrder: List<Pair<String, List<String>>>,
-        preferPreprocessed: Boolean = true,
-    ): SolveResult = solve(playerUrl, { fullPlayerJs }, requestOrder, preferPreprocessed)
+    ): SolveResult = solve(playerUrl, { fullPlayerJs }, requestOrder)
 
     /** [loadFullPlayerJs] is only called when no usable preprocessed player is cached. */
     suspend fun solve(
         playerUrl: String,
         loadFullPlayerJs: suspend () -> String?,
         requestOrder: List<Pair<String, List<String>>>,
-        preferPreprocessed: Boolean = true,
     ): SolveResult {
         if (requestOrder.isEmpty() || requestOrder.all { it.second.isEmpty() }) {
             return SolveResult(emptyMap(), emptyMap(), null)
@@ -250,20 +248,30 @@ internal class EjsChallengeSolver(
 
         return withActivity {
             val cached = cachedChallenges(playerUrl, requestOrder)
-            if (preferPreprocessed && cached.solvesAll(requestOrder)) {
+            if (cached.solvesAll(requestOrder)) {
                 cached
             } else {
-                solveUncached(playerUrl, loadFullPlayerJs, requestOrder, preferPreprocessed).also { result ->
-                    for ((kind, values) in listOf("sig" to result.sigByChallenge, "n" to result.nByChallenge)) {
-                        for ((challenge, value) in values) {
-                            if (playerUrl.length + challenge.length + value.length > MAX_CACHED_CHALLENGE_LENGTH) continue
-                            val key = ChallengeKey(playerUrl, kind, challenge)
-                            solvedChallenges.remove(key)
-                            solvedChallenges[key] = value
-                            while (solvedChallenges.size > MAX_SOLVED_CHALLENGES) solvedChallenges.remove(solvedChallenges.keys.first())
+                val missing =
+                    requestOrder.map { (kind, challenges) ->
+                        val solved = if (kind == "sig") cached.sigByChallenge else cached.nByChallenge
+                        kind to challenges.filterNot { it in solved }
+                    }
+                val fresh = solveUncached(playerUrl, loadFullPlayerJs, missing)
+                fresh
+                    .copy(
+                        sigByChallenge = cached.sigByChallenge + fresh.sigByChallenge,
+                        nByChallenge = cached.nByChallenge + fresh.nByChallenge,
+                    ).also { result ->
+                        for ((kind, values) in listOf("sig" to result.sigByChallenge, "n" to result.nByChallenge)) {
+                            for ((challenge, value) in values) {
+                                if (playerUrl.length + challenge.length + value.length > MAX_CACHED_CHALLENGE_LENGTH) continue
+                                val key = ChallengeKey(playerUrl, kind, challenge)
+                                solvedChallenges.remove(key)
+                                solvedChallenges[key] = value
+                                while (solvedChallenges.size > MAX_SOLVED_CHALLENGES) solvedChallenges.remove(solvedChallenges.keys.first())
+                            }
                         }
                     }
-                }
             }
         }
     }
@@ -292,11 +300,10 @@ internal class EjsChallengeSolver(
         playerUrl: String,
         loadFullPlayerJs: suspend () -> String?,
         requestOrder: List<Pair<String, List<String>>>,
-        preferPreprocessed: Boolean,
     ): SolveResult {
         return try {
             ensureBootstrapped()
-            if (preferPreprocessed && playerUrl in compiledPlayers) {
+            if (playerUrl in compiledPlayers) {
                 val compiled =
                     try {
                         solveOnce(playerUrl, null, requestOrder, preprocessed = true)
@@ -310,12 +317,7 @@ internal class EjsChallengeSolver(
             }
 
             val cacheKey = bundleHash?.let { preprocessedPlayerCacheKey(playerUrl, it) }
-            val preprocessed =
-                if (preferPreprocessed) {
-                    loadPreprocessedPlayer(playerUrl, cacheKey)
-                } else {
-                    null
-                }
+            val preprocessed = loadPreprocessedPlayer(playerUrl, cacheKey)
 
             var cachedResult = SolveResult(emptyMap(), emptyMap(), null)
             if (preprocessed != null) {

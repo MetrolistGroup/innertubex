@@ -271,7 +271,6 @@ class YouTubeCipherService(
                     )
 
                 val solvedNFromSignaturePass = remoteSolved.nByChallenge.toMutableMap()
-                val preferLocalPreprocessed = remoteSolved.sigByChallenge.isEmpty() && remoteSolved.nByChallenge.isEmpty()
                 if (sigTasks.isNotEmpty()) {
                     val solvedSig = remoteSolved.sigByChallenge.toMutableMap()
                     val missingSigChallenges = sigChallenges.filterNot { it in solvedSig }
@@ -289,7 +288,6 @@ class YouTubeCipherService(
                                             .takeIf { it.isNotEmpty() }
                                             ?.let { add("n" to it) }
                                     },
-                                preferPreprocessed = preferLocalPreprocessed,
                             )
                         solvedSig += ejsSig.sigByChallenge
                         solvedNFromSignaturePass += ejsSig.nByChallenge
@@ -385,7 +383,6 @@ class YouTubeCipherService(
                                 playerUrl = playerUrl,
                                 loadFullPlayerJs = { playerCode() },
                                 requestOrder = listOf("n" to missingNChallenges),
-                                preferPreprocessed = preferLocalPreprocessed,
                             )
                         solvedN += ejsN.nByChallenge
                         logger.d(
@@ -573,7 +570,6 @@ class YouTubeCipherService(
                                         playerUrl,
                                         { getOrDownloadPlayerCode(playerUrl).code },
                                         listOf("sig" to listOf(signature)),
-                                        preferPreprocessed = true,
                                     )
                                 r.sigByChallenge[signature]
                             }
@@ -636,7 +632,6 @@ class YouTubeCipherService(
                                         playerUrl,
                                         { getOrDownloadPlayerCode(playerUrl).code },
                                         listOf("n" to listOf(nValue)),
-                                        preferPreprocessed = true,
                                     )
                                 r.nByChallenge[nValue]
                             }

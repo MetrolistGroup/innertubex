@@ -134,6 +134,24 @@ class EjsChallengeSolverTest {
         }
 
     @Test
+    fun partialChallengeCacheOnlySolvesMissingValues() =
+        runBlocking {
+            val engine = QuickJsEngine()
+            val solver = EjsChallengeSolver(engine, InnerTubeLogger.NONE)
+            try {
+                solver.cachePreprocessedPlayer(
+                    PLAYER_URL,
+                    "_result.n = function(c) { if (globalThis.seen === c) throw Error('repeated'); globalThis.seen = c; return c + '_done'; };",
+                )
+                assertEquals("old_done", solver.solve(PLAYER_URL, "", listOf("n" to listOf("old"))).nByChallenge["old"])
+                val result = solver.solve(PLAYER_URL, { error("Valid caches must be used") }, listOf("n" to listOf("old", "new")))
+                assertEquals(mapOf("old" to "old_done", "new" to "new_done"), result.nByChallenge)
+            } finally {
+                solver.dispose()
+            }
+        }
+
+    @Test
     fun cacheKeysIsolatePlayerAndSolverVersions() {
         val bundleA = sha1("solver-a")
         val bundleB = sha1("solver-b")
