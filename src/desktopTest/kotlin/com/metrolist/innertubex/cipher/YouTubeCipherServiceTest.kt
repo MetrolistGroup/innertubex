@@ -104,6 +104,72 @@ class YouTubeCipherServiceTest {
         }
 
     @Test
+    fun failedRemoteSolverRetriesOnlyAfterConfigChangeOrCooldown() =
+        runBlocking {
+            val bootstrap = EjsChallengeSolver(QuickJsEngine(), InnerTubeLogger.NONE)
+            val preprocessed =
+                try {
+                    assertNotNull(bootstrap.solve(PLAYER_URL, PLAYER_CODE, listOf("sig" to listOf("warm"))).preprocessedPlayer)
+                } finally {
+                    bootstrap.dispose()
+                }
+            val repository = configRepository()
+            val client =
+                HttpClient(
+                    MockEngine { request ->
+                        if (request.url.encodedPath.endsWith("player_configs.json")) {
+                            respond(repository.cachedJson.replace("20613", "20614"))
+                        } else {
+                            respond(
+                                REMOTE_PLAYER_CODE.replace(
+                                    "this.input.indexOf(\"local\") === 0 ? this.input : this.input + \"_done\"",
+                                    "this.input",
+                                ),
+                            )
+                        }
+                    },
+                )
+            val store = RemotePlayerConfigStore(client, repository)
+            var failures = 0
+            val service =
+                YouTubeCipherService(
+                    client,
+                    store,
+                    InnerTubeLogger { event ->
+                        if (event.message.startsWith("Faraday zemer config failed")) failures++
+                    },
+                )
+            try {
+                service.setPreprocessedPlayerCache({ preprocessed }, { _, _ -> })
+
+                suspend fun solve(challenge: String) {
+                    assertEquals(
+                        "$MEDIA_URL?n=${challenge}_done",
+                        service.processFormats(PLAYER_URL, listOf(format("$MEDIA_URL?n=$challenge"))).single().url,
+                    )
+                }
+                repeat(3) { solve("local$it") }
+                assertEquals(1, failures)
+                assertTrue(service.refreshAfterStreamRejection())
+                solve("changed")
+                assertEquals(2, failures)
+                val failuresByUrl = privateField<Map<String, Any>>(service, "zemerFailures")
+                val failed = failuresByUrl.values.single()
+                failed.javaClass
+                    .getDeclaredField("failedAtMs")
+                    .apply { isAccessible = true }
+                    .setLong(failed, 0L)
+                solve("expired")
+                assertEquals(3, failures)
+                solve("cooldown")
+                assertEquals(3, failures)
+            } finally {
+                service.dispose()
+                client.close()
+            }
+        }
+
+    @Test
     fun singleChallengesFallBackToEjsWhenParserInitializationFails() =
         runBlocking {
             val playerCode =

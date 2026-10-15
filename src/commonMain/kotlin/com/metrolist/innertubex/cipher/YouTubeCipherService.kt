@@ -45,6 +45,7 @@ class YouTubeCipherService(
         private const val TAG = "YouTubeCipherService"
         private const val OKHTTP_USER_AGENT = "okhttp/5.4.0"
         private const val MAX_PLAYER_CACHE_ENTRIES = 4
+        private const val ZEMER_FAILURE_RETRY_MS = 60_000L
         private const val MAX_PLAYER_SCRIPT_BYTES = 8 * 1024 * 1024
         private const val MAX_MEDIA_URL_LENGTH = 16 * 1024
         private const val MAX_SOLVER_OUTPUT_LENGTH = 256 * 1024
@@ -60,6 +61,7 @@ class YouTubeCipherService(
         }
     private val cache = LinkedHashMap<String, CachedSolver>()
     private val zemerCache = LinkedHashMap<String, CachedZemerSolver>()
+    private val zemerFailures = LinkedHashMap<String, FailedZemerSolver>()
     private val playerCodeCache = LinkedHashMap<String, String>()
     private val playerCodeDownloads = mutableMapOf<String, CompletableDeferred<String>>()
     private val cacheMutex = Mutex()
@@ -81,6 +83,12 @@ class YouTubeCipherService(
         val config: RemotePlayerConfigParser.HardcodedPlayerConfig,
         val configEpoch: Long,
         val solver: ZemerCipherSolver,
+    )
+
+    private data class FailedZemerSolver(
+        val config: RemotePlayerConfigParser.HardcodedPlayerConfig,
+        val configEpoch: Long,
+        val failedAtMs: Long,
     )
 
     private data class RemoteSolveResult(
@@ -701,7 +709,9 @@ class YouTubeCipherService(
 
         return try {
             val playerCode = getOrDownloadPlayerCode(faradayPlayerUrl).code
-            val solver = getOrCreateZemerSolver(faradayPlayerUrl, playerCode, activeConfig, configStore.configEpoch)
+            val solver =
+                getOrCreateZemerSolver(faradayPlayerUrl, playerCode, activeConfig, configStore.configEpoch)
+                    ?: return RemoteSolveResult(emptyMap(), emptyMap())
             RemoteSolveResult(
                 sigByChallenge =
                     sigValues
@@ -739,7 +749,7 @@ class YouTubeCipherService(
         playerCode: String,
         config: RemotePlayerConfigParser.HardcodedPlayerConfig,
         configEpoch: Long,
-    ): ZemerCipherSolver {
+    ): ZemerCipherSolver? {
         var evicted = emptyList<CachedZemerSolver>()
         var replaced: CachedZemerSolver? = null
         val solver =
@@ -751,7 +761,26 @@ class YouTubeCipherService(
                         return@withLock cached.solver
                     }
                 }
-                ZemerCipherSolver.create(playerCode, config).also { created ->
+                zemerFailures.entries.removeAll { it.value.configEpoch != configEpoch }
+                zemerFailures[playerUrl]?.let { failed ->
+                    if (failed.config == config && Clock.System.now().toEpochMilliseconds() - failed.failedAtMs < ZEMER_FAILURE_RETRY_MS) {
+                        return@withLock null
+                    }
+                }
+                zemerFailures.remove(playerUrl)
+                val created =
+                    try {
+                        ZemerCipherSolver.create(playerCode, config)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        zemerFailures[playerUrl] = FailedZemerSolver(config, configEpoch, Clock.System.now().toEpochMilliseconds())
+                        while (zemerFailures.size > MAX_PLAYER_CACHE_ENTRIES) {
+                            zemerFailures.remove(zemerFailures.keys.first())
+                        }
+                        throw e
+                    }
+                created.also {
                     replaced = zemerCache.remove(playerUrl)
                     zemerCache[playerUrl] =
                         CachedZemerSolver(
@@ -1089,6 +1118,7 @@ class YouTubeCipherService(
                     val zemerSolvers = zemerCache.values.toList()
                     cache.clear()
                     zemerCache.clear()
+                    zemerFailures.clear()
                     playerCodeCache.clear()
                     playerCodeDownloads.clear()
                     solvers to zemerSolvers
