@@ -1,6 +1,7 @@
 package com.metrolist.innertubex.extraction.strategy
 
 import com.metrolist.innertubex.extraction.ContentHints
+import com.metrolist.innertubex.extraction.requiresBoundedMediaRange
 import com.metrolist.innertubex.models.YouTubeClient
 
 class ContentAwareFallbackStrategy(
@@ -161,6 +162,25 @@ class ContentAwareFallbackStrategy(
                 manifest.transports.none { it == PlaybackTransport.DIRECT || it == PlaybackTransport.SABR }
             ) {
                 add("transport cannot satisfy video request")
+            }
+
+            if (manifest.transports.none { transport ->
+                    when (transport) {
+                        PlaybackTransport.SABR -> {
+                            request.hints.allowSabr
+                        }
+
+                        PlaybackTransport.HLS -> {
+                            request.hints.allowHls
+                        }
+
+                        PlaybackTransport.DIRECT, PlaybackTransport.DASH -> {
+                            request.hints.allowBoundedRange || !requiresBoundedMediaRange(manifest.client.clientName)
+                        }
+                    }
+                }
+            ) {
+                add("available transports disabled")
             }
 
             if (!request.javaScriptRuntimeAvailable && manifest.request.signatureCipher == JavaScriptRequirement.REQUIRED) {

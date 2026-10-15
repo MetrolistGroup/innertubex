@@ -12,6 +12,39 @@ class PlaybackClientStrategyTest {
     private val allProviders = PoTokenProviderKind.entries.toSet()
 
     @Test
+    fun disablingBoundedRangesRetainsAllowedHlsTransport() {
+        val selection =
+            ContentAwareFallbackStrategy().selectClients(
+                ClientSelectionRequest(
+                    hints = ContentHints().withStreamCapabilities(allowHls = true, allowBoundedRange = false),
+                    authenticated = false,
+                    availablePoTokenProviders = allProviders,
+                    javaScriptRuntimeAvailable = true,
+                    webViewAvailable = true,
+                ),
+            )
+        assertTrue(selection.candidates.any { it.manifest?.id == "TVHTML5_SIMPLY" })
+        assertTrue(selection.candidates.none { it.client.clientName == "ANDROID_VR" })
+    }
+
+    @Test
+    fun disablingHlsRetainsMixedDirectCandidates() {
+        val selection =
+            ContentAwareFallbackStrategy().selectClients(
+                ClientSelectionRequest(
+                    hints = ContentHints().withStreamCapabilities(allowHls = false, allowSabr = false, allowBoundedRange = false),
+                    authenticated = true,
+                    availablePoTokenProviders = allProviders,
+                    javaScriptRuntimeAvailable = true,
+                    webViewAvailable = true,
+                ),
+            )
+        assertTrue(selection.candidates.any { it.manifest?.id == "WEB_REMIX" })
+        assertTrue(selection.candidates.none { it.client.useSabr })
+        assertTrue(selection.rejected.any { "available transports disabled" in it.reasons })
+    }
+
+    @Test
     fun catalogProfilesHaveConsistentManifestInvariants() {
         assertEquals(35, PlaybackClientCatalog.benchmarkOptions.size)
         assertEquals(
