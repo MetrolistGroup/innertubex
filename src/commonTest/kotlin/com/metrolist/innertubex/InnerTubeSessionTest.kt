@@ -35,6 +35,62 @@ import kotlin.test.assertTrue
 
 class InnerTubeSessionTest {
     @Test
+    fun statisticsRedirectsNeverForwardCredentials() =
+        runBlocking {
+            for (location in listOf(
+                "https://example.test/collect",
+                "https://s.youtube.com/unapproved",
+                "https://s.youtube.com/api/stats/watchtime",
+            )) {
+                val engine =
+                    MockEngine {
+                        respond("", HttpStatusCode.Found, headersOf(HttpHeaders.Location, location))
+                    }
+                val client =
+                    HttpClient(engine) {
+                        expectSuccess = true
+                        followRedirects = true
+                    }
+                val innerTube = InnerTube(client).also { it.cookie = "SAPISID=secret" }
+                val response = innerTube.registerPlayback(YouTubeClient.WEB, "https://s.youtube.com/api/stats/playback", "cpn")
+                assertEquals(HttpStatusCode.Found, response.status)
+                assertEquals(1, engine.requestHistory.size)
+                assertEquals("SAPISID=secret", engine.requestHistory.single().headers[HttpHeaders.Cookie])
+                innerTube.close()
+                client.close()
+            }
+        }
+
+    @Test
+    fun mediaLengthIgnoresErrorAndRedirectBodies() =
+        runBlocking {
+            for (status in listOf(
+                HttpStatusCode.Forbidden,
+                HttpStatusCode.NotFound,
+                HttpStatusCode.MethodNotAllowed,
+                HttpStatusCode.Found,
+            )) {
+                val engine =
+                    MockEngine {
+                        respond(
+                            "",
+                            status,
+                            headersOf(
+                                HttpHeaders.ContentLength to listOf("123"),
+                                HttpHeaders.Location to listOf("https://example.test/media"),
+                            ),
+                        )
+                    }
+                val client = HttpClient(engine) { followRedirects = true }
+                val innerTube = InnerTube(client)
+                assertNull(innerTube.mediaContentLength("https://rr1.googlevideo.com/videoplayback", emptyMap()))
+                assertEquals(1, engine.requestHistory.size)
+                innerTube.close()
+                client.close()
+            }
+        }
+
+    @Test
     fun visitorFetchAfterCloseAndDuringCloseAlwaysCompletes() =
         runBlocking {
             repeat(20) {

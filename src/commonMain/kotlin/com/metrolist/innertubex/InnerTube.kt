@@ -34,11 +34,11 @@ import io.ktor.client.plugins.onUpload
 import io.ktor.client.plugins.timeout
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.forms.FormDataContent
-import io.ktor.client.request.head
 import io.ktor.client.request.header
 import io.ktor.client.request.headers
 import io.ktor.client.request.parameter
 import io.ktor.client.request.prepareGet
+import io.ktor.client.request.prepareHead
 import io.ktor.client.request.preparePost
 import io.ktor.client.request.setBody
 import io.ktor.client.request.url
@@ -124,6 +124,7 @@ class InnerTube(
 
         private val TRANSIENT_STATUS_CODES = setOf(408, 425, 429, 500, 502, 503, 504)
         private const val MAX_RETRY_AFTER_MS = 5_000L
+        private const val MAX_STATS_RESPONSE_BYTES = 64 * 1024
         private val STATS_HOSTS = setOf("s.youtube.com", "www.youtube.com", "music.youtube.com")
         private val STATS_PATHS = setOf("/api/stats/playback", "/api/stats/watchtime")
         private val MEDIA_REQUEST_HEADERS =
@@ -480,6 +481,20 @@ class InnerTube(
         userAgent(client.userAgent)
     }
 
+    private suspend fun <T> withNoRedirects(block: suspend (HttpClient) -> T): T {
+        val directClient =
+            HttpClient(httpClient.engine) {
+                expectSuccess = false
+                followRedirects = false
+                install(HttpTimeout)
+            }
+        return try {
+            block(directClient)
+        } finally {
+            directClient.close()
+        }
+    }
+
     private suspend fun HttpClient.postBounded(
         url: String,
         maxBytes: Int = MAX_API_RESPONSE_BYTES,
@@ -747,13 +762,17 @@ class InnerTube(
     ): Long? =
         try {
             val mediaUrl = validatedMediaUrl(url)
-            httpClient
-                .head(mediaUrl) {
-                    requestHeaders.forEach { (name, value) ->
-                        if (name.lowercase() in MEDIA_REQUEST_HEADERS) header(name, value)
+            withNoRedirects { directClient ->
+                directClient
+                    .prepareHead(mediaUrl) {
+                        expectSuccess = false
+                        requestHeaders.forEach { (name, value) ->
+                            if (name.lowercase() in MEDIA_REQUEST_HEADERS) header(name, value)
+                        }
+                    }.execute { response ->
+                        response.contentLength()?.takeIf { response.status.isSuccess() && it > 0L }
                     }
-                }.contentLength()
-                ?.takeIf { it > 0L }
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
@@ -1017,49 +1036,51 @@ class InnerTube(
         val statsUrl = validatedStatsUrl(url)
         return withSessionBoundRequest(requestSession) {
             executeRequest(operation = operation, retryTransientFailures = false, requireSuccess = false) {
-                httpClient.getBounded(statsUrl.toString(), MAX_UPLOAD_START_RESPONSE_BYTES) {
-                    userAgent(client.userAgent)
-                    headers {
-                        append("X-Goog-Api-Format-Version", "1")
-                        append("X-YouTube-Client-Name", client.clientId)
-                        append("X-YouTube-Client-Version", client.clientVersion)
-                        append("Origin", origin)
-                        append("X-Origin", origin)
-                        append("Referer", if (client.clientName == "WEB_REMIX") REFERER_MUSIC else REFERER_WWW)
-                        append(
-                            "Accept-Language",
-                            requestSession.locale.acceptLanguageHeader(),
-                        )
-                        append("Cache-Control", "no-cache")
-                        append("Content-Type", "application/json")
-                        requestSession.visitorData?.let { append("X-Goog-Visitor-Id", it) }
-                        if (client.loginSupported) {
-                            requestSession.cookie?.let { cookieValue ->
-                                append("Cookie", cookieValue)
-                                append("X-Goog-AuthUser", requestSession.authUser)
-                                val sapisid = requestSession.sapisid
-                                if (!sapisid.isNullOrBlank()) {
-                                    val currentTime = Clock.System.now().toEpochMilliseconds() / 1000
-                                    val sapisidHash = sha1("$currentTime $sapisid $origin")
-                                    append("Authorization", "SAPISIDHASH ${currentTime}_$sapisidHash")
+                withNoRedirects { directClient ->
+                    directClient.getBounded(statsUrl.toString(), MAX_STATS_RESPONSE_BYTES) {
+                        userAgent(client.userAgent)
+                        headers {
+                            append("X-Goog-Api-Format-Version", "1")
+                            append("X-YouTube-Client-Name", client.clientId)
+                            append("X-YouTube-Client-Version", client.clientVersion)
+                            append("Origin", origin)
+                            append("X-Origin", origin)
+                            append("Referer", if (client.clientName == "WEB_REMIX") REFERER_MUSIC else REFERER_WWW)
+                            append(
+                                "Accept-Language",
+                                requestSession.locale.acceptLanguageHeader(),
+                            )
+                            append("Cache-Control", "no-cache")
+                            append("Content-Type", "application/json")
+                            requestSession.visitorData?.let { append("X-Goog-Visitor-Id", it) }
+                            if (client.loginSupported) {
+                                requestSession.cookie?.let { cookieValue ->
+                                    append("Cookie", cookieValue)
+                                    append("X-Goog-AuthUser", requestSession.authUser)
+                                    val sapisid = requestSession.sapisid
+                                    if (!sapisid.isNullOrBlank()) {
+                                        val currentTime = Clock.System.now().toEpochMilliseconds() / 1000
+                                        val sapisidHash = sha1("$currentTime $sapisid $origin")
+                                        append("Authorization", "SAPISIDHASH ${currentTime}_$sapisidHash")
+                                    }
                                 }
                             }
                         }
-                    }
-                    url {
-                        parameters.append("prettyPrint", "false")
-                        parameters.append("ver", "2")
-                        parameters.append("c", client.clientName)
-                        parameters.remove("cpn")
-                        parameters.append("cpn", cpn)
-                        startTimes?.let { parameters.append("st", it) }
-                        endTimes?.let { parameters.append("et", it) }
-                        currentMediaTime?.let { parameters.append("cmt", it) }
-                        realTime?.let { parameters.append("rt", it) }
-                        final?.let { parameters.append("final", if (it) "1" else "0") }
-                        format?.let { parameters.append("fmt", it.toString()) }
-                        if (playlistId != null) {
-                            parameters.append("list", playlistId)
+                        url {
+                            parameters.append("prettyPrint", "false")
+                            parameters.append("ver", "2")
+                            parameters.append("c", client.clientName)
+                            parameters.remove("cpn")
+                            parameters.append("cpn", cpn)
+                            startTimes?.let { parameters.append("st", it) }
+                            endTimes?.let { parameters.append("et", it) }
+                            currentMediaTime?.let { parameters.append("cmt", it) }
+                            realTime?.let { parameters.append("rt", it) }
+                            final?.let { parameters.append("final", if (it) "1" else "0") }
+                            format?.let { parameters.append("fmt", it.toString()) }
+                            if (playlistId != null) {
+                                parameters.append("list", playlistId)
+                            }
                         }
                     }
                 }
