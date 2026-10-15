@@ -166,6 +166,7 @@ private class SabrMediaStream(
             val contexts = mutableMapOf<Int, SabrContext>()
             val activeContextTypes = mutableSetOf<Int>()
             var retainedContextBytes = 0L
+            val requestWriter = ProtoWriter()
 
             while (
                 !ended &&
@@ -200,6 +201,7 @@ private class SabrMediaStream(
                         contexts = contexts.values,
                         activeContextTypes = activeContextTypes,
                         mediaType = mediaType,
+                        writer = requestWriter,
                     )
                 val retryResponse =
                     httpClient.withRedirectsDisabled {

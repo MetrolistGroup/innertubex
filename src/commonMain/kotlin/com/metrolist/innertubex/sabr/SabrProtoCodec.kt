@@ -14,6 +14,7 @@ internal object SabrProtoCodec {
         contexts: Collection<SabrContext>,
         activeContextTypes: Set<Int> = emptySet(),
         mediaType: SabrMediaType = SabrMediaType.AUDIO,
+        writer: ProtoWriter = ProtoWriter(),
     ): ByteArray {
         val videoFormat =
             if (mediaType == SabrMediaType.VIDEO) {
@@ -27,8 +28,9 @@ internal object SabrProtoCodec {
             } else {
                 bootstrap.discardVideoHeight
             }
-        return ProtoWriter()
+        return writer
             .apply {
+                reset()
                 message(1) {
                     if (videoHeight != 0) int32(21, videoHeight)
                     if (playerTimeMs != 0L) int64(28, playerTimeMs)

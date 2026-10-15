@@ -12,6 +12,22 @@ internal class ProtoWriter(
 ) {
     private var buffer = ByteArray(initialCapacity.coerceAtLeast(1))
     private var size = 0
+    private var childWriter: ProtoWriter? = null
+
+    fun reset() {
+        size = 0
+    }
+
+    private fun child(): ProtoWriter = (childWriter ?: ProtoWriter().also { childWriter = it }).also { it.reset() }
+
+    private fun messageBytes(
+        field: Int,
+        value: ProtoWriter,
+    ) {
+        tag(field, WIRE_LENGTH_DELIMITED)
+        varint(value.size.toLong())
+        append(value.buffer, value.size)
+    }
 
     fun int32(
         field: Int,
@@ -60,16 +76,16 @@ internal class ProtoWriter(
         field: Int,
         values: Collection<Int>,
     ) {
-        val packed = ProtoWriter()
+        val packed = child()
         values.forEach { packed.varint(it.toLong()) }
-        bytes(field, packed.toByteArray())
+        messageBytes(field, packed)
     }
 
     fun message(
         field: Int,
         block: ProtoWriter.() -> Unit,
     ) {
-        bytes(field, ProtoWriter().apply(block).toByteArray())
+        messageBytes(field, child().apply(block))
     }
 
     fun toByteArray(): ByteArray = buffer.copyOf(size)
@@ -106,10 +122,13 @@ internal class ProtoWriter(
         buffer[size++] = value
     }
 
-    private fun append(value: ByteArray) {
-        ensureCapacity(value.size)
-        value.copyInto(buffer, destinationOffset = size)
-        size += value.size
+    private fun append(
+        value: ByteArray,
+        count: Int = value.size,
+    ) {
+        ensureCapacity(count)
+        value.copyInto(buffer, destinationOffset = size, endIndex = count)
+        size += count
     }
 
     private fun ensureCapacity(extra: Int) {

@@ -11,6 +11,45 @@ import kotlin.test.assertTrue
 
 class SabrCoreTest {
     @Test
+    fun reusedWritersPreserveNestedLengthsAndPreviouslyEncodedRequests() {
+        val writer = ProtoWriter()
+        for (size in listOf(127, 128, 16_383, 16_384, 1, 0)) {
+            val payload = ByteArray(size) { it.toByte() }
+            writer.reset()
+            writer.message(1) {
+                message(2) { bytes(3, payload) }
+                message(4) { int32(5, 42) }
+            }
+            writer.packedInt32(6, listOf(1, 128))
+            val encoded = writer.toByteArray()
+            val first = protobufBytesField(encoded, 1)
+            assertContentEquals(payload, protobufBytesField(protobufBytesField(first, 2), 3))
+            assertEquals(42, protobufIntField(protobufBytesField(first, 4), 5))
+            assertContentEquals(byteArrayOf(1, 0x80.toByte(), 1), protobufBytesField(encoded, 6))
+        }
+        val bootstrap = bootstrapPlayerResponse().toSabrBootstrap(3, "1", bootstrapAudioFormat())
+
+        fun request(
+            time: Long,
+            reuse: ProtoWriter,
+        ): ByteArray =
+            SabrProtoCodec.encodeRequest(
+                bootstrap,
+                time,
+                time > 0,
+                emptyList(),
+                null,
+                emptyList(),
+                writer = reuse,
+            )
+        val first = request(0, writer)
+        val snapshot = first.copyOf()
+        assertContentEquals(request(123, ProtoWriter()), request(123, writer))
+        assertContentEquals(snapshot, first)
+        assertContentEquals(snapshot, request(0, writer))
+    }
+
+    @Test
     fun processorCoalescesTinyUnknownLengthFragmentsIntoOneBuffer() {
         val processor = SabrUmpProcessor(maxCollectedSegmentSize = 100_000, maxPendingMediaBytes = 200_000)
         processor.feed(umpPart(UmpPartType.MEDIA_HEADER, mediaHeader(contentLength = 0)))
