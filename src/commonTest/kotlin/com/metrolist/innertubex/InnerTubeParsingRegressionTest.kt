@@ -1,5 +1,6 @@
 package com.metrolist.innertubex
 
+import com.metrolist.innertubex.models.WatchEndpoint
 import com.metrolist.innertubex.models.response.AccountMenuResponse
 import com.metrolist.innertubex.models.response.AccountMenuResponse.Action.OpenPopupAction.Popup.MultiPageMenuRenderer.Header.ActiveAccountHeaderRenderer
 import com.metrolist.innertubex.models.response.PlayerResponse
@@ -50,6 +51,26 @@ class InnerTubeParsingRegressionTest {
         assertTrue(YouTubeUrlParser.parse("https://www.youtube.com/notv?v=abcdefghijk") == null)
         assertTrue(YouTubeUrlParser.parse("watch this https://www.youtube.com/watch?v=abcdefghijk") == null)
         assertTrue(YouTubeUrlParser.parse("https://youtu.be.evil/abcdefghijk") == null)
+    }
+
+    @Test
+    fun mobileWatchUrlsWorkAcrossParserHelpers() {
+        val url = "https://m.youtube.com/watch?v=dQw4w9WgXcQ"
+
+        assertEquals(YouTubeUrlParser.ParsedUrl.Video("dQw4w9WgXcQ"), YouTubeUrlParser.parse(url))
+        assertTrue(YouTubeUrlParser.isYouTubeUrl(url))
+        assertEquals("dQw4w9WgXcQ", YouTubeUrlParser.extractVideoId(url))
+        assertEquals(WatchEndpoint("dQw4w9WgXcQ"), YouTubeUrlParser.createWatchEndpoint(url))
+        for (invalid in listOf(
+            "https://m.youtube.com.evil/watch?v=dQw4w9WgXcQ",
+            "https://evil-m.youtube.com/watch?v=dQw4w9WgXcQ",
+            "https://m.youtube.com@evil.test/watch?v=dQw4w9WgXcQ",
+            "https://m.youtube.com/notv?v=dQw4w9WgXcQ",
+            "https://m.youtube.com/watch?v=short",
+        )) {
+            assertNull(YouTubeUrlParser.parse(invalid))
+            assertNull(YouTubeUrlParser.createWatchEndpoint(invalid))
+        }
     }
 
     @Test

@@ -24,7 +24,7 @@ object YouTubeUrlParser {
         ) : ParsedUrl()
     }
 
-    private val youtubeHosts = setOf("youtube.com", "www.youtube.com", "music.youtube.com", "www.music.youtube.com")
+    private val youtubeHosts = setOf("youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "www.music.youtube.com")
     private val musicHosts = setOf("music.youtube.com", "www.music.youtube.com")
     private val videoId = Regex("[a-zA-Z0-9_-]{11}")
     private val playlistId = Regex("[a-zA-Z0-9_-]+")
