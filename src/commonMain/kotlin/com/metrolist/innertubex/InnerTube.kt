@@ -71,6 +71,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
@@ -127,6 +128,7 @@ class InnerTube(
         private const val MAX_UPLOAD_START_RESPONSE_BYTES = 64 * 1024
         private const val MAX_IMAGE_UPLOAD_RESPONSE_BYTES = 64 * 1024
         private const val MAX_UPLOAD_BYTES = 300L * 1024 * 1024
+        private const val VISITOR_FETCH_TIMEOUT_MS = 15_000L
         private const val MAX_VISITOR_RESPONSE_BYTES = 4 * 1024 * 1024
     }
 
@@ -1701,6 +1703,7 @@ class InnerTube(
     ): String? {
         val deferred =
             visitorDataFetchMutex.withLock {
+                visitorDataScope.coroutineContext.ensureActive()
                 val currentSession = session.load()
                 if (!forceRefresh || requestSession != currentSession) {
                     currentSession.visitorData
@@ -1713,23 +1716,26 @@ class InnerTube(
 
                 val sessionIdentity = requestSession.copy(visitorData = null)
                 visitorDataFlight
-                    ?.takeIf { it.sessionIdentity == sessionIdentity }
+                    ?.takeIf { it.sessionIdentity == sessionIdentity && !it.result.isCompleted }
                     ?.result
                     ?: CompletableDeferred<String?>().also { result ->
                         visitorDataFlight = VisitorDataFlight(sessionIdentity, result)
-                        visitorDataScope.launch {
-                            try {
-                                result.complete(fetchFreshVisitorDataNetwork(requestSession))
-                            } catch (e: Throwable) {
-                                result.completeExceptionally(e)
-                            } finally {
-                                withContext(NonCancellable) {
-                                    visitorDataFetchMutex.withLock {
-                                        if (visitorDataFlight?.result === result) visitorDataFlight = null
+                        visitorDataScope
+                            .launch {
+                                try {
+                                    result.complete(withTimeout(VISITOR_FETCH_TIMEOUT_MS) { fetchFreshVisitorDataNetwork(requestSession) })
+                                } catch (e: Throwable) {
+                                    result.completeExceptionally(e)
+                                } finally {
+                                    withContext(NonCancellable) {
+                                        visitorDataFetchMutex.withLock {
+                                            if (visitorDataFlight?.result === result) visitorDataFlight = null
+                                        }
                                     }
                                 }
+                            }.invokeOnCompletion { cause ->
+                                if (cause != null) result.completeExceptionally(cause)
                             }
-                        }
                     }
             }
         return deferred.await()
@@ -1742,7 +1748,7 @@ class InnerTube(
             val serviceWorkerData =
                 try {
                     val response =
-                        executeRequest(operation = "fetchFreshVisitorData", requireSuccess = false) {
+                        executeRequest(operation = "fetchFreshVisitorData", retryTransientFailures = false, requireSuccess = false) {
                             httpClient.get(VISITOR_DATA_URL) {
                                 header("User-Agent", YouTubeClient.USER_AGENT_WEB)
                                 header(HttpHeaders.Accept, "application/json,text/plain,*/*")
@@ -1785,7 +1791,7 @@ class InnerTube(
 
     private suspend fun fetchHomepageVisitorData(requestSession: SessionSnapshot): String? {
         val response =
-            executeRequest(operation = "fetchFreshVisitorData", requireSuccess = false) {
+            executeRequest(operation = "fetchFreshVisitorData", requireSuccess = false, maxAttempts = 2) {
                 httpClient.get(ORIGIN_MUSIC) {
                     header("User-Agent", YouTubeClient.USER_AGENT_WEB)
                     header(HttpHeaders.Accept, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")

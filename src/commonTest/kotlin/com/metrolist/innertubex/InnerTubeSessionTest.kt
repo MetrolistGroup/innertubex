@@ -35,6 +35,68 @@ import kotlin.test.assertTrue
 
 class InnerTubeSessionTest {
     @Test
+    fun visitorFetchAfterCloseAndDuringCloseAlwaysCompletes() =
+        runBlocking {
+            repeat(20) {
+                val innerTube =
+                    InnerTube(
+                        HttpClient(
+                            MockEngine {
+                                CompletableDeferred<Unit>().await()
+                                respondOk()
+                            },
+                        ),
+                    )
+                val pending = async(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { innerTube.fetchFreshVisitorData() }
+                innerTube.close()
+                withTimeout(2_000) {
+                    assertFailsWith<CancellationException> { pending.await() }
+                    assertFailsWith<CancellationException> { innerTube.fetchFreshVisitorData() }
+                }
+                innerTube.httpClient.close()
+            }
+        }
+
+    @Test
+    fun stalledVisitorProducerTimesOutAndAllowsFreshFlight() =
+        runBlocking {
+            var attempts = 0
+            val innerTube =
+                InnerTube(
+                    HttpClient(
+                        MockEngine {
+                            attempts++
+                            if (attempts == 1) CompletableDeferred<Unit>().await()
+                            respond(serviceWorkerResponse("recovered"), HttpStatusCode.OK)
+                        },
+                    ),
+                )
+            try {
+                withTimeout(20_000) {
+                    assertFailsWith<kotlinx.coroutines.TimeoutCancellationException> { innerTube.fetchFreshVisitorData() }
+                    assertEquals("recovered", innerTube.fetchFreshVisitorData())
+                }
+                assertEquals(2, attempts)
+            } finally {
+                innerTube.close()
+                innerTube.httpClient.close()
+            }
+        }
+
+    @Test
+    fun visitorFallbackHasOneServiceWorkerAttemptAndTwoHomepageAttempts() =
+        runBlocking {
+            val engine = MockEngine { respond("unavailable", HttpStatusCode.ServiceUnavailable) }
+            val delays = mutableListOf<kotlin.time.Duration>()
+            val innerTube = InnerTube(HttpClient(engine), retryDelay = { delays += it })
+            assertNull(innerTube.fetchFreshVisitorData())
+            assertEquals(listOf("www.youtube.com", "music.youtube.com", "music.youtube.com"), engine.requestHistory.map { it.url.host })
+            assertEquals(listOf(kotlin.time.Duration.parse("500ms")), delays)
+            innerTube.close()
+            innerTube.httpClient.close()
+        }
+
+    @Test
     fun invalidationCancelsOnlyRequestAndPreservesHostAndSibling() =
         runBlocking {
             for (close in listOf(false, true)) {
@@ -332,8 +394,8 @@ class InnerTubeSessionTest {
             val innerTube = InnerTube(HttpClient(engine), retryDelay = {})
 
             assertEquals("homepage-visitor", innerTube.fetchFreshVisitorData())
-            assertEquals(3, serviceWorkerRequests)
-            assertEquals(4, engine.requestHistory.size)
+            assertEquals(1, serviceWorkerRequests)
+            assertEquals(2, engine.requestHistory.size)
         }
 
     @Test
