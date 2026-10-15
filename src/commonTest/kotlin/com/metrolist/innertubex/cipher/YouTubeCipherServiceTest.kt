@@ -109,7 +109,9 @@ class YouTubeCipherServiceTest {
             val playerCode =
                 PLAYER_CODE.replace(
                     "(function() {",
-                    "(function() { var omitted = []; var helper = {reverse: omitted.reverse};",
+                    "(function() { var omitted = []; var helper = {reverse: omitted.reverse};" +
+                        "var sigFn = function(a){a=a.split(\"\");helper.reverse(a);return a.join(\"\")};" +
+                        "function unused(params, x) { params.set(\"signature\", sigFn(x)); }",
                 )
             val parsed = PlayerScriptParser.parse(playerCode)
             assertTrue("helper" in parsed.helperFunctions)
