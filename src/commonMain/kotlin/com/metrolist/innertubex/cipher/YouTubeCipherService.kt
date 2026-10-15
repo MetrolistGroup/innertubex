@@ -597,7 +597,7 @@ class YouTubeCipherService(
                         }
                     val solver = getOrCreateSolver(playerUrl)
                     val solvedSig =
-                        solver.sigSolver(signature).takeUnless { it.isNullOrBlank() }
+                        solver?.sigSolver?.invoke(signature).takeUnless { it.isNullOrBlank() }
                             ?: run {
                                 val r =
                                     ejs.solve(
@@ -659,7 +659,7 @@ class YouTubeCipherService(
                         }
                     val solver = getOrCreateSolver(playerUrl)
                     val solvedN =
-                        solver.nSolver(nValue).takeUnless { it.isNullOrBlank() }
+                        solver?.nSolver?.invoke(nValue).takeUnless { it.isNullOrBlank() }
                             ?: run {
                                 val r =
                                     ejs.solve(
@@ -767,11 +767,15 @@ class YouTubeCipherService(
         return solver
     }
 
-    private suspend fun getOrCreateSolver(playerUrl: String): CachedSolver {
-        cacheMutex.withLock { solverCacheHitLocked(playerUrl) }?.let { return it }
-        val playerCode = getOrDownloadPlayerCode(playerUrl).code
-        return getOrCreateSolver(playerUrl, playerCode)
-    }
+    private suspend fun getOrCreateSolver(playerUrl: String): CachedSolver? =
+        try {
+            cacheMutex.withLock { solverCacheHitLocked(playerUrl) }
+                ?: getOrCreateSolver(playerUrl, getOrDownloadPlayerCode(playerUrl).code)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
 
     private suspend fun getOrCreateSolver(
         playerUrl: String,

@@ -104,6 +104,38 @@ class YouTubeCipherServiceTest {
         }
 
     @Test
+    fun singleChallengesFallBackToEjsWhenParserInitializationFails() =
+        runBlocking {
+            val playerCode =
+                PLAYER_CODE.replace(
+                    "(function() {",
+                    "(function() { var omitted = []; var helper = {reverse: omitted.reverse};",
+                )
+            val parsed = PlayerScriptParser.parse(playerCode)
+            assertTrue("helper" in parsed.helperFunctions)
+            val parserEngine = QuickJsEngine()
+            try {
+                parserEngine.initialize()
+                parserEngine.setupYoutubeGlobals()
+                assertFailsWith<Exception> { parserEngine.execute(PlayerScriptParser.generateSolverScript(parsed)) }
+            } finally {
+                parserEngine.dispose()
+            }
+            val client = HttpClient(MockEngine { respond(playerCode) })
+            val service = YouTubeCipherService(client)
+            try {
+                assertEquals(
+                    "$MEDIA_URL?signature=cba",
+                    service.deobfuscateSignatureCipher(PLAYER_URL, "s=abc&url=$MEDIA_URL"),
+                )
+                assertEquals("$MEDIA_URL?n=value_done", service.processNParameter(PLAYER_URL, "$MEDIA_URL?n=value"))
+            } finally {
+                service.dispose()
+                client.close()
+            }
+        }
+
+    @Test
     fun malformedCipherDoesNotAbortUsableFormats() =
         runBlocking {
             val client = HttpClient(MockEngine { respond(PLAYER_CODE) })
