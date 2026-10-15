@@ -20,8 +20,18 @@ class QuickJsEngineTest {
             val engine = QuickJsEngine()
             try {
                 engine.initialize()
-                val input = "\"\\\n\r\t\u0000\u2028".repeat(100_000)
+                val input = "\"\\\n\r\t\u2028".repeat(100_000)
                 assertEquals(input, engine.evaluate("__itxTakeInput()", input.length, input = input))
+                // Native results end at NUL, so check NUL-bearing input inside JavaScript.
+                val withNul = "a\u0000b".repeat(100_000)
+                assertEquals(
+                    "300000:1:98",
+                    engine.evaluate(
+                        "(function(s) { return s.length + ':' + s.indexOf('\\u0000') + ':' + s.charCodeAt(s.length - 1); })(__itxTakeInput())",
+                        64,
+                        input = withNul,
+                    ),
+                )
                 assertEquals("", engine.evaluate("__itxTakeInput()", 8))
                 assertFailsWith<QuickJsException> {
                     engine.evaluate("(function() { throw Error('failed'); })()", 8, input = input)
