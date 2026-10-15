@@ -11,6 +11,37 @@ import kotlin.test.assertTrue
 
 class SabrCoreTest {
     @Test
+    fun sensitiveSabrModelsRedactUrlsAndTokenBytes() {
+        val secret = "synthetic-sabr-secret"
+        val url = "https://example.googlevideo.com/videoplayback?sig=$secret"
+        val token = byteArrayOf(91, 82, 73)
+        val bootstrap =
+            bootstrapPlayerResponse()
+                .toSabrBootstrap(
+                    clientId = 3,
+                    clientVersion = "1",
+                    audioFormat = bootstrapAudioFormat(),
+                ).copy(serverAbrStreamingUrl = url, poToken = token, videoPlaybackUstreamerConfig = token)
+        val context = SabrContext(1, token, true, 0)
+        val models =
+            listOf(
+                bootstrap,
+                context,
+                SabrEvent.ContextUpdate(context),
+                SabrEvent.Redirect(url),
+                SabrEvent.NextRequestPolicy(1, 2, 3, 4, token),
+            )
+        for (model in models) {
+            val description = model.toString()
+            assertTrue(secret !in description)
+            assertTrue("googlevideo" !in description)
+            assertTrue(token.contentToString() !in description)
+        }
+        assertTrue("audioItag=140" in bootstrap.toString())
+        assertTrue("poTokenSize=3" in bootstrap.toString())
+    }
+
+    @Test
     fun chunkRejectsOverflowedByteRange() {
         val chunk =
             SabrChunk(

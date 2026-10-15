@@ -38,6 +38,11 @@ data class SabrBootstrap(
     /** Video renditions this session can also stream, one per height, lowest first. */
     val videoVariants: List<SabrVideoVariant> = emptyList(),
 ) {
+    override fun toString(): String =
+        "SabrBootstrap(audioItag=${audioFormat.itag}, videoItag=${selectedVideoFormat?.itag}, " +
+            "streamingUrlPresent=${serverAbrStreamingUrl.isNotEmpty()}, " +
+            "ustreamerConfigSize=${videoPlaybackUstreamerConfig.size}, poTokenSize=${poToken?.size ?: 0})"
+
     /** Returns this session retargeted at [variant]; audio and session state are unchanged. */
     fun withVideoVariant(variant: SabrVideoVariant): SabrBootstrap {
         require(variant in videoVariants) { "Video variant is not part of this SABR session" }
@@ -229,6 +234,9 @@ data class SabrContext(
     val sendByDefault: Boolean,
     val writePolicy: Int,
 ) {
+    override fun toString(): String =
+        "SabrContext(type=$type, valueSize=${value.size}, sendByDefault=$sendByDefault, writePolicy=$writePolicy)"
+
     override fun equals(other: Any?): Boolean =
         other is SabrContext &&
             type == other.type &&
@@ -258,11 +266,18 @@ sealed interface SabrEvent {
         val backoffTimeMs: Long,
         val minAudioReadaheadMs: Long,
         val playbackCookie: ByteArray?,
-    ) : SabrEvent
+    ) : SabrEvent {
+        override fun toString(): String =
+            "NextRequestPolicy(targetAudioReadaheadMs=$targetAudioReadaheadMs, " +
+                "maxTimeSinceLastRequestMs=$maxTimeSinceLastRequestMs, backoffTimeMs=$backoffTimeMs, " +
+                "minAudioReadaheadMs=$minAudioReadaheadMs, playbackCookieSize=${playbackCookie?.size ?: 0})"
+    }
 
     data class Redirect(
         val url: String,
-    ) : SabrEvent
+    ) : SabrEvent {
+        override fun toString(): String = "Redirect(urlPresent=${url.isNotEmpty()})"
+    }
 
     data class ContextUpdate(
         val context: SabrContext,
