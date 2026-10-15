@@ -9,7 +9,13 @@ public fun selectBestAudioFormat(
     audioQuality: AudioQuality = AudioQuality.AUTO,
     requireUrl: Boolean = true,
 ): Format? {
-    val validFormats = originalAudioTrack(if (requireUrl) formats.filter { !it.url.isNullOrBlank() } else formats)
+    val validFormats =
+        originalAudioTrack(
+            formats.filter {
+                it.isAudio && it.mimeType.startsWith("audio/", ignoreCase = true) &&
+                    (!requireUrl || !it.url.isNullOrBlank())
+            },
+        )
     if (validFormats.isEmpty()) return null
     return when (audioQuality) {
         AudioQuality.LOW -> {

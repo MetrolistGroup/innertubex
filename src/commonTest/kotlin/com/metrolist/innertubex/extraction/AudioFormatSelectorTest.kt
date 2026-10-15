@@ -8,6 +8,18 @@ import kotlin.test.assertNull
 
 class AudioFormatSelectorTest {
     @Test
+    fun mixedAndVideoOnlyInputsNeverSelectVideoAsAudio() {
+        val audio = Format(itag = 140, mimeType = "audio/mp4", bitrate = 128_000, url = "https://audio")
+        val video = Format(itag = 137, mimeType = "video/mp4", bitrate = 5_000_000, width = 1920, height = 1080, url = "https://video")
+        AudioQuality.entries.forEach { quality ->
+            listOf(true, false).forEach { requireUrl ->
+                assertEquals(audio, selectBestAudioFormat(listOf(video, audio), quality, requireUrl))
+                assertNull(selectBestAudioFormat(listOf(video), quality, requireUrl))
+            }
+        }
+    }
+
+    @Test
     fun prefersOriginalAudioTrackOverHigherBitrateDub() {
         val dub =
             Format(
