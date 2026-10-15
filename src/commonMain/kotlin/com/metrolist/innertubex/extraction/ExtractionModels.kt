@@ -230,7 +230,7 @@ public data class ExtractedMediaMetadata(
 }
 
 /** Signed media URLs and request headers are sensitive and intentionally redacted from [toString]. */
-public data class ExtractedStream(
+public class ExtractedStream(
     val videoId: String,
     val audioUrl: String,
     val headers: Map<String, String>,
@@ -265,6 +265,202 @@ public data class ExtractedStream(
         internal set
     public var mediaMetadata: ExtractedMediaMetadata? = null
         internal set
+
+    // Keep the original constructor, component and copy signatures for existing hosts.
+    public operator fun component1(): String = videoId
+
+    public operator fun component2(): String = audioUrl
+
+    public operator fun component3(): Map<String, String> = headers
+
+    public operator fun component4(): Double? = loudnessDb
+
+    public operator fun component5(): Instant? = expiresAt
+
+    public operator fun component6(): Long? = contentLengthBytes
+
+    public operator fun component7(): Int = itag
+
+    public operator fun component8(): String? = mimeType
+
+    public operator fun component9(): String? = codecs
+
+    public operator fun component10(): Int? = bitrate
+
+    public operator fun component11(): Int? = sampleRate
+
+    public operator fun component12(): String = clientName
+
+    public operator fun component13(): String = profileId
+
+    public operator fun component14(): Boolean = requireBoundedRange
+
+    public operator fun component15(): Long = rangeChunkSizeBytes
+
+    public operator fun component16(): Boolean = useRangeChunks
+
+    public operator fun component17(): PlaybackTrackingData? = playbackTracking
+
+    public operator fun component18(): StreamDiagnostics? = streamDiagnostics
+
+    public operator fun component19(): String? = videoUrl
+
+    public operator fun component20(): Int? = videoWidth
+
+    public operator fun component21(): Int? = videoHeight
+
+    public operator fun component22(): String? = videoMimeType
+
+    public operator fun component23(): String? = videoCodecs
+
+    public operator fun component24(): Int? = videoBitrate
+
+    public operator fun component25(): Int? = videoItag
+
+    public operator fun component26(): Long? = videoContentLengthBytes
+
+    public operator fun component27(): SabrBootstrap? = sabrBootstrap
+
+    public operator fun component28(): SabrBootstrap? = sabrVideoBootstrap
+
+    public operator fun component29(): List<Int> = availableVideoHeights
+
+    public fun copy(
+        videoId: String = this.videoId,
+        audioUrl: String = this.audioUrl,
+        headers: Map<String, String> = this.headers,
+        loudnessDb: Double? = this.loudnessDb,
+        expiresAt: Instant? = this.expiresAt,
+        contentLengthBytes: Long? = this.contentLengthBytes,
+        itag: Int = this.itag,
+        mimeType: String? = this.mimeType,
+        codecs: String? = this.codecs,
+        bitrate: Int? = this.bitrate,
+        sampleRate: Int? = this.sampleRate,
+        clientName: String = this.clientName,
+        profileId: String = this.profileId,
+        requireBoundedRange: Boolean = this.requireBoundedRange,
+        rangeChunkSizeBytes: Long = this.rangeChunkSizeBytes,
+        useRangeChunks: Boolean = this.useRangeChunks,
+        playbackTracking: PlaybackTrackingData? = this.playbackTracking,
+        streamDiagnostics: StreamDiagnostics? = this.streamDiagnostics,
+        videoUrl: String? = this.videoUrl,
+        videoWidth: Int? = this.videoWidth,
+        videoHeight: Int? = this.videoHeight,
+        videoMimeType: String? = this.videoMimeType,
+        videoCodecs: String? = this.videoCodecs,
+        videoBitrate: Int? = this.videoBitrate,
+        videoItag: Int? = this.videoItag,
+        videoContentLengthBytes: Long? = this.videoContentLengthBytes,
+        sabrBootstrap: SabrBootstrap? = this.sabrBootstrap,
+        sabrVideoBootstrap: SabrBootstrap? = this.sabrVideoBootstrap,
+        availableVideoHeights: List<Int> = this.availableVideoHeights,
+    ): ExtractedStream =
+        ExtractedStream(
+            videoId = videoId,
+            audioUrl = audioUrl,
+            headers = headers,
+            loudnessDb = loudnessDb,
+            expiresAt = expiresAt,
+            contentLengthBytes = contentLengthBytes,
+            itag = itag,
+            mimeType = mimeType,
+            codecs = codecs,
+            bitrate = bitrate,
+            sampleRate = sampleRate,
+            clientName = clientName,
+            profileId = profileId,
+            requireBoundedRange = requireBoundedRange,
+            rangeChunkSizeBytes = rangeChunkSizeBytes,
+            useRangeChunks = useRangeChunks,
+            playbackTracking = playbackTracking,
+            streamDiagnostics = streamDiagnostics,
+            videoUrl = videoUrl,
+            videoWidth = videoWidth,
+            videoHeight = videoHeight,
+            videoMimeType = videoMimeType,
+            videoCodecs = videoCodecs,
+            videoBitrate = videoBitrate,
+            videoItag = videoItag,
+            videoContentLengthBytes = videoContentLengthBytes,
+            sabrBootstrap = sabrBootstrap,
+            sabrVideoBootstrap = sabrVideoBootstrap,
+            availableVideoHeights = availableVideoHeights,
+        ).also {
+            it.perceptualLoudnessDb = perceptualLoudnessDb
+            it.mediaMetadata = mediaMetadata
+        }
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is ExtractedStream) return false
+        return videoId == other.videoId &&
+            audioUrl == other.audioUrl &&
+            headers == other.headers &&
+            (loudnessDb?.equals(other.loudnessDb) ?: (other.loudnessDb == null)) &&
+            expiresAt == other.expiresAt &&
+            contentLengthBytes == other.contentLengthBytes &&
+            itag == other.itag &&
+            mimeType == other.mimeType &&
+            codecs == other.codecs &&
+            bitrate == other.bitrate &&
+            sampleRate == other.sampleRate &&
+            clientName == other.clientName &&
+            profileId == other.profileId &&
+            requireBoundedRange == other.requireBoundedRange &&
+            rangeChunkSizeBytes == other.rangeChunkSizeBytes &&
+            useRangeChunks == other.useRangeChunks &&
+            playbackTracking == other.playbackTracking &&
+            streamDiagnostics == other.streamDiagnostics &&
+            videoUrl == other.videoUrl &&
+            videoWidth == other.videoWidth &&
+            videoHeight == other.videoHeight &&
+            videoMimeType == other.videoMimeType &&
+            videoCodecs == other.videoCodecs &&
+            videoBitrate == other.videoBitrate &&
+            videoItag == other.videoItag &&
+            videoContentLengthBytes == other.videoContentLengthBytes &&
+            sabrBootstrap == other.sabrBootstrap &&
+            sabrVideoBootstrap == other.sabrVideoBootstrap &&
+            availableVideoHeights == other.availableVideoHeights &&
+            (perceptualLoudnessDb?.equals(other.perceptualLoudnessDb) ?: (other.perceptualLoudnessDb == null)) &&
+            mediaMetadata == other.mediaMetadata
+    }
+
+    override fun hashCode(): Int {
+        var result = videoId.hashCode()
+        result = 31 * result + audioUrl.hashCode()
+        result = 31 * result + headers.hashCode()
+        result = 31 * result + (loudnessDb?.hashCode() ?: 0)
+        result = 31 * result + (expiresAt?.hashCode() ?: 0)
+        result = 31 * result + (contentLengthBytes?.hashCode() ?: 0)
+        result = 31 * result + itag.hashCode()
+        result = 31 * result + (mimeType?.hashCode() ?: 0)
+        result = 31 * result + (codecs?.hashCode() ?: 0)
+        result = 31 * result + (bitrate?.hashCode() ?: 0)
+        result = 31 * result + (sampleRate?.hashCode() ?: 0)
+        result = 31 * result + clientName.hashCode()
+        result = 31 * result + profileId.hashCode()
+        result = 31 * result + requireBoundedRange.hashCode()
+        result = 31 * result + rangeChunkSizeBytes.hashCode()
+        result = 31 * result + useRangeChunks.hashCode()
+        result = 31 * result + (playbackTracking?.hashCode() ?: 0)
+        result = 31 * result + (streamDiagnostics?.hashCode() ?: 0)
+        result = 31 * result + (videoUrl?.hashCode() ?: 0)
+        result = 31 * result + (videoWidth?.hashCode() ?: 0)
+        result = 31 * result + (videoHeight?.hashCode() ?: 0)
+        result = 31 * result + (videoMimeType?.hashCode() ?: 0)
+        result = 31 * result + (videoCodecs?.hashCode() ?: 0)
+        result = 31 * result + (videoBitrate?.hashCode() ?: 0)
+        result = 31 * result + (videoItag?.hashCode() ?: 0)
+        result = 31 * result + (videoContentLengthBytes?.hashCode() ?: 0)
+        result = 31 * result + (sabrBootstrap?.hashCode() ?: 0)
+        result = 31 * result + (sabrVideoBootstrap?.hashCode() ?: 0)
+        result = 31 * result + availableVideoHeights.hashCode()
+        result = 31 * result + (perceptualLoudnessDb?.hashCode() ?: 0)
+        result = 31 * result + (mediaMetadata?.hashCode() ?: 0)
+        return result
+    }
 
     override fun toString(): String =
         "ExtractedStream(" +

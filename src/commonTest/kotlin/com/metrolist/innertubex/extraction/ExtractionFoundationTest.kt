@@ -12,6 +12,42 @@ import kotlin.time.Duration.Companion.hours
 
 class ExtractionFoundationTest {
     @Test
+    fun streamCopyPreservesMetadataAndIncludesItInValueSemantics() {
+        val stream =
+            ExtractedStream(
+                videoId = "video",
+                audioUrl = "https://r1.googlevideo.com/videoplayback",
+                headers = emptyMap(),
+                loudnessDb = null,
+                expiresAt = null,
+                contentLengthBytes = null,
+                itag = 140,
+                mimeType = "audio/mp4",
+                codecs = null,
+                bitrate = null,
+                sampleRate = null,
+                clientName = "WEB",
+                profileId = "WEB",
+                requireBoundedRange = false,
+                rangeChunkSizeBytes = 1024,
+            ).apply {
+                perceptualLoudnessDb = -7.0
+                mediaMetadata = ExtractedMediaMetadata("title", "author", null, 123, null, null, emptyList(), false)
+            }
+        val copied = stream.copy(headers = mapOf("Accept" to "*/*"))
+        assertEquals(stream.mediaMetadata, copied.mediaMetadata)
+        assertEquals(stream.perceptualLoudnessDb, copied.perceptualLoudnessDb)
+        assertEquals(stream, copied.copy(headers = stream.headers))
+        assertEquals(stream.hashCode(), stream.copy().hashCode())
+        assertFalse(stream == stream.copy().apply { mediaMetadata = null })
+        assertFalse(stream == stream.copy().apply { perceptualLoudnessDb = null })
+        val nan = stream.copy(loudnessDb = Double.NaN)
+        assertEquals(nan, nan.copy())
+        assertEquals(nan.hashCode(), nan.copy().hashCode())
+        assertFalse(stream.copy(loudnessDb = -0.0) == stream.copy(loudnessDb = 0.0))
+    }
+
+    @Test
     fun capabilityChangesHaveDistinctValueAndStateFlowSemantics() {
         val original = ContentHints()
         val state = kotlinx.coroutines.flow.MutableStateFlow(original)
