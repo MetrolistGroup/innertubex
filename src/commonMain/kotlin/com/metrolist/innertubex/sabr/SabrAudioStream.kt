@@ -370,9 +370,11 @@ private class SabrMediaStream(
                                             event.header.formatId.matches(selectedFormat) &&
                                             (event.header.videoId == null || event.header.videoId == bootstrap.videoId)
                                         ) {
-                                            selectedHeaderSequences += event.header.sequenceNumber
-                                            selectedHeaderStartRanges += event.header.startRange
-                                            selectedHeaderContentLengths += event.header.contentLength
+                                            if (selectedHeaderSequences.size < MAX_HEADER_DIAGNOSTICS) {
+                                                selectedHeaderSequences += event.header.sequenceNumber
+                                                selectedHeaderStartRanges += event.header.startRange
+                                                selectedHeaderContentLengths += event.header.contentLength
+                                            }
                                         } else if (!event.header.isInitSegment) {
                                             unselectedHeaderCount++
                                         }
@@ -407,6 +409,9 @@ private class SabrMediaStream(
                                                         sequenceNumber >= checkNotNull(firstSequenceNumber) && sequenceNumber <= last
                                                     } == true
                                             if (!alreadyEmitted) {
+                                                if (pendingMediaBySequence.size >= MAX_PENDING_SEGMENTS) {
+                                                    throw SabrProtocolException("SABR pending segment count exceeded the memory limit")
+                                                }
                                                 if (pendingMediaBySequence.put(sequenceNumber, segment) != null) {
                                                     throw SabrProtocolException("SABR returned duplicate segment $sequenceNumber")
                                                 }
@@ -863,6 +868,8 @@ private class SabrMediaStream(
         const val MAX_REQUEST_COUNT = 10_000
         const val MAX_BACKOFF_MS = 30_000L
         const val MAX_RESPONSE_MEDIA_BYTES = 64L * 1024 * 1024
+        const val MAX_HEADER_DIAGNOSTICS = 128
+        const val MAX_PENDING_SEGMENTS = 1_024
         const val MAX_CONTEXT_COUNT = 64
         const val MAX_CONTEXT_VALUE_BYTES = 64 * 1024
         const val MAX_CONTEXT_BYTES = 256L * 1024

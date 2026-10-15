@@ -11,6 +11,30 @@ import kotlin.test.assertTrue
 
 class SabrCoreTest {
     @Test
+    fun processorBoundsHeaderObjectsEvenForDiscardedEmptySegments() {
+        val processor = SabrUmpProcessor(shouldCollectMedia = { false })
+        val response =
+            umpPart(UmpPartType.MEDIA_HEADER, mediaHeader(contentLength = 0)) +
+                umpPart(UmpPartType.MEDIA_END, byteArrayOf(1))
+        repeat(4_096) { processor.feed(response) }
+        val error = assertFailsWith<SabrProtocolException> { processor.feed(response) }
+        assertEquals("SABR response exceeded the media header limit", error.message)
+    }
+
+    @Test
+    fun processorRejectsEmptySelectedInitializationAndMedia() {
+        for (isInit in listOf(false, true)) {
+            val processor = SabrUmpProcessor()
+            processor.feed(umpPart(UmpPartType.MEDIA_HEADER, mediaHeader(contentLength = 0, isInit = isInit)))
+            val error =
+                assertFailsWith<SabrProtocolException> {
+                    processor.feed(umpPart(UmpPartType.MEDIA_END, byteArrayOf(1)))
+                }
+            assertEquals("Empty selected SABR media segment", error.message)
+        }
+    }
+
+    @Test
     fun sensitiveSabrModelsRedactUrlsAndTokenBytes() {
         val secret = "synthetic-sabr-secret"
         val url = "https://example.googlevideo.com/videoplayback?sig=$secret"

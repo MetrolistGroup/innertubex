@@ -31,6 +31,48 @@ import kotlin.test.assertNotNull
 @OptIn(ExperimentalSabrApi::class)
 class SabrAudioStreamTest {
     @Test
+    fun boundsCompletedSegmentsWaitingForTheOpeningSequence() =
+        runBlocking {
+            val response =
+                initializationResponsePrefix(1_025) +
+                    (1..1_025)
+                        .flatMap { sequence ->
+                            mediaResponseSegment(2, sequence, 0, byteArrayOf(1)).asIterable()
+                        }.toByteArray()
+            val engine =
+                MockEngine {
+                    respond(response, headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"))
+                }
+            val error =
+                assertFailsWith<SabrProtocolException> {
+                    SabrAudioStream(HttpClient(engine), bootstrap().copy(contentLengthBytes = null)).chunks().toList()
+                }
+            assertEquals("SABR pending segment count exceeded the memory limit", error.message)
+        }
+
+    @Test
+    fun samplesHeaderDiagnosticsWithManyDuplicateSegments() =
+        runBlocking {
+            val response =
+                initializationResponsePrefix(0) +
+                    (1..200)
+                        .flatMap {
+                            mediaResponseSegment(2, 0, 0, byteArrayOf(5, 6, 7)).asIterable()
+                        }.toByteArray()
+            val engine =
+                MockEngine {
+                    respond(response, headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"))
+                }
+            val diagnostics = mutableListOf<SabrResponseDiagnostics>()
+            val chunks = SabrAudioStream(HttpClient(engine), bootstrap(), onResponse = diagnostics::add).chunks().toList()
+            assertEquals(2, chunks.size)
+            assertEquals(128, diagnostics.single().receivedSequences.size)
+            assertEquals(128, diagnostics.single().receivedStartRanges.size)
+            assertEquals(128, diagnostics.single().receivedContentLengths.size)
+            assertEquals(1, diagnostics.single().selectedSegmentCount)
+        }
+
+    @Test
     fun rejectsMissingOpeningMediaWithoutDeclaredContentLength() =
         runBlocking {
             for (sequence in listOf(0, 5)) {

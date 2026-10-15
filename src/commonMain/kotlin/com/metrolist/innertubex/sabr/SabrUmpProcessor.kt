@@ -12,6 +12,7 @@ internal class SabrUmpProcessor(
     private val pendingSegments = mutableMapOf<Int, PendingSegment>()
     private var pendingMediaBytes = 0L
     private var responseBytes = 0L
+    private var responseHeaderCount = 0
 
     fun feed(chunk: ByteArray): List<SabrEvent> = feed(chunk, chunk.size)
 
@@ -52,6 +53,9 @@ internal class SabrUmpProcessor(
     private fun process(part: UmpPart): List<SabrEvent> =
         when (part.type) {
             UmpPartType.MEDIA_HEADER -> {
+                if (++responseHeaderCount > MAX_RESPONSE_HEADERS) {
+                    throw SabrProtocolException("SABR response exceeded the media header limit")
+                }
                 val header = SabrProtoCodec.decodeMediaHeader(part.data)
                 if (pendingSegments.containsKey(header.headerId)) {
                     throw SabrProtocolException("Duplicate SABR media header ID ${header.headerId}")
@@ -178,6 +182,7 @@ internal class SabrUmpProcessor(
             )
         }
         if (!pending.collect) return null
+        if (pending.byteCount == 0L) throw SabrProtocolException("Empty selected SABR media segment")
         pendingMediaBytes -= pending.reservedBytes
         val bytes =
             pending.bytes ?: ByteArray(pending.byteCount.toInt()).also { combined ->
@@ -200,6 +205,7 @@ internal class SabrUmpProcessor(
     )
 
     private companion object {
+        const val MAX_RESPONSE_HEADERS = 4_096
         const val COMPRESSION_NONE = 0
         const val DEFAULT_MAX_COLLECTED_SEGMENT_SIZE = 16 * 1024 * 1024
         const val DEFAULT_MAX_PENDING_MEDIA_BYTES = 32 * 1024 * 1024
