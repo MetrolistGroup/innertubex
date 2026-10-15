@@ -1,5 +1,6 @@
 package com.metrolist.innertubex
 
+import com.metrolist.innertubex.models.Context
 import com.metrolist.innertubex.models.YouTubeClient
 import com.metrolist.innertubex.models.YouTubeLocale
 import com.metrolist.innertubex.models.body.AccountMenuBody
@@ -469,9 +470,7 @@ class InnerTube(
                 append("X-Goog-AuthUser", session.authUser)
                 val sapisid = session.sapisid
                 if (!sapisid.isNullOrBlank()) {
-                    val currentTime = Clock.System.now().toEpochMilliseconds() / 1000
-                    val sapisidHash = sha1("$currentTime $sapisid $origin")
-                    append("Authorization", "SAPISIDHASH ${currentTime}_$sapisidHash")
+                    sapisidAuthHeader(origin, sapisid)?.let { append(HttpHeaders.Authorization, it) }
                 }
             }
         }
@@ -674,6 +673,42 @@ class InnerTube(
             encryptedHostFlags,
         )
 
+    private fun YouTubeClient.withLanguage(language: String): YouTubeClient =
+        if ("{language}" in userAgent) copy(userAgent = userAgent.replace("{language}", language)) else this
+
+    private fun buildPlayerBody(
+        client: YouTubeClient,
+        context: Context,
+        videoId: String,
+        signatureTimestamp: Int?,
+        playlistId: String? = null,
+        poToken: String? = null,
+        encryptedHostFlags: String? = null,
+        thirdParty: PlayerBody.ThirdParty? = null,
+    ): PlayerBody =
+        PlayerBody(
+            context = context,
+            videoId = videoId,
+            playlistId = playlistId,
+            playbackContext =
+                if (client.useSignatureTimestamp || client.isEmbedded) {
+                    PlayerBody.PlaybackContext(
+                        PlayerBody.PlaybackContext.ContentPlaybackContext(
+                            html5Preference = "HTML5_PREF_WANTS".takeUnless { client.useMusicPlayerEndpoint },
+                            signatureTimestamp = signatureTimestamp.takeIf { client.useSignatureTimestamp },
+                            encryptedHostFlags = encryptedHostFlags.takeIf { client.isEmbedded },
+                        ),
+                    )
+                } else {
+                    null
+                },
+            thirdParty = thirdParty,
+            serviceIntegrityDimensions = poToken?.let { PlayerBody.ServiceIntegrityDimensions(it) },
+            contentCheckOk = true,
+            racyCheckOk = true,
+            videoCheckOk = true.takeUnless { client.useMusicPlayerEndpoint },
+        )
+
     internal suspend fun playerWithSession(
         client: YouTubeClient,
         videoId: String,
@@ -686,12 +721,7 @@ class InnerTube(
         retryTransientFailures: Boolean = true,
     ): HttpResponse {
         val visitorDataForRequest = requestVisitorData ?: requestSession.visitorData
-        val requestClient =
-            if ("{language}" in client.userAgent) {
-                client.copy(userAgent = client.userAgent.replace("{language}", requestSession.locale.hl))
-            } else {
-                client
-            }
+        val requestClient = client.withLanguage(requestSession.locale.hl)
         return executeRequest(operation = "player:${client.clientName}", retryTransientFailures = retryTransientFailures) {
             val startTime = Clock.System.now().toEpochMilliseconds()
             val hasCookie = !requestSession.cookie.isNullOrBlank()
@@ -709,7 +739,8 @@ class InnerTube(
                 httpClient.postBounded("player") {
                     ytClient(requestClient, requestSession, setLogin = true, visitorData = visitorDataForRequest)
                     setBody(
-                        PlayerBody(
+                        buildPlayerBody(
+                            client = requestClient,
                             context =
                                 requestClient.toContext(
                                     requestSession.locale,
@@ -717,35 +748,11 @@ class InnerTube(
                                     requestSession.dataSyncId.takeIf { client.loginSupported },
                                 ),
                             videoId = videoId,
+                            signatureTimestamp = signatureTimestamp,
                             playlistId = playlistId,
-                            playbackContext =
-                                if (client.useSignatureTimestamp || client.isEmbedded) {
-                                    PlayerBody.PlaybackContext(
-                                        PlayerBody.PlaybackContext.ContentPlaybackContext(
-                                            html5Preference =
-                                                "HTML5_PREF_WANTS".takeUnless { client.useMusicPlayerEndpoint },
-                                            signatureTimestamp = signatureTimestamp.takeIf { client.useSignatureTimestamp },
-                                            encryptedHostFlags = encryptedHostFlags.takeIf { client.isEmbedded },
-                                        ),
-                                    )
-                                } else {
-                                    null
-                                },
-                            thirdParty =
-                                if (client.isEmbedded) {
-                                    PlayerBody.ThirdParty(embedUrl = "https://www.youtube.com/embed/$videoId")
-                                } else {
-                                    null
-                                },
-                            serviceIntegrityDimensions =
-                                if (poToken != null) {
-                                    PlayerBody.ServiceIntegrityDimensions(poToken)
-                                } else {
-                                    null
-                                },
-                            contentCheckOk = true,
-                            racyCheckOk = true,
-                            videoCheckOk = true.takeUnless { client.useMusicPlayerEndpoint },
+                            poToken = poToken,
+                            encryptedHostFlags = encryptedHostFlags,
+                            thirdParty = if (client.isEmbedded) PlayerBody.ThirdParty("https://www.youtube.com/embed/$videoId") else null,
                         ),
                     )
                     userAgent(requestClient.userAgent)
@@ -842,33 +849,13 @@ class InnerTube(
             require(bearerToken.length in 1..4096 && bearerToken.all { it.code in 0x21..0x7e }) {
                 "TV bearer credential is not header-safe"
             }
-            val requestClient =
-                if ("{language}" in client.userAgent) {
-                    client.copy(userAgent = client.userAgent.replace("{language}", requestSession.locale.hl))
-                } else {
-                    client
-                }
+            val requestClient = client.withLanguage(requestSession.locale.hl)
             val body =
-                PlayerBody(
+                buildPlayerBody(
+                    client = requestClient,
                     context = requestClient.toContext(requestSession.locale, requestSession.visitorData, null),
                     videoId = videoId,
-                    playlistId = null,
-                    playbackContext =
-                        if (requestClient.useSignatureTimestamp || requestClient.isEmbedded) {
-                            PlayerBody.PlaybackContext(
-                                PlayerBody.PlaybackContext.ContentPlaybackContext(
-                                    html5Preference = "HTML5_PREF_WANTS".takeUnless { requestClient.useMusicPlayerEndpoint },
-                                    signatureTimestamp = signatureTimestamp.takeIf { requestClient.useSignatureTimestamp },
-                                ),
-                            )
-                        } else {
-                            null
-                        },
-                    thirdParty = null,
-                    serviceIntegrityDimensions = null,
-                    contentCheckOk = true,
-                    racyCheckOk = true,
-                    videoCheckOk = true.takeUnless { requestClient.useMusicPlayerEndpoint },
+                    signatureTimestamp = signatureTimestamp,
                 )
             val directClient =
                 HttpClient(httpClient.engine) {
@@ -1059,9 +1046,7 @@ class InnerTube(
                                     append("X-Goog-AuthUser", requestSession.authUser)
                                     val sapisid = requestSession.sapisid
                                     if (!sapisid.isNullOrBlank()) {
-                                        val currentTime = Clock.System.now().toEpochMilliseconds() / 1000
-                                        val sapisidHash = sha1("$currentTime $sapisid $origin")
-                                        append("Authorization", "SAPISIDHASH ${currentTime}_$sapisidHash")
+                                        sapisidAuthHeader(origin, sapisid)?.let { append(HttpHeaders.Authorization, it) }
                                     }
                                 }
                             }
