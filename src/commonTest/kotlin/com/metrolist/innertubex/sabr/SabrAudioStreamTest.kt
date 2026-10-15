@@ -16,6 +16,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -29,6 +30,45 @@ import kotlin.test.assertNotNull
 
 @OptIn(ExperimentalSabrApi::class)
 class SabrAudioStreamTest {
+    @Test
+    fun recollectionRestartsRequestNumbersAfterCompletionAndCancellation() =
+        runBlocking {
+            val engine =
+                MockEngine { request ->
+                    assertEquals("0", request.url.parameters["rn"])
+                    respond(completeResponse(0), headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"))
+                }
+            val flow = SabrAudioStream(HttpClient(engine), bootstrap()).chunks()
+            val first = flow.toList()
+            assertEquals(first, flow.toList())
+            assertEquals(first.take(1), flow.take(1).toList())
+            assertEquals(first, flow.toList())
+            assertEquals(4, engine.requestHistory.size)
+        }
+
+    @Test
+    fun concurrentCollectorsHaveIndependentRequestNumbers() =
+        runBlocking {
+            val bothStarted = CompletableDeferred<Unit>()
+            val started = kotlinx.coroutines.channels.Channel<Unit>(2)
+            val engine =
+                MockEngine { request ->
+                    assertEquals("0", request.url.parameters["rn"])
+                    started.send(Unit)
+                    bothStarted.await()
+                    respond(completeResponse(0), headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"))
+                }
+            val flow = SabrAudioStream(HttpClient(engine), bootstrap()).chunks()
+            withTimeout(5_000) {
+                val first = async { flow.toList() }
+                val second = async { flow.toList() }
+                repeat(2) { started.receive() }
+                bothStarted.complete(Unit)
+                assertEquals(first.await(), second.await())
+                assertEquals(2, first.await().size)
+            }
+        }
+
     @Test
     fun videoStreamEmitsOnlySelectedVideoSegments() =
         runBlocking {

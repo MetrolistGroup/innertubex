@@ -26,6 +26,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlin.time.TimeSource
 
@@ -113,7 +115,9 @@ private class SabrMediaStream(
             SabrMediaType.VIDEO -> bootstrap.selectedVideoContentLengthBytes
         }
 
-    fun chunks(): Flow<SabrChunk> {
+    fun chunks(): Flow<SabrChunk> = flow { emitAll(collectionChunks()) }
+
+    private fun collectionChunks(): Flow<SabrChunk> {
         var requestNumber = 0
         var lastResponseStatus: Int? = null
         var lastResponseContentType: String? = null
