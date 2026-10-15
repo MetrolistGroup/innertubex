@@ -113,7 +113,10 @@ public class ContentHints(
             playbackClientOverrideId == other.playbackClientOverrideId &&
             sabrFirst == other.sabrFirst &&
             maxVideoHeight == other.maxVideoHeight &&
-            premium == other.premium
+            premium == other.premium &&
+            allowHls == other.allowHls &&
+            allowSabr == other.allowSabr &&
+            allowBoundedRange == other.allowBoundedRange
     }
 
     override fun hashCode(): Int {
@@ -128,7 +131,10 @@ public class ContentHints(
         result = 31 * result + (playbackClientOverrideId?.hashCode() ?: 0)
         result = 31 * result + sabrFirst.hashCode()
         result = 31 * result + (maxVideoHeight ?: 0)
-        return 31 * result + premium.hashCode()
+        result = 31 * result + premium.hashCode()
+        result = 31 * result + allowHls.hashCode()
+        result = 31 * result + allowSabr.hashCode()
+        return 31 * result + allowBoundedRange.hashCode()
     }
 
     override fun toString(): String = diagnosticSummary()

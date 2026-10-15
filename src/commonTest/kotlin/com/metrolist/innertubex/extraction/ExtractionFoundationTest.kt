@@ -12,6 +12,28 @@ import kotlin.time.Duration.Companion.hours
 
 class ExtractionFoundationTest {
     @Test
+    fun capabilityChangesHaveDistinctValueAndStateFlowSemantics() {
+        val original = ContentHints()
+        val state = kotlinx.coroutines.flow.MutableStateFlow(original)
+        val variants =
+            listOf(
+                original.withStreamCapabilities(allowHls = false),
+                original.withStreamCapabilities(allowSabr = false),
+                original.withStreamCapabilities(allowBoundedRange = false),
+            )
+        variants.forEach { changed ->
+            assertFalse(original == changed)
+            assertFalse(original.hashCode() == changed.hashCode())
+            assertEquals(changed, changed.copy())
+            assertEquals(changed.hashCode(), changed.copy().hashCode())
+            state.value = original
+            state.value = changed
+            assertSame(changed, state.value)
+        }
+        assertEquals(4, (variants + original).toSet().size)
+    }
+
+    @Test
     fun videoSelectorHonorsHeightCapAndDegradesAboveCap() {
         val formats =
             listOf(
