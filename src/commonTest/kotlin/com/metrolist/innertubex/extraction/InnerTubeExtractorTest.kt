@@ -187,6 +187,39 @@ class InnerTubeExtractorTest {
         }
 
     @Test
+    @Suppress("ktlint:standard:max-line-length")
+    fun hlsSelectionAndFallbackPreserveEarliestKnownExpiry() =
+        runBlocking {
+            val clock = Instant.fromEpochSeconds(1_000)
+            val cases =
+                listOf(
+                    Triple("https://www.youtube.com/api/manifest/hls.m3u8", "\"expiresInSeconds\":60,", clock + 60.seconds),
+                    Triple("https://www.youtube.com/api/manifest/hls.m3u8?expire=1030", "\"expiresInSeconds\":60,", clock + 30.seconds),
+                    Triple("https://www.youtube.com/api/manifest/hls/expire/1020/file.m3u8", "", clock + 20.seconds),
+                    Triple("https://www.youtube.com/api/manifest/hls.m3u8?expire=invalid", "", null),
+                )
+            for ((url, lifetime, expected) in cases) {
+                for (live in listOf(true, false)) {
+                    val response = """{"playabilityStatus":{"status":"OK"},"streamingData":{$lifetime"hlsManifestUrl":"$url","adaptiveFormats":[{"itag":140,"url":"https://r.googlevideo.com/invalid","mimeType":"audio/mp4","bitrate":128000}]}}"""
+                    val client = jsonClient(response)
+                    try {
+                        val stream =
+                            makeExtractor(
+                                client,
+                                InnerTube(client, retryDelay = {}),
+                                CountingParser(),
+                                cipherService = AudioOnlyCipherService,
+                                now = { clock },
+                            ).extract("video", ContentHints(isExplicit = true, isLive = live))
+                        assertEquals(expected, checkNotNull(stream).expiresAt)
+                    } finally {
+                        client.close()
+                    }
+                }
+            }
+        }
+
+    @Test
     fun authenticatedTvDiscoveryIsOptionalAndBearerIsIsolated() =
         runBlocking {
             var bearerRequests = 0

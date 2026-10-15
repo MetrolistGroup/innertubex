@@ -1029,7 +1029,7 @@ class InnerTubeExtractor internal constructor(
                             hints.isUploaded == true && !result.bearerAuthenticated,
                         ),
                     loudnessDb = response.playerConfig?.audioConfig?.loudnessDb,
-                    expiresAt = null,
+                    expiresAt = hlsExpiry(streamingData, hlsManifestUrl),
                     contentLengthBytes = null,
                     itag = 96,
                     mimeType = "application/x-mpegURL",
@@ -1413,7 +1413,7 @@ class InnerTubeExtractor internal constructor(
                     videoUrl = hlsManifestUrl,
                     headers = buildHeaders(fallbackResult.clientName, fallbackResult.userAgent),
                     loudnessDb = null,
-                    expiresAt = null,
+                    expiresAt = hlsExpiry(checkNotNull(fallbackResult.response.streamingData), hlsManifestUrl),
                     contentLengthBytes = null,
                     itag = 96,
                     mimeType = "application/x-mpegURL",
@@ -1472,6 +1472,21 @@ class InnerTubeExtractor internal constructor(
                 attempts = attempts.takeLast(32),
                 usedAuthenticatedWatchPage = usedAuthenticatedWatchPage,
             )
+    }
+
+    private fun hlsExpiry(
+        streamingData: StreamingData,
+        url: String,
+    ): Instant? {
+        val parsed = Url(url)
+        val pathSegments = parsed.encodedPath.split('/')
+        val pathExpiry = pathSegments.zipWithNext().firstOrNull { it.first == "expire" }?.second
+        val urlDeadlines =
+            listOfNotNull(parsed.parameters["expire"], pathExpiry)
+                .mapNotNull { value -> value.toLongOrNull()?.takeIf { it > 0 } }
+                .mapNotNull { epochSeconds -> runCatching { Instant.fromEpochSeconds(epochSeconds) }.getOrNull() }
+        val deadlines = urlDeadlines + listOfNotNull(streamingData.expiresInSeconds?.takeIf { it > 0 }?.let { now() + it.seconds })
+        return deadlines.minOrNull()
     }
 
     private fun extractExpire(url: String): Long? {
