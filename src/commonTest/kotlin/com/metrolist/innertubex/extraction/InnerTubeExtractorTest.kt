@@ -37,6 +37,7 @@ import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -1903,6 +1904,26 @@ class InnerTubeExtractorTest {
             client.close()
         }
     }
+
+    @Test
+    fun disablingBoundedRangesStillAllowsHlsFromMixedClient() =
+        runBlocking {
+            val response =
+                DIRECT_RESPONSE.replace(
+                    "\"streamingData\":{",
+                    "\"streamingData\":{\"hlsManifestUrl\":\"https://www.youtube.com/api/manifest/hls.m3u8\",",
+                )
+            val client = jsonClient(response)
+            val stream =
+                extractor(client, IosFallback).extract(
+                    "video",
+                    ContentHints(isExplicit = true).withStreamCapabilities(allowBoundedRange = false),
+                )
+            assertNotNull(stream)
+            assertEquals("https://www.youtube.com/api/manifest/hls.m3u8", stream.audioUrl)
+            assertFalse(stream.requireBoundedRange)
+            client.close()
+        }
 
     @Test
     fun boundedRangeClientCanBeDisabledByCaller() {

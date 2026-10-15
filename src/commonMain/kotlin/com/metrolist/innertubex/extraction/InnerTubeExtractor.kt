@@ -23,7 +23,6 @@ import io.ktor.http.URLProtocol
 import io.ktor.http.Url
 import io.ktor.util.sha256
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
@@ -338,17 +337,20 @@ class InnerTubeExtractor internal constructor(
                         hints.isExplicit == true && hints.playbackClientOverrideId == null &&
                         !session.visitorData.isNullOrBlank() && tokenProvider.capabilities.providers.isNotEmpty()
                     ) {
-                        async {
-                            withTimeoutOrNull(PO_TOKEN_PREFETCH_TIMEOUT) {
-                                try {
-                                    tokenProvider.getPoToken(videoId, session.visitorData, session.cookie)
-                                } catch (e: CancellationException) {
-                                    throw e
-                                } catch (_: Exception) {
-                                    null
+                        PoTokenPrefetch(
+                            PoTokenRequestKey(videoId, session.visitorData, session.cookie),
+                            async {
+                                withTimeoutOrNull(PO_TOKEN_PREFETCH_TIMEOUT) {
+                                    try {
+                                        tokenProvider.getPoToken(videoId, session.visitorData, session.cookie)
+                                    } catch (e: CancellationException) {
+                                        throw e
+                                    } catch (_: Exception) {
+                                        null
+                                    }
                                 }
-                            }
-                        }
+                            },
+                        )
                     } else {
                         null
                     }
@@ -364,7 +366,7 @@ class InnerTubeExtractor internal constructor(
                         prefetchedPoToken,
                     ).also { diagnostics.ensureSessionCurrent() }
                 } finally {
-                    prefetchedPoToken?.cancel()
+                    prefetchedPoToken?.result?.cancel()
                 }
             }
         } catch (e: CancellationException) {
@@ -395,7 +397,7 @@ class InnerTubeExtractor internal constructor(
         clientPlaybackNonce: String,
         totalStart: Long,
         diagnostics: ExtractionDiagnostics,
-        prefetchedPoToken: Deferred<PoTokenResult?>? = null,
+        prefetchedPoToken: PoTokenPrefetch? = null,
     ): ExtractedStream? {
         logger.d(
             TAG,
@@ -684,7 +686,7 @@ class InnerTubeExtractor internal constructor(
         totalStartMs: Long,
         audioQuality: AudioQuality = AudioQuality.AUTO,
         diagnostics: ExtractionDiagnostics,
-        prefetchedPoToken: Deferred<PoTokenResult?>? = null,
+        prefetchedPoToken: PoTokenPrefetch? = null,
         tvBearerCredential: TvBearerCredential? = null,
     ): ExtractedStream? {
         diagnostics.ensureSessionCurrent()
@@ -822,7 +824,7 @@ class InnerTubeExtractor internal constructor(
         allowCipherProcessing: Boolean = true,
         audioQuality: AudioQuality = AudioQuality.AUTO,
         diagnostics: ExtractionDiagnostics,
-        prefetchedPoToken: Deferred<PoTokenResult?>? = null,
+        prefetchedPoToken: PoTokenPrefetch? = null,
         tvBearerCredential: TvBearerCredential? = null,
     ): ExtractedStream? {
         diagnostics.ensureSessionCurrent()
@@ -875,10 +877,6 @@ class InnerTubeExtractor internal constructor(
         for (result in results) {
             val response = result.response
             val requireBoundedRange = requiresBoundedMediaRange(result.clientName)
-            if (requireBoundedRange && !hints.allowBoundedRange) {
-                logger.d(TAG, "bounded-range client skipped by request", details = mapOf("client" to result.clientName))
-                continue
-            }
             val streamingData = response.streamingData
             if (streamingData == null) {
                 logger.w(TAG, "response missing streaming data", details = mapOf("client" to result.clientName))
@@ -1038,7 +1036,10 @@ class InnerTubeExtractor internal constructor(
                 !hlsManifestUrl.isNullOrBlank() &&
                 hints.allowHls &&
                 isAllowedHlsUrl(hlsManifestUrl) &&
-                (isLive || allFormats.isEmpty() || needsVideoButNoVideoFormats || result.clientName == "TVHTML5_SIMPLY")
+                (
+                    isLive || allFormats.isEmpty() || needsVideoButNoVideoFormats || result.clientName == "TVHTML5_SIMPLY" ||
+                        (requireBoundedRange && !hints.allowBoundedRange)
+                )
             ) {
                 logger.i(TAG, "HLS stream selected", details = mapOf("client" to result.clientName, "profile" to result.profileId))
                 return ExtractedStream(
@@ -1069,6 +1070,11 @@ class InnerTubeExtractor internal constructor(
                     playbackTracking = playbackTracking,
                     streamDiagnostics = diagnostics.snapshot(),
                 ).withResponseMetadata(response).also { diagnostics.ensureSessionCurrent() }
+            }
+
+            if (requireBoundedRange && !hints.allowBoundedRange) {
+                logger.d(TAG, "bounded-range client skipped by request", details = mapOf("client" to result.clientName))
+                continue
             }
 
             val directAudioItags =
