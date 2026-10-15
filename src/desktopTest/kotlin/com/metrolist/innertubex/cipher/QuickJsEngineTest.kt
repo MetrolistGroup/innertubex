@@ -15,6 +15,29 @@ import kotlin.test.assertNull
 
 class QuickJsEngineTest {
     @Test
+    fun evaluationInputIsBoundedTransferredVerbatimAndReleasedAfterFailure() =
+        runBlocking {
+            val engine = QuickJsEngine()
+            try {
+                engine.initialize()
+                val input = "\"\\\n\r\t\u0000\u2028".repeat(100_000)
+                assertEquals(input, engine.evaluate("__itxTakeInput()", input.length, input = input))
+                assertEquals("", engine.evaluate("__itxTakeInput()", 8))
+                assertFailsWith<QuickJsException> {
+                    engine.evaluate("(function() { throw Error('failed'); })()", 8, input = input)
+                }
+                assertEquals("", engine.evaluate("__itxTakeInput()", 8))
+                assertEquals("", engine.evaluate("__itxTakeInput()", 8, input = "x".repeat(100)))
+                assertFailsWith<IllegalArgumentException> {
+                    engine.evaluate("__itxTakeInput()", 8, input = "x".repeat(8 * 1024 * 1024 + 1))
+                }
+                Unit
+            } finally {
+                engine.dispose()
+            }
+        }
+
+    @Test
     fun cancellationDuringInitializationDoesNotLoseTheCreatedRuntime() =
         runBlocking {
             val engine = QuickJsEngine()

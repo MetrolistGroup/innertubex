@@ -374,8 +374,7 @@ internal class EjsChallengeSolver(
             }
         val requestsJson = payloadJson.encodeToString(JsonElement.serializer(), requests)
         val playerKey = QuickJsEngine.jsStringLiteral(playerUrl)
-        val playerInput = playerInputText?.let(QuickJsEngine::jsStringLiteral).orEmpty()
-        if (playerInput.length + requestsJson.length > MAX_PAYLOAD_LENGTH) {
+        if ((playerInputText?.length ?: 0) + requestsJson.length > MAX_PAYLOAD_LENGTH) {
             return SolveResult(emptyMap(), emptyMap(), null)
         }
         val run =
@@ -389,7 +388,7 @@ internal class EjsChallengeSolver(
 
                 preprocessed -> {
                     """
-                    var r = __itxRun(__itxCompile($playerKey, $playerInput), $requestsJson);
+                    var r = __itxRun(__itxCompile($playerKey, __itxTakeInput()), $requestsJson);
                     """
                 }
 
@@ -397,7 +396,7 @@ internal class EjsChallengeSolver(
                     // Preprocessing a full player needs nearly the whole QuickJS heap.
                     """
                     __itxPlayers.clear();
-                    var r = jsc({"type":"player","player":$playerInput,"output_preprocessed":true,"requests":$requestsJson});
+                    var r = jsc({"type":"player","player":__itxTakeInput(),"output_preprocessed":true,"requests":$requestsJson});
                     """
                 }
             }
@@ -464,7 +463,7 @@ internal class EjsChallengeSolver(
             preprocessed -> rememberCompiledPlayer(playerUrl)
             else -> compiledPlayers.clear()
         }
-        val evaluated = engine.evaluate(js, MAX_RAW_OUTPUT_LENGTH, collectGarbage = !preprocessed)
+        val evaluated = engine.evaluate(js, MAX_RAW_OUTPUT_LENGTH, collectGarbage = !preprocessed, input = playerInputText)
         if (evaluated.length > MAX_RAW_OUTPUT_LENGTH) return SolveResult(emptyMap(), emptyMap(), null)
         val raw = evaluated.trim()
         logger.d(

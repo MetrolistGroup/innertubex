@@ -1,6 +1,7 @@
 package com.metrolist.innertubex.cipher
 
 import com.dokar.quickjs.QuickJs
+import com.dokar.quickjs.binding.FunctionBinding
 import kotlinx.coroutines.CloseableCoroutineDispatcher
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -24,6 +25,7 @@ internal class QuickJsEngine {
         private const val NATIVE_MEMORY_LIMIT_BYTES = 192L * 1024L * 1024L
         private const val MAX_STACK_SIZE_BYTES = 256L * 1024L
         private const val MAX_EVALUATION_RESULT_LENGTH = 16 * 1024 * 1024
+        private const val MAX_EVALUATION_INPUT_LENGTH = 8 * 1024 * 1024
         private const val MAX_FUNCTION_INPUT_LENGTH = 64 * 1024
         private const val MAX_FUNCTION_RESULT_LENGTH = 256 * 1024
         private val JS_IDENTIFIER = Regex("[A-Za-z_$][A-Za-z0-9_$]*")
@@ -76,6 +78,9 @@ internal class QuickJsEngine {
     private val mutex = Mutex()
     private var runtime: Runtime? = null
 
+    // Accessed only on the runtime thread while holding mutex; never retain a player after evaluation.
+    private var evaluationInput: String? = null
+
     /**
      * Initialize the QuickJS runtime.
      *
@@ -98,6 +103,12 @@ internal class QuickJsEngine {
                                 it.evaluationTimeoutMillis = EVALUATION_TIMEOUT_MS
                                 it.memoryLimit = NATIVE_MEMORY_LIMIT_BYTES
                                 it.maxStackSize = MAX_STACK_SIZE_BYTES
+                                it.defineBinding(
+                                    "__itxTakeInput",
+                                    FunctionBinding {
+                                        evaluationInput.also { evaluationInput = null }
+                                    },
+                                )
                             }
                         }
                     runtime = Runtime(js, thread)
@@ -125,8 +136,10 @@ internal class QuickJsEngine {
         code: String,
         maxResultLength: Int,
         collectGarbage: Boolean = false,
+        input: String? = null,
     ): String {
         require(maxResultLength in 1..MAX_EVALUATION_RESULT_LENGTH) { "Invalid QuickJS result limit" }
+        require(input == null || input.length <= MAX_EVALUATION_INPUT_LENGTH) { "QuickJS input too large" }
         val boundedCode =
             """
             (function() {
@@ -137,9 +150,11 @@ internal class QuickJsEngine {
             })()
             """
         return withRuntime {
+            evaluationInput = input
             try {
                 evaluate<String?>(boundedCode).orEmpty()
             } finally {
+                evaluationInput = null
                 if (collectGarbage) gc()
             }
         }
