@@ -11,6 +11,67 @@ import kotlin.test.assertTrue
 
 class SabrCoreTest {
     @Test
+    fun processorCoalescesTinyUnknownLengthFragmentsIntoOneBuffer() {
+        val processor = SabrUmpProcessor(maxCollectedSegmentSize = 100_000, maxPendingMediaBytes = 200_000)
+        processor.feed(umpPart(UmpPartType.MEDIA_HEADER, mediaHeader(contentLength = 0)))
+        repeat(100_000) { index ->
+            processor.feed(umpPart(UmpPartType.MEDIA, byteArrayOf(1, index.toByte())))
+            assertEquals(1, processor.retainedMediaBufferCount)
+        }
+        val segment =
+            processor
+                .feed(umpPart(UmpPartType.MEDIA_END, byteArrayOf(1)))
+                .filterIsInstance<SabrEvent.Segment>()
+                .single()
+                .segment
+        processor.finish()
+        assertContentEquals(ByteArray(100_000) { it.toByte() }, segment.data)
+        assertEquals(0, processor.retainedMediaBufferCount)
+    }
+
+    @Test
+    fun processorAccountsForCapacityAndTransientGrowthCopies() {
+        val processor = SabrUmpProcessor(maxCollectedSegmentSize = 16_384, maxPendingMediaBytes = 8_192)
+        processor.feed(umpPart(UmpPartType.MEDIA_HEADER, mediaHeader(contentLength = 0)))
+        processor.feed(umpPart(UmpPartType.MEDIA, byteArrayOf(1) + ByteArray(4_096)))
+        val error =
+            assertFailsWith<SabrProtocolException> {
+                processor.feed(umpPart(UmpPartType.MEDIA, byteArrayOf(1, 1)))
+            }
+        assertEquals("SABR pending media exceeded 8192 bytes", error.message)
+    }
+
+    @Test
+    fun processorAccountsForFinalCompactionAndReleasesCapacity() {
+        val tight = SabrUmpProcessor(maxPendingMediaBytes = 4_096)
+        tight.feed(umpPart(UmpPartType.MEDIA_HEADER, mediaHeader(contentLength = 0)))
+        tight.feed(umpPart(UmpPartType.MEDIA, byteArrayOf(1, 7)))
+        assertFailsWith<SabrProtocolException> { tight.feed(umpPart(UmpPartType.MEDIA_END, byteArrayOf(1))) }
+
+        val processor = SabrUmpProcessor(maxPendingMediaBytes = 4_097)
+        repeat(3) {
+            processor.feed(umpPart(UmpPartType.MEDIA_HEADER, mediaHeader(contentLength = 0)))
+            processor.feed(umpPart(UmpPartType.MEDIA, byteArrayOf(1, 7)))
+            val segment =
+                processor
+                    .feed(umpPart(UmpPartType.MEDIA_END, byteArrayOf(1)))
+                    .filterIsInstance<SabrEvent.Segment>()
+                    .single()
+                    .segment
+            assertContentEquals(byteArrayOf(7), segment.data)
+        }
+        processor.finish()
+    }
+
+    @Test
+    fun processorRejectsUnknownLengthSegmentBeyondPayloadLimit() {
+        val processor = SabrUmpProcessor(maxCollectedSegmentSize = 4)
+        processor.feed(umpPart(UmpPartType.MEDIA_HEADER, mediaHeader(contentLength = 0)))
+        processor.feed(umpPart(UmpPartType.MEDIA, byteArrayOf(1, 1, 2, 3, 4)))
+        assertFailsWith<SabrProtocolException> { processor.feed(umpPart(UmpPartType.MEDIA, byteArrayOf(1, 5))) }
+    }
+
+    @Test
     fun tickConversionAcceptsBoundaryAndRejectsFractionalOverflow() {
         fun initialization(
             ticks: Long,

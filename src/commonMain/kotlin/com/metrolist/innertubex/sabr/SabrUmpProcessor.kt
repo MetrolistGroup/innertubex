@@ -10,6 +10,9 @@ internal class SabrUmpProcessor(
 ) {
     private val reader = UmpReader(maxPartSize)
     private val pendingSegments = mutableMapOf<Int, PendingSegment>()
+    internal val retainedMediaBufferCount: Int
+        get() = pendingSegments.values.count { it.bytes != null }
+
     private var pendingMediaBytes = 0L
     private var responseBytes = 0L
     private var responseHeaderCount = 0
@@ -148,19 +151,27 @@ internal class SabrUmpProcessor(
         if (segment.byteCount > maxCollectedSegmentSize) {
             throw SabrProtocolException("SABR segment is too large: ${segment.byteCount} bytes")
         }
-        if (segment.header.contentLength > 0) {
-            var bytes = segment.bytes
-            if (bytes == null) {
-                val contentLength = segment.header.contentLength.toInt()
-                reservePendingBytes(segment, contentLength)
-                bytes = ByteArray(contentLength)
-                segment.bytes = bytes
-            }
-            data.copyInto(bytes, destinationOffset = destinationOffset, startIndex = from + 1, endIndex = to)
-        } else {
-            reservePendingBytes(segment, payloadSize)
-            segment.chunks += data.copyOfRange(from + 1, to)
+        var bytes = segment.bytes
+        if (bytes == null || bytes.size < segment.byteCount) {
+            val capacity =
+                if (segment.header.contentLength > 0) {
+                    segment.header.contentLength.toInt()
+                } else {
+                    maxOf(segment.byteCount, (bytes?.size?.toLong() ?: INITIAL_SEGMENT_CAPACITY / 2L) * 2)
+                        .coerceAtMost(maxCollectedSegmentSize.toLong())
+                        .toInt()
+                }
+            // Reserve both buffers during growth; the previous allocation is still live during the copy.
+            reservePendingBytes(segment, capacity)
+            val expanded = ByteArray(capacity)
+            bytes?.copyInto(expanded, endIndex = destinationOffset)
+            val previousCapacity = bytes?.size ?: 0
+            pendingMediaBytes -= previousCapacity
+            segment.reservedBytes -= previousCapacity
+            bytes = expanded
+            segment.bytes = expanded
         }
+        data.copyInto(bytes, destinationOffset = destinationOffset, startIndex = from + 1, endIndex = to)
     }
 
     private fun reservePendingBytes(
@@ -192,28 +203,29 @@ internal class SabrUmpProcessor(
         }
         if (!pending.collect) return null
         if (pending.byteCount == 0L) throw SabrProtocolException("Empty selected SABR media segment")
-        pendingMediaBytes -= pending.reservedBytes
+        val buffer = checkNotNull(pending.bytes)
+        val size = pending.byteCount.toInt()
         val bytes =
-            pending.bytes ?: ByteArray(pending.byteCount.toInt()).also { combined ->
-                var offset = 0
-                pending.chunks.forEach { chunk ->
-                    chunk.copyInto(combined, destinationOffset = offset)
-                    offset += chunk.size
-                }
+            if (buffer.size == size) {
+                buffer
+            } else {
+                reservePendingBytes(pending, size)
+                buffer.copyOf(size)
             }
+        pendingMediaBytes -= pending.reservedBytes
         return SabrEvent.Segment(SabrSegment(pending.header, bytes))
     }
 
     private data class PendingSegment(
         val header: SabrMediaHeader,
         val collect: Boolean,
-        val chunks: MutableList<ByteArray> = mutableListOf(),
         var bytes: ByteArray? = null,
         var byteCount: Long = 0,
         var reservedBytes: Long = 0,
     )
 
     private companion object {
+        const val INITIAL_SEGMENT_CAPACITY = 4 * 1024
         const val MAX_CONTROL_PART_BYTES = 128 * 1024
         const val MAX_RESPONSE_HEADERS = 4_096
         const val COMPRESSION_NONE = 0
