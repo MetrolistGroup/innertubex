@@ -9,6 +9,7 @@ import com.metrolist.innertubex.w
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
 import io.ktor.http.HttpHeaders
+import io.ktor.http.URLDecodeException
 import io.ktor.http.Url
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -235,6 +236,10 @@ class YouTubeCipherService(
                     val sc = format.signatureCipher
                     if (!sc.isNullOrBlank()) {
                         val p = parseCipherParams(sc)
+                        if (p == null) {
+                            working[i] = format.copy(url = null)
+                            continue
+                        }
                         if (p["s"] != null && p["url"]?.isApproved() == true && p.hasValidSignatureParameter()) {
                             sigTasks.add(SigTask(i, p, useSignatureCipherField = true))
                         }
@@ -243,6 +248,10 @@ class YouTubeCipherService(
                     val c = format.cipher
                     if (!c.isNullOrBlank()) {
                         val p = parseCipherParams(c)
+                        if (p == null) {
+                            working[i] = format.copy(url = null)
+                            continue
+                        }
                         if (p["s"] != null && p["url"]?.isApproved() == true && p.hasValidSignatureParameter()) {
                             sigTasks.add(SigTask(i, p, useSignatureCipherField = false))
                         }
@@ -502,7 +511,7 @@ class YouTubeCipherService(
     ): Format {
         val signatureCipher = format.signatureCipher
         if (!signatureCipher.isNullOrBlank()) {
-            val params = parseCipherParams(signatureCipher)
+            val params = parseCipherParams(signatureCipher) ?: return format.copy(url = null)
             val url = params["url"] ?: return format
             val signature = params["s"] ?: return format
             val solvedSig = solver.sigSolver(signature)
@@ -515,7 +524,7 @@ class YouTubeCipherService(
 
         val cipher = format.cipher
         if (!cipher.isNullOrBlank()) {
-            val params = parseCipherParams(cipher)
+            val params = parseCipherParams(cipher) ?: return format.copy(url = null)
             val url = params["url"] ?: return format
             val signature = params["s"] ?: return format
             val solvedSig = solver.sigSolver(signature)
@@ -566,7 +575,7 @@ class YouTubeCipherService(
         withContext(Dispatchers.Default) {
             operationMutex.withLock operation@{
                 try {
-                    val params = parseCipherParams(cipher)
+                    val params = parseCipherParams(cipher) ?: return@operation null
                     val url = params["url"] ?: return@operation null
                     val signature = params["s"] ?: return@operation null
                     solveWithZemerConfig(
@@ -948,14 +957,19 @@ class YouTubeCipherService(
     /**
      * Parse cipher parameters from a cipher string.
      */
-    private fun parseCipherParams(cipher: String): Map<String, String> {
+    private fun parseCipherParams(cipher: String): Map<String, String>? {
         val params = mutableMapOf<String, String>()
         val pairs = cipher.split("&")
 
         for (pair in pairs) {
             val parts = pair.split("=", limit = 2)
             if (parts.size == 2) {
-                params[parts[0]] = decodeQueryComponent(parts[1])
+                params[parts[0]] =
+                    try {
+                        decodeQueryComponent(parts[1])
+                    } catch (_: URLDecodeException) {
+                        return null
+                    }
             }
         }
 

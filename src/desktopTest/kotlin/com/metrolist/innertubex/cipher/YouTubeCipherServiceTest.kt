@@ -104,6 +104,34 @@ class YouTubeCipherServiceTest {
         }
 
     @Test
+    fun malformedCipherDoesNotAbortUsableFormats() =
+        runBlocking {
+            val client = HttpClient(MockEngine { respond(PLAYER_CODE) })
+            val service = YouTubeCipherService(client)
+            try {
+                val direct = format("$MEDIA_URL?direct=1")
+                val valid = format(MEDIA_URL).copy(url = null, signatureCipher = "s=abc&url=$MEDIA_URL")
+                for (bad in listOf("s=%zz&url=$MEDIA_URL", "s=abc&url=%zz", "s=abc&url=$MEDIA_URL&sp=%zz")) {
+                    for (signatureField in listOf(true, false)) {
+                        val malformed =
+                            if (signatureField) {
+                                format(MEDIA_URL).copy(signatureCipher = bad)
+                            } else {
+                                format(MEDIA_URL).copy(cipher = bad)
+                            }
+                        val result = service.processFormats(PLAYER_URL, listOf(malformed, direct, valid))
+                        assertNull(result[0].url)
+                        assertEquals(direct, result[1])
+                        assertEquals("$MEDIA_URL?signature=cba", result[2].url)
+                    }
+                }
+            } finally {
+                service.dispose()
+                client.close()
+            }
+        }
+
+    @Test
     fun batchUrlReusePreservesAuthorityValidationAndFragments() =
         runBlocking {
             val client = HttpClient(MockEngine { respond(PLAYER_CODE) })
