@@ -2,6 +2,7 @@ package com.metrolist.innertubex.sabr
 
 internal object SabrProtoCodec {
     private const val DISCARD_SENTINEL = Int.MAX_VALUE
+    const val MAX_CONTROL_VALUE_BYTES = 64 * 1024
     private const val MAX_CONTEXT_POLICY_ENTRIES = 256
 
     fun encodeRequest(
@@ -71,8 +72,12 @@ internal object SabrProtoCodec {
             }.toByteArray()
     }
 
-    fun decodeMediaHeader(data: ByteArray): SabrMediaHeader {
-        val reader = ProtoReader(data)
+    fun decodeMediaHeader(
+        data: ByteArray,
+        from: Int = 0,
+        to: Int = data.size,
+    ): SabrMediaHeader {
+        val reader = ProtoReader(data, from, to)
         var headerId = 0
         var videoId: String? = null
         var formatId = SabrFormatId(0)
@@ -183,8 +188,12 @@ internal object SabrProtoCodec {
         )
     }
 
-    fun decodeFormatInitialization(data: ByteArray): SabrFormatInitialization? {
-        val reader = ProtoReader(data)
+    fun decodeFormatInitialization(
+        data: ByteArray,
+        from: Int = 0,
+        to: Int = data.size,
+    ): SabrFormatInitialization? {
+        val reader = ProtoReader(data, from, to)
         var formatId: SabrFormatId? = null
         var endTimeMs: Long? = null
         var endSegmentNumber: Int? = null
@@ -233,8 +242,12 @@ internal object SabrProtoCodec {
         return SabrFormatInitialization(id, endTimeMs, endSegmentNumber, durationMs)
     }
 
-    fun decodeNextRequestPolicy(data: ByteArray): SabrEvent.NextRequestPolicy {
-        val reader = ProtoReader(data)
+    fun decodeNextRequestPolicy(
+        data: ByteArray,
+        from: Int = 0,
+        to: Int = data.size,
+    ): SabrEvent.NextRequestPolicy {
+        val reader = ProtoReader(data, from, to)
         var targetAudioReadaheadMs = 0L
         var maxTimeSinceLastRequestMs = 0L
         var backoffTimeMs = 0L
@@ -265,7 +278,7 @@ internal object SabrProtoCodec {
 
                 7 -> {
                     tag.requireWireType(2)
-                    playbackCookie = reader.bytes()
+                    playbackCookie = reader.bytes(MAX_CONTROL_VALUE_BYTES)
                 }
 
                 else -> {
@@ -290,8 +303,12 @@ internal object SabrProtoCodec {
         )
     }
 
-    fun decodeRedirect(data: ByteArray): String? {
-        val reader = ProtoReader(data)
+    fun decodeRedirect(
+        data: ByteArray,
+        from: Int = 0,
+        to: Int = data.size,
+    ): String? {
+        val reader = ProtoReader(data, from, to)
         while (reader.hasRemaining) {
             val tag = reader.tag()
             if (tag.field == 1) {
@@ -303,8 +320,12 @@ internal object SabrProtoCodec {
         return null
     }
 
-    fun decodeError(data: ByteArray): SabrEvent.Error {
-        val reader = ProtoReader(data)
+    fun decodeError(
+        data: ByteArray,
+        from: Int = 0,
+        to: Int = data.size,
+    ): SabrEvent.Error {
+        val reader = ProtoReader(data, from, to)
         var type: String? = null
         var code = 0
         while (reader.hasRemaining) {
@@ -328,8 +349,12 @@ internal object SabrProtoCodec {
         return SabrEvent.Error(type, code)
     }
 
-    fun decodeContextUpdate(data: ByteArray): SabrContext? {
-        val reader = ProtoReader(data)
+    fun decodeContextUpdate(
+        data: ByteArray,
+        from: Int = 0,
+        to: Int = data.size,
+    ): SabrContext? {
+        val reader = ProtoReader(data, from, to)
         var type = 0
         var value: ByteArray? = null
         var sendByDefault = false
@@ -344,7 +369,7 @@ internal object SabrProtoCodec {
 
                 3 -> {
                     tag.requireWireType(2)
-                    value = reader.bytes()
+                    value = reader.bytes(MAX_CONTROL_VALUE_BYTES)
                 }
 
                 4 -> {
@@ -365,8 +390,12 @@ internal object SabrProtoCodec {
         return value?.let { SabrContext(type, it, sendByDefault, writePolicy) }
     }
 
-    fun decodeStreamProtectionStatus(data: ByteArray): SabrEvent.StreamProtectionStatus {
-        val reader = ProtoReader(data)
+    fun decodeStreamProtectionStatus(
+        data: ByteArray,
+        from: Int = 0,
+        to: Int = data.size,
+    ): SabrEvent.StreamProtectionStatus {
+        val reader = ProtoReader(data, from, to)
         var status = 0
         // -1 means field 2 was omitted; an explicit zero forbids even the first pending retry.
         var maxRetries = -1
@@ -392,8 +421,12 @@ internal object SabrProtoCodec {
         return SabrEvent.StreamProtectionStatus(status, maxRetries)
     }
 
-    fun decodeContextSendingPolicy(data: ByteArray): SabrEvent.ContextSendingPolicy {
-        val reader = ProtoReader(data)
+    fun decodeContextSendingPolicy(
+        data: ByteArray,
+        from: Int = 0,
+        to: Int = data.size,
+    ): SabrEvent.ContextSendingPolicy {
+        val reader = ProtoReader(data, from, to)
         val start = mutableSetOf<Int>()
         val stop = mutableSetOf<Int>()
         val discard = mutableSetOf<Int>()

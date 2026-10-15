@@ -129,12 +129,18 @@ internal class ProtoWriter(
 
 internal class ProtoReader(
     private val data: ByteArray,
+    from: Int = 0,
+    private val limit: Int = data.size,
 ) {
-    var position: Int = 0
+    init {
+        require(from >= 0 && from <= limit && limit <= data.size) { "Invalid protobuf input range" }
+    }
+
+    var position: Int = from
         private set
 
     val hasRemaining: Boolean
-        get() = position < data.size
+        get() = position < limit
 
     fun tag(): ProtoTag {
         val raw = varint()
@@ -147,7 +153,7 @@ internal class ProtoReader(
         var result = 0L
         var shift = 0
         repeat(10) {
-            if (position >= data.size) throw SabrProtocolException("Truncated protobuf varint")
+            if (position >= limit) throw SabrProtocolException("Truncated protobuf varint")
             val byte = data[position++].toInt() and 0xff
             if (shift == 63 && ((byte and 0x7f) > 1 || (byte and 0x80) != 0)) {
                 throw SabrProtocolException("Protobuf varint overflows 64 bits")
@@ -165,11 +171,12 @@ internal class ProtoReader(
         return value != 0L
     }
 
-    fun bytes(): ByteArray {
+    fun bytes(maxSize: Int = Int.MAX_VALUE): ByteArray {
         val length = varint()
         if (length < 0 || length > Int.MAX_VALUE) throw SabrProtocolException("Invalid protobuf length $length")
+        if (length > maxSize) throw SabrProtocolException("Protobuf field exceeded $maxSize bytes")
         val end = position + length.toInt()
-        if (end < position || end > data.size) throw SabrProtocolException("Truncated protobuf field")
+        if (end < position || end > limit) throw SabrProtocolException("Truncated protobuf field")
         return data.copyOfRange(position, end).also { position = end }
     }
 
@@ -193,7 +200,7 @@ internal class ProtoReader(
 
     private fun advance(count: Int) {
         val end = position + count
-        if (end < position || end > data.size) throw SabrProtocolException("Truncated protobuf field")
+        if (end < position || end > limit) throw SabrProtocolException("Truncated protobuf field")
         position = end
     }
 }

@@ -11,6 +11,60 @@ import kotlin.test.assertTrue
 
 class SabrCoreTest {
     @Test
+    fun controlValueLimitsAreCheckedBeforeCopyingFields() {
+        for (size in listOf(65_536, 65_537)) {
+            val value = ByteArray(size) { 7 }
+            val context = ProtoWriter().apply { bytes(3, value) }.toByteArray()
+            val policy = ProtoWriter().apply { bytes(7, value) }.toByteArray()
+            if (size == 65_536) {
+                assertContentEquals(value, SabrProtoCodec.decodeContextUpdate(context)?.value)
+                assertContentEquals(value, SabrProtoCodec.decodeNextRequestPolicy(policy).playbackCookie)
+            } else {
+                // The length prefix alone must trigger the limit before reading or allocating the payload.
+                for (payload in listOf(context, policy)) {
+                    val error =
+                        assertFailsWith<SabrProtocolException> {
+                            if (payload === context) {
+                                SabrProtoCodec.decodeContextUpdate(payload, to = 4)
+                            } else {
+                                SabrProtoCodec.decodeNextRequestPolicy(payload, to = 4)
+                            }
+                        }
+                    assertEquals("Protobuf field exceeded 65536 bytes", error.message)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun processorRejectsOversizedControlPartsBeforeDecoding() {
+        for (type in listOf(UmpPartType.SABR_CONTEXT_UPDATE, UmpPartType.NEXT_REQUEST_POLICY)) {
+            val error =
+                assertFailsWith<SabrProtocolException> {
+                    SabrUmpProcessor().feed(umpPart(type, ByteArray(128 * 1024 + 1)))
+                }
+            assertEquals("SABR control part exceeded 131072 bytes", error.message)
+        }
+    }
+
+    @Test
+    fun protobufSlicesRespectBoundariesAndOwnRetainedBytes() {
+        val payload = ProtoWriter().apply { bytes(7, byteArrayOf(1, 2, 3)) }.toByteArray()
+        val padded = byteArrayOf(0) + payload + byteArrayOf(0)
+        val policy = SabrProtoCodec.decodeNextRequestPolicy(padded, 1, padded.lastIndex)
+        padded.fill(0)
+        assertContentEquals(byteArrayOf(1, 2, 3), policy.playbackCookie)
+        assertFailsWith<SabrProtocolException> {
+            SabrProtoCodec.decodeNextRequestPolicy(payload, to = payload.lastIndex)
+        }
+        assertFailsWith<SabrProtocolException> { ProtoReader(byteArrayOf(0x80.toByte(), 1), 0, 1).varint() }
+        val skipped = ProtoReader(byteArrayOf(0x0a, 1, 0), 0, 2)
+        assertFailsWith<SabrProtocolException> { skipped.skip(skipped.tag()) }
+        assertFailsWith<IllegalArgumentException> { ProtoReader(payload, -1) }
+        assertFailsWith<IllegalArgumentException> { ProtoReader(payload, 2, 1) }
+    }
+
+    @Test
     fun processorBoundsHeaderObjectsEvenForDiscardedEmptySegments() {
         val processor = SabrUmpProcessor(shouldCollectMedia = { false })
         val response =
