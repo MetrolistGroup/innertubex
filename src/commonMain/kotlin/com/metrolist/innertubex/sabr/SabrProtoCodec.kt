@@ -501,7 +501,12 @@ internal object SabrProtoCodec {
         if (wholeSeconds > Long.MAX_VALUE / 1000L) {
             throw SabrProtocolException("SABR time range exceeds the supported duration")
         }
-        return wholeSeconds * 1000L + ticks % timescale * 1000L / timescale
+        val wholeMilliseconds = wholeSeconds * 1000L
+        val fractionalMilliseconds = ticks % timescale * 1000L / timescale
+        if (fractionalMilliseconds > Long.MAX_VALUE - wholeMilliseconds) {
+            throw SabrProtocolException("SABR time range exceeds the supported duration")
+        }
+        return wholeMilliseconds + fractionalMilliseconds
     }
 
     private fun ProtoWriter.formatId(formatId: SabrFormatId) {

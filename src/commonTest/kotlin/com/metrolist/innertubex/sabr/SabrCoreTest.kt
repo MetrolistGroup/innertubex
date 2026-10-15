@@ -11,6 +11,51 @@ import kotlin.test.assertTrue
 
 class SabrCoreTest {
     @Test
+    fun tickConversionAcceptsBoundaryAndRejectsFractionalOverflow() {
+        fun initialization(
+            ticks: Long,
+            timescale: Int,
+        ): Long? =
+            SabrProtoCodec
+                .decodeFormatInitialization(
+                    ProtoWriter()
+                        .apply {
+                            message(2) { int32(1, 140) }
+                            int64(9, ticks)
+                            int32(10, timescale)
+                        }.toByteArray(),
+                )?.durationMs
+
+        fun mediaRange(
+            ticks: Long,
+            timescale: Int,
+            field: Int,
+        ): Long {
+            val header =
+                SabrProtoCodec.decodeMediaHeader(
+                    ProtoWriter()
+                        .apply {
+                            int32(3, 140)
+                            message(15) {
+                                int64(field, ticks)
+                                int32(3, timescale)
+                            }
+                        }.toByteArray(),
+                )
+            return if (field == 1) header.startMs else header.durationMs
+        }
+
+        assertEquals(Long.MAX_VALUE, initialization(Long.MAX_VALUE, 1_000))
+        assertEquals(Long.MAX_VALUE - 7, initialization(92_233_720_368_547_758, 10))
+        assertFailsWith<SabrProtocolException> { initialization(92_233_720_368_547_759, 10) }
+        for (field in listOf(1, 2)) {
+            assertEquals(Long.MAX_VALUE, mediaRange(Long.MAX_VALUE, 1_000, field))
+            assertEquals(Long.MAX_VALUE - 7, mediaRange(92_233_720_368_547_758, 10, field))
+            assertFailsWith<SabrProtocolException> { mediaRange(92_233_720_368_547_759, 10, field) }
+        }
+    }
+
+    @Test
     fun controlValueLimitsAreCheckedBeforeCopyingFields() {
         for (size in listOf(65_536, 65_537)) {
             val value = ByteArray(size) { 7 }
