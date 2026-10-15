@@ -21,6 +21,7 @@ import com.metrolist.innertubex.utils.encodeQueryComponent
 import com.metrolist.innertubex.w
 import io.ktor.http.URLProtocol
 import io.ktor.http.Url
+import io.ktor.util.sha256
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
@@ -98,11 +99,18 @@ class InnerTubeExtractor internal constructor(
     /** The only session fields a watch or embed page request depends on. */
     private data class ConfigIdentity(
         val locale: YouTubeLocale,
-        val cookie: String?,
+        val cookieFingerprint: String?,
     )
 
     private fun configIdentity(useLoginCookies: Boolean): ConfigIdentity =
-        innerTube.sessionSnapshot().let { ConfigIdentity(it.locale, it.cookie.takeIf { useLoginCookies }) }
+        innerTube.sessionSnapshot().let {
+            ConfigIdentity(
+                it.locale,
+                it.cookie?.takeIf { useLoginCookies }?.let { cookie ->
+                    sha256(cookie.encodeToByteArray()).toHexString()
+                },
+            )
+        }
 
     private val playerConfigCache = mutableMapOf<Boolean, CachedPlayerConfig>()
     private val playerConfigFetchMutex = Mutex()

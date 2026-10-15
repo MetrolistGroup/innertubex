@@ -94,6 +94,26 @@ class InnerTubeExtractorTest {
         }
 
     @Test
+    fun authenticatedCacheInvalidatesCookieChangesButKeepsVisitorChanges() =
+        runBlocking {
+            val client = jsonClient(DIRECT_RESPONSE)
+            val innerTube = InnerTube(client, retryDelay = {}).also { it.cookie = "SAPISID=original" }
+            val parser = CountingParser()
+            val extractor = makeExtractor(client, innerTube, parser, WebRemixFallback, AudioOnlyCipherService)
+            try {
+                assertNotNull(extractor.extract("video", ContentHints(isUploaded = true)))
+                innerTube.visitorData = "new-visitor"
+                assertNotNull(extractor.extract("video", ContentHints(isUploaded = true)))
+                assertEquals(1, parser.calls)
+                innerTube.cookie = "SAPISID=replacement"
+                assertNotNull(extractor.extract("video", ContentHints(isUploaded = true)))
+                assertEquals(2, parser.calls)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
     fun signedOutWatchFailureStillTriesEmbeddedVideo() =
         runBlocking {
             val client = jsonClient(VIDEO_RESPONSE)
