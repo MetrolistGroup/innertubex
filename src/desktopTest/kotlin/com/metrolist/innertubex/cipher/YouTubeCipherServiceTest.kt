@@ -1,5 +1,6 @@
 package com.metrolist.innertubex.cipher
 
+import com.metrolist.innertubex.InnerTubeLogger
 import com.metrolist.innertubex.models.response.PlayerResponse
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
@@ -20,8 +21,10 @@ import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Clock
 
 class YouTubeCipherServiceTest {
     @Test
@@ -93,6 +96,41 @@ class YouTubeCipherServiceTest {
             } finally {
                 service.dispose()
                 http.close()
+            }
+        }
+
+    @Test
+    fun partialRemoteSolveReusesPreprocessedAndCompiledPlayer() =
+        runBlocking {
+            val bootstrap = EjsChallengeSolver(QuickJsEngine(), InnerTubeLogger.NONE)
+            val preprocessed =
+                try {
+                    assertNotNull(bootstrap.solve(PLAYER_URL, PLAYER_CODE, listOf("sig" to listOf("warm"))).preprocessedPlayer)
+                } finally {
+                    bootstrap.dispose()
+                }
+            val client = HttpClient(MockEngine { respond(REMOTE_PLAYER_CODE) })
+            val store = RemotePlayerConfigStore(client, configRepository())
+            val service = YouTubeCipherService(client, store)
+            var reads = 0
+            try {
+                service.setPreprocessedPlayerCache({
+                    reads++
+                    preprocessed
+                }, { _, _ -> })
+                repeat(3) { i ->
+                    val formats = listOf(format("$MEDIA_URL?n=remote"), format("$MEDIA_URL?n=local$i"))
+                    val result = service.processFormats(PLAYER_URL, formats)
+                    assertEquals("$MEDIA_URL?n=remote_done", result[0].url)
+                    assertEquals("$MEDIA_URL?n=local${i}_done", result[1].url)
+                }
+                assertEquals(1, reads)
+                val engine = privateField<QuickJsEngine>(service, "engine")
+                assertEquals("1", engine.evaluate("__itxPlayers.size", maxResultLength = 8))
+                assertEquals(1, (client.engine as MockEngine).requestHistory.count { it.url.encodedPath.endsWith(".js") })
+            } finally {
+                service.dispose()
+                client.close()
             }
         }
 
@@ -239,5 +277,62 @@ class YouTubeCipherServiceTest {
         val fragmentUrl = "https://example.googlevideo.com/videoplayback?x=1#fragment&n=old"
         val fragmentMatch = Regex("[&?]n=([^&#]+)").find(fragmentUrl)!!
         assertNull(service.replaceQueryParameter(fragmentUrl, fragmentMatch, "new"))
+    }
+
+    private fun format(url: String) = PlayerResponse.StreamingData.Format(itag = 140, url = url, mimeType = "audio/mp4")
+
+    private fun configRepository(): PlayerConfigRepository =
+        object : PlayerConfigRepository {
+            override val enabled = true
+            override val sourceUrl = "https://raw.githubusercontent.com/MetrolistGroup/faraday/main/player_configs.json"
+            override val defaultSourceUrl = sourceUrl
+            override var cachedJson = """{"schemaVersion":1,"players":{"12345678":{"sig":"S(1,2,INPUT)","nClass":"X","sts":20613}}}"""
+            override var cachedAtMs = Clock.System.now().toEpochMilliseconds()
+            override var cachedSourceUrl = sourceUrl
+            override var cachedEtag = ""
+        }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun <T> privateField(
+        instance: Any,
+        name: String,
+    ): T =
+        instance.javaClass
+            .getDeclaredField(name)
+            .apply { isAccessible = true }
+            .get(instance) as T
+
+    private companion object {
+        const val PLAYER_URL = "https://www.youtube.com/s/player/12345678/player.js"
+        const val MEDIA_URL = "https://example.googlevideo.com/videoplayback"
+        val REMOTE_PLAYER_CODE =
+            """
+            (function(g){
+              function S(a,b,input){return input.split("").reverse().join("");}
+              g.X=class{constructor(input){this.input=input.split("n=")[1];}get(){
+                return this.input.indexOf("local") === 0 ? this.input : this.input + "_done";
+              }};
+            })(_yt_player);
+            """.trimIndent()
+        val PLAYER_CODE =
+            """
+            (function() {
+              function PlayerUrl(url, key, signature) {
+                this.values = {s: signature || null, n: null};
+              }
+              PlayerUrl.prototype.set = function(key, value) { this.values[key] = value; };
+              PlayerUrl.prototype.get = function(key) { return this.values[key]; };
+              PlayerUrl.prototype.clone = function() { return this; };
+              PlayerUrl.prototype.apply = function() {
+                if (this.values.s) this.values.s = this.values.s.split("").reverse().join("");
+                if (this.values.n) this.values.n += "_done";
+              };
+              function transform(url, key, signature) {
+                var value = new PlayerUrl(url, key, signature);
+                value.set("alr", "yes");
+                return value;
+              }
+            }).call(this);
+            """.trimIndent()
     }
 }
