@@ -1667,7 +1667,7 @@ class InnerTube(
                     "https://music.youtube.com/playlist_image_upload/playlist_custom_thumbnail",
                     MAX_IMAGE_UPLOAD_RESPONSE_BYTES,
                 ) {
-                    ytClient(client, session, setLogin = true)
+                    uploadAuthHeaders(session)
                     header("X-Goog-Upload-Command", "start")
                     header("X-Goog-Upload-Protocol", "resumable")
                     header("X-Goog-Upload-Header-Content-Length", image.size.toString())
@@ -1686,7 +1686,7 @@ class InnerTube(
                     "https://music.youtube.com/playlist_image_upload/playlist_custom_thumbnail",
                     MAX_IMAGE_UPLOAD_RESPONSE_BYTES,
                 ) {
-                    ytClient(client, session, setLogin = true)
+                    uploadAuthHeaders(session)
                     parameter("upload_id", uploadId)
                     parameter("upload_protocol", "resumable")
                     header("X-Goog-Upload-Command", "upload, finalize")

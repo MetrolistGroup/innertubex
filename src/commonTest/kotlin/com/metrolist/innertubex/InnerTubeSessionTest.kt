@@ -872,6 +872,11 @@ class InnerTubeSessionTest {
             val engine =
                 MockEngine { request ->
                     requests++
+                    assertEquals("music.youtube.com", request.url.host)
+                    assertEquals(
+                        if (requests <= 2) "/playlist_image_upload/playlist_custom_thumbnail" else "/youtubei/v1/browse/edit_playlist",
+                        request.url.encodedPath,
+                    )
                     when (requests) {
                         1 -> {
                             respond(
