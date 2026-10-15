@@ -296,6 +296,12 @@ private class SabrMediaStream(
                             var newSegmentCount = 0
 
                             suspend fun emitMediaSegment(segment: SabrSegment) {
+                                if (firstSequenceNumber == null) {
+                                    val startGapMs = segment.header.startMs - requestPlayerTimeMs
+                                    if (startGapMs > START_TIME_TOLERANCE_MS || segment.checkedEndTimeMs() <= requestPlayerTimeMs) {
+                                        throw SabrProtocolException("SABR first media segment does not cover the requested start")
+                                    }
+                                }
                                 send(segment.toChunk())
                                 if (firstSequenceNumber == null) firstSequenceNumber = segment.header.sequenceNumber
                                 lastSequenceNumber = segment.header.sequenceNumber
@@ -861,6 +867,9 @@ private class SabrMediaStream(
         const val MAX_CONTEXT_VALUE_BYTES = 64 * 1024
         const val MAX_CONTEXT_BYTES = 256L * 1024
         const val MAX_PLAYBACK_COOKIE_BYTES = 64 * 1024
+
+        // Tick-to-millisecond rounding can shift the opening boundary by one millisecond.
+        const val START_TIME_TOLERANCE_MS = 1L
         const val MIN_DURATION_TOLERANCE_MS = 2_000L
         const val STARVATION_TOLERANCE_MS = 2_000L
         const val PLAYBACK_POLL_INTERVAL_MS = 250L
