@@ -268,9 +268,7 @@ class InnerTube(
         visitorData: String,
     ): SessionSnapshot? {
         val current = session.load()
-        return current.takeIf {
-            expected.copy(visitorData = visitorData, generation = current.generation) == current
-        }
+        return current.takeIf { it.visitorData == visitorData && sessionIsCompatible(expected, it) }
     }
 
     fun clearSessionIfMatches(expected: SessionSnapshot): Boolean =

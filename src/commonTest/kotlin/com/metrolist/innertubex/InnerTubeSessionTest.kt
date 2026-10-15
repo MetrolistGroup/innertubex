@@ -268,6 +268,19 @@ class InnerTubeSessionTest {
         }
 
     @Test
+    fun visitorSnapshotAcceptsOnlyTheInitialPublication() {
+        val innerTube = InnerTube(HttpClient(MockEngine { respondOk() }))
+        val signedOut = innerTube.sessionSnapshot()
+        innerTube.visitorData = "first"
+        val published = innerTube.sessionSnapshot()
+        assertEquals(published, innerTube.sessionSnapshotWithVisitorData(signedOut, "first"))
+
+        innerTube.visitorData = "second"
+        assertNull(innerTube.sessionSnapshotWithVisitorData(published, "second"))
+        assertNull(innerTube.sessionSnapshotWithVisitorData(signedOut, "second"))
+    }
+
+    @Test
     fun visitorReplacementAndLocaleChangesStillInvalidateRequests() =
         runBlocking {
             for (changeLocale in listOf(false, true)) {
