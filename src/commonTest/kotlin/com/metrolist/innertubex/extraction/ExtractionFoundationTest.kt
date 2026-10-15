@@ -12,6 +12,89 @@ import kotlin.time.Duration.Companion.hours
 
 class ExtractionFoundationTest {
     @Test
+    fun queryEncodingPreservesUnreservedBytesAndEscapesReservedUtf8() {
+        assertEquals(
+            "AZaz09-._~",
+            com.metrolist.innertubex.utils
+                .encodeQueryComponent("AZaz09-._~"),
+        )
+        assertEquals(
+            "%20%2B%2F%3F%26%3D%23%25%C3%A9%F0%9F%8E%B5",
+            com.metrolist.innertubex.utils
+                .encodeQueryComponent(" +/?&=#%é🎵"),
+        )
+    }
+
+    @Test
+    fun streamCopyPreservesMetadataAndIncludesItInValueSemantics() {
+        val stream =
+            ExtractedStream(
+                videoId = "video",
+                audioUrl = "https://r1.googlevideo.com/videoplayback",
+                headers = emptyMap(),
+                loudnessDb = null,
+                expiresAt = null,
+                contentLengthBytes = null,
+                itag = 140,
+                mimeType = "audio/mp4",
+                codecs = null,
+                bitrate = null,
+                sampleRate = null,
+                clientName = "WEB",
+                profileId = "WEB",
+                requireBoundedRange = false,
+                rangeChunkSizeBytes = 1024,
+            ).apply {
+                perceptualLoudnessDb = -7.0
+                mediaMetadata = ExtractedMediaMetadata("title", "author", null, 123, null, null, emptyList(), false)
+            }
+        val copied = stream.copy(headers = mapOf("Accept" to "*/*"))
+        assertEquals(stream.mediaMetadata, copied.mediaMetadata)
+        assertEquals(stream.perceptualLoudnessDb, copied.perceptualLoudnessDb)
+        assertEquals(stream, copied.copy(headers = stream.headers))
+        assertEquals(stream.hashCode(), stream.copy().hashCode())
+        assertFalse(stream == stream.copy().apply { mediaMetadata = null })
+        assertFalse(stream == stream.copy().apply { perceptualLoudnessDb = null })
+        val nan = stream.copy(loudnessDb = Double.NaN)
+        assertEquals(nan, nan.copy())
+        assertEquals(nan.hashCode(), nan.copy().hashCode())
+        assertFalse(stream.copy(loudnessDb = -0.0) == stream.copy(loudnessDb = 0.0))
+    }
+
+    @Test
+    fun nonceReplacementOnlyChangesTheActualQuery() {
+        val base = "https://r1.googlevideo.com/videoplayback"
+        val nonce = "abcdefghijklmnop"
+        assertEquals("$base?cpn=$nonce#note?cpn=old", replaceClientPlaybackNonce("$base#note?cpn=old", nonce))
+        assertEquals(
+            "$base?sig=a%2Fb&cpn=$nonce#note&cpn=fragment",
+            replaceClientPlaybackNonce("$base?sig=a%2Fb&cpn=old#note&cpn=fragment", nonce),
+        )
+    }
+
+    @Test
+    fun capabilityChangesHaveDistinctValueAndStateFlowSemantics() {
+        val original = ContentHints()
+        val state = kotlinx.coroutines.flow.MutableStateFlow(original)
+        val variants =
+            listOf(
+                original.withStreamCapabilities(allowHls = false),
+                original.withStreamCapabilities(allowSabr = false),
+                original.withStreamCapabilities(allowBoundedRange = false),
+            )
+        variants.forEach { changed ->
+            assertFalse(original == changed)
+            assertFalse(original.hashCode() == changed.hashCode())
+            assertEquals(changed, changed.copy())
+            assertEquals(changed.hashCode(), changed.copy().hashCode())
+            state.value = original
+            state.value = changed
+            assertSame(changed, state.value)
+        }
+        assertEquals(4, (variants + original).toSet().size)
+    }
+
+    @Test
     fun videoSelectorHonorsHeightCapAndDegradesAboveCap() {
         val formats =
             listOf(

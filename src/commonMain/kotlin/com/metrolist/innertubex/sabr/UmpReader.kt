@@ -12,6 +12,7 @@ internal data class UmpPart(
 /** Incremental reader for YouTube's UMP framing. */
 internal class UmpReader(
     private val maxPartSize: Int = DEFAULT_MAX_PART_SIZE,
+    private val maxPartSizeForType: (Int) -> Int = { maxPartSize },
 ) {
     private var buffer = ByteArray(0)
     private var start = 0
@@ -54,7 +55,7 @@ internal class UmpReader(
         while (parseOffset < end) {
             val type = readUmpVarint(buffer, parseOffset, end) ?: break
             val size = readUmpVarint(buffer, type.nextOffset, end) ?: break
-            if (size.value > maxPartSize) {
+            if (size.value > minOf(maxPartSize, maxPartSizeForType(type.value))) {
                 throw SabrProtocolException("UMP part is too large: ${size.value} bytes")
             }
             val partEnd = size.nextOffset.toLong() + size.value

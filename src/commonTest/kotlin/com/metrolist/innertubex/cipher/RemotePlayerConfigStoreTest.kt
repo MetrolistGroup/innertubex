@@ -13,11 +13,44 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class RemotePlayerConfigStoreTest {
+    @Test
+    fun sourceAndPlayerValidatorsRejectUserInfoAndNonHttpsPorts() {
+        val client = HttpClient(MockEngine { error("Validation must not fetch") })
+        try {
+            val store = RemotePlayerConfigStore(client, repository())
+            val sources =
+                listOf(
+                    "raw.githubusercontent.com/MetrolistGroup/faraday/main/player_configs.json",
+                    "cdn.jsdelivr.net/gh/MetrolistGroup/faraday@main/player_configs.json",
+                    "github.com/MetrolistGroup/faraday/releases/download/tag/config.json",
+                )
+            for (source in sources) {
+                val host = source.substringBefore('/')
+                val path = source.substringAfter('/')
+                assertNotNull(store.validatedSourceUrlOrNull("https://$source"))
+                assertNotNull(store.validatedSourceUrlOrNull("https://$host:443/$path"))
+                for (authority in listOf("$host:8443", "user@$host", "user:pass@$host", "@$host")) {
+                    assertNull(store.validatedSourceUrlOrNull("https://$authority/$path"))
+                }
+            }
+            val path = "/s/player/12345678/base.js"
+            assertEquals(443, validatedPlayerScriptUrl("https://www.youtube.com$path").port)
+            assertEquals(443, validatedPlayerScriptUrl("https://www.youtube.com:443$path").port)
+            for (authority in listOf("www.youtube.com:8443", "user@www.youtube.com", "user:pass@www.youtube.com", "@www.youtube.com")) {
+                assertFailsWith<IllegalArgumentException> { validatedPlayerScriptUrl("https://$authority$path") }
+            }
+        } finally {
+            client.close()
+        }
+    }
+
     @Test
     fun rejectsUntrustedRemoteConfigSourceBeforeRequest() =
         runBlocking {

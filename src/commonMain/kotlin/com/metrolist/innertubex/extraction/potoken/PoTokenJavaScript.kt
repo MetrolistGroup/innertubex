@@ -36,20 +36,24 @@ public fun parseAttestationInterpreterUrl(rawAttestation: String): String {
         requireFieldCount(root)
         val challenge = root["bgChallenge"]?.jsonObject ?: throw PoTokenException("Attestation response has no BotGuard challenge")
         requireFieldCount(challenge)
-        val interpreterUrl =
-            challenge["interpreterUrl"]?.jsonObject
-                ?: throw PoTokenException("Attestation response has no BotGuard interpreter URL")
-        requireFieldCount(interpreterUrl)
-        val value =
-            interpreterUrl["privateDoNotAccessOrElseTrustedResourceUrlWrappedValue"]?.jsonPrimitive?.content
-                ?: throw PoTokenException("Attestation response has no BotGuard interpreter URL")
-        requireSize(value, INTERPRETER_LIMIT, "interpreter URL")
-        requireTrustedAttestationInterpreterUrl(value)
-        value
+        attestationInterpreterUrl(challenge)
     }.getOrElse { error ->
         if (error is PoTokenException) throw error
         throw PoTokenException("Invalid BotGuard attestation response")
     }
+}
+
+private fun attestationInterpreterUrl(challenge: JsonObject): String {
+    val interpreterUrl =
+        challenge["interpreterUrl"]?.jsonObject
+            ?: throw PoTokenException("Attestation response has no BotGuard interpreter URL")
+    requireFieldCount(interpreterUrl)
+    val value =
+        interpreterUrl["privateDoNotAccessOrElseTrustedResourceUrlWrappedValue"]?.jsonPrimitive?.content
+            ?: throw PoTokenException("Attestation response has no BotGuard interpreter URL")
+    requireSize(value, INTERPRETER_LIMIT, "interpreter URL")
+    requireTrustedAttestationInterpreterUrl(value)
+    return value
 }
 
 public fun requireTrustedAttestationInterpreterUrl(value: String): String {
@@ -85,7 +89,7 @@ public fun parseAttestationChallengeData(
             root["bgChallenge"]?.jsonObject
                 ?: throw PoTokenException("Attestation response has no BotGuard challenge")
         requireFieldCount(challenge)
-        val interpreterUrl = parseAttestationInterpreterUrl(rawAttestation)
+        val interpreterUrl = attestationInterpreterUrl(challenge)
         val result =
             JsonObject(
                 mapOf(

@@ -58,6 +58,9 @@ internal class EjsChallengeSolver(
         private const val MAX_PAYLOAD_LENGTH = 10 * 1024 * 1024
         private const val MAX_RAW_OUTPUT_LENGTH = 10 * 1024 * 1024
         private const val MAX_SOLVER_OUTPUT_LENGTH = 256 * 1024
+        private val solverLib by lazy { readYtEjsSolverScript("yt.solver.lib.min.js") }
+        private val solverCore by lazy { readYtEjsSolverScript("yt.solver.core.min.js") }
+        private val solverBundleHash by lazy { sha1(solverLib + solverCore) }
         private val payloadJson = Json { encodeDefaults = false }
     }
 
@@ -122,7 +125,6 @@ internal class EjsChallengeSolver(
     private suspend fun releaseRuntime() {
         bootstrapped = false
         compiledPlayers.clear()
-        preprocessedByPlayerUrl.clear()
         engine.dispose()
     }
 
@@ -132,6 +134,7 @@ internal class EjsChallengeSolver(
                 idleJob?.cancel()
                 idleJob = null
                 solvedChallenges.clear()
+                preprocessedByPlayerUrl.clear()
                 releaseRuntime()
             }
         }
@@ -152,11 +155,14 @@ internal class EjsChallengeSolver(
     ) {
         if (preprocessedPlayer.isBlank() || preprocessedPlayer.length > MAX_PLAYER_JS_LENGTH) return
         withActivity {
+            if (preprocessedByPlayerUrl[playerUrl] == preprocessedPlayer) return@withActivity
+            forgetCompiledPlayer(playerUrl)
+            solvedChallenges.keys.removeAll { it.playerUrl == playerUrl }
             if (hasPersistentCache) {
                 ensureBundleHash()
                 persistPreprocessedPlayer(bundleHash?.let { preprocessedPlayerCacheKey(playerUrl, it) }, preprocessedPlayer)
             }
-            // Keep one supplied player until its next solve, even if persistent storage fails.
+            // Retain one supplied player even if persistent storage fails.
             preprocessedByPlayerUrl.clear()
             preprocessedByPlayerUrl[playerUrl] = preprocessedPlayer
         }
@@ -168,12 +174,10 @@ internal class EjsChallengeSolver(
             val startMs = Clock.System.now().toEpochMilliseconds()
             engine.initialize()
             engine.setupYoutubeGlobals()
-            val lib = readYtEjsSolverScript("yt.solver.lib.min.js")
-            val core = readYtEjsSolverScript("yt.solver.core.min.js")
-            bundleHash = sha1(lib + core)
-            engine.execute(lib)
+            ensureBundleHash()
+            engine.execute(solverLib)
             engine.execute("Object.assign(globalThis, lib);")
-            engine.execute(core)
+            engine.execute(solverCore)
             // Mirrors the final step of jsc() for preprocessed players, but keeps the compiled
             // functions so later challenges for the same player skip recompiling ~4 MB of JS.
             engine.execute(
@@ -212,7 +216,7 @@ internal class EjsChallengeSolver(
 
     private fun ensureBundleHash() {
         if (bundleHash == null) {
-            bundleHash = sha1(readYtEjsSolverScript("yt.solver.lib.min.js") + readYtEjsSolverScript("yt.solver.core.min.js"))
+            bundleHash = solverBundleHash
         }
     }
 
@@ -223,15 +227,13 @@ internal class EjsChallengeSolver(
         playerUrl: String,
         fullPlayerJs: String,
         requestOrder: List<Pair<String, List<String>>>,
-        preferPreprocessed: Boolean = true,
-    ): SolveResult = solve(playerUrl, { fullPlayerJs }, requestOrder, preferPreprocessed)
+    ): SolveResult = solve(playerUrl, { fullPlayerJs }, requestOrder)
 
     /** [loadFullPlayerJs] is only called when no usable preprocessed player is cached. */
     suspend fun solve(
         playerUrl: String,
         loadFullPlayerJs: suspend () -> String?,
         requestOrder: List<Pair<String, List<String>>>,
-        preferPreprocessed: Boolean = true,
     ): SolveResult {
         if (requestOrder.isEmpty() || requestOrder.all { it.second.isEmpty() }) {
             return SolveResult(emptyMap(), emptyMap(), null)
@@ -246,20 +248,30 @@ internal class EjsChallengeSolver(
 
         return withActivity {
             val cached = cachedChallenges(playerUrl, requestOrder)
-            if (preferPreprocessed && cached.solvesAll(requestOrder)) {
+            if (cached.solvesAll(requestOrder)) {
                 cached
             } else {
-                solveUncached(playerUrl, loadFullPlayerJs, requestOrder, preferPreprocessed).also { result ->
-                    for ((kind, values) in listOf("sig" to result.sigByChallenge, "n" to result.nByChallenge)) {
-                        for ((challenge, value) in values) {
-                            if (playerUrl.length + challenge.length + value.length > MAX_CACHED_CHALLENGE_LENGTH) continue
-                            val key = ChallengeKey(playerUrl, kind, challenge)
-                            solvedChallenges.remove(key)
-                            solvedChallenges[key] = value
-                            while (solvedChallenges.size > MAX_SOLVED_CHALLENGES) solvedChallenges.remove(solvedChallenges.keys.first())
+                val missing =
+                    requestOrder.map { (kind, challenges) ->
+                        val solved = if (kind == "sig") cached.sigByChallenge else cached.nByChallenge
+                        kind to challenges.filterNot { it in solved }
+                    }
+                val fresh = solveUncached(playerUrl, loadFullPlayerJs, missing)
+                fresh
+                    .copy(
+                        sigByChallenge = cached.sigByChallenge + fresh.sigByChallenge,
+                        nByChallenge = cached.nByChallenge + fresh.nByChallenge,
+                    ).also { result ->
+                        for ((kind, values) in listOf("sig" to result.sigByChallenge, "n" to result.nByChallenge)) {
+                            for ((challenge, value) in values) {
+                                if (playerUrl.length + challenge.length + value.length > MAX_CACHED_CHALLENGE_LENGTH) continue
+                                val key = ChallengeKey(playerUrl, kind, challenge)
+                                solvedChallenges.remove(key)
+                                solvedChallenges[key] = value
+                                while (solvedChallenges.size > MAX_SOLVED_CHALLENGES) solvedChallenges.remove(solvedChallenges.keys.first())
+                            }
                         }
                     }
-                }
             }
         }
     }
@@ -288,11 +300,10 @@ internal class EjsChallengeSolver(
         playerUrl: String,
         loadFullPlayerJs: suspend () -> String?,
         requestOrder: List<Pair<String, List<String>>>,
-        preferPreprocessed: Boolean,
     ): SolveResult {
         return try {
             ensureBootstrapped()
-            if (preferPreprocessed && playerUrl in compiledPlayers) {
+            if (playerUrl in compiledPlayers) {
                 val compiled =
                     try {
                         solveOnce(playerUrl, null, requestOrder, preprocessed = true)
@@ -306,12 +317,7 @@ internal class EjsChallengeSolver(
             }
 
             val cacheKey = bundleHash?.let { preprocessedPlayerCacheKey(playerUrl, it) }
-            val preprocessed =
-                if (preferPreprocessed) {
-                    loadPreprocessedPlayer(playerUrl, cacheKey)
-                } else {
-                    null
-                }
+            val preprocessed = loadPreprocessedPlayer(playerUrl, cacheKey)
 
             var cachedResult = SolveResult(emptyMap(), emptyMap(), null)
             if (preprocessed != null) {
@@ -368,8 +374,7 @@ internal class EjsChallengeSolver(
             }
         val requestsJson = payloadJson.encodeToString(JsonElement.serializer(), requests)
         val playerKey = QuickJsEngine.jsStringLiteral(playerUrl)
-        val playerInput = playerInputText?.let(QuickJsEngine::jsStringLiteral).orEmpty()
-        if (playerInput.length + requestsJson.length > MAX_PAYLOAD_LENGTH) {
+        if ((playerInputText?.length ?: 0) + requestsJson.length > MAX_PAYLOAD_LENGTH) {
             return SolveResult(emptyMap(), emptyMap(), null)
         }
         val run =
@@ -383,7 +388,7 @@ internal class EjsChallengeSolver(
 
                 preprocessed -> {
                     """
-                    var r = __itxRun(__itxCompile($playerKey, $playerInput), $requestsJson);
+                    var r = __itxRun(__itxCompile($playerKey, __itxTakeInput()), $requestsJson);
                     """
                 }
 
@@ -391,7 +396,7 @@ internal class EjsChallengeSolver(
                     // Preprocessing a full player needs nearly the whole QuickJS heap.
                     """
                     __itxPlayers.clear();
-                    var r = jsc({"type":"player","player":$playerInput,"output_preprocessed":true,"requests":$requestsJson});
+                    var r = jsc({"type":"player","player":__itxTakeInput(),"output_preprocessed":true,"requests":$requestsJson});
                     """
                 }
             }
@@ -458,7 +463,7 @@ internal class EjsChallengeSolver(
             preprocessed -> rememberCompiledPlayer(playerUrl)
             else -> compiledPlayers.clear()
         }
-        val evaluated = engine.evaluate(js, MAX_RAW_OUTPUT_LENGTH, collectGarbage = !preprocessed)
+        val evaluated = engine.evaluate(js, MAX_RAW_OUTPUT_LENGTH, collectGarbage = !preprocessed, input = playerInputText)
         if (evaluated.length > MAX_RAW_OUTPUT_LENGTH) return SolveResult(emptyMap(), emptyMap(), null)
         val raw = evaluated.trim()
         logger.d(
@@ -474,10 +479,7 @@ internal class EjsChallengeSolver(
         playerUrl: String,
         cacheKey: String?,
     ): String? {
-        preprocessedByPlayerUrl.remove(playerUrl)?.also {
-            if (!hasPersistentCache) preprocessedByPlayerUrl[playerUrl] = it
-            return it
-        }
+        preprocessedByPlayerUrl[playerUrl]?.let { return it }
         cacheKey ?: return null
         val stored =
             try {
@@ -520,8 +522,9 @@ internal class EjsChallengeSolver(
         while (compiledPlayers.size > MAX_COMPILED_PLAYERS) compiledPlayers.remove(compiledPlayers.first())
     }
 
-    private fun forgetCompiledPlayer(playerUrl: String) {
+    private suspend fun forgetCompiledPlayer(playerUrl: String) {
         compiledPlayers.remove(playerUrl)
+        if (bootstrapped) engine.execute("__itxPlayers.delete(${QuickJsEngine.jsStringLiteral(playerUrl)});")
     }
 
     private suspend fun safeWritePreprocessedPlayer(
@@ -610,7 +613,6 @@ internal class EjsChallengeSolver(
         playerUrl: String,
         preprocessedPlayer: String,
     ) {
-        if (hasPersistentCache) return
         preprocessedByPlayerUrl.remove(playerUrl)
         preprocessedByPlayerUrl[playerUrl] = preprocessedPlayer
         while (preprocessedByPlayerUrl.size > MAX_PREPROCESSED_PLAYERS) {

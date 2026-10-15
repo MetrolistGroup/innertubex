@@ -1,11 +1,9 @@
 package com.metrolist.innertubex.cipher
 
 import com.dokar.quickjs.QuickJs
+import com.dokar.quickjs.binding.FunctionBinding
 import kotlinx.coroutines.CloseableCoroutineDispatcher
-import kotlinx.coroutines.DelicateCoroutinesApi
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.newSingleThreadContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -22,8 +20,8 @@ internal class QuickJsEngine {
 
         // Current ~2.6 MiB player scripts need more than 128 MiB while EJS builds their AST.
         private const val NATIVE_MEMORY_LIMIT_BYTES = 192L * 1024L * 1024L
-        private const val MAX_STACK_SIZE_BYTES = 256L * 1024L
         private const val MAX_EVALUATION_RESULT_LENGTH = 16 * 1024 * 1024
+        private const val MAX_EVALUATION_INPUT_LENGTH = 8 * 1024 * 1024
         private const val MAX_FUNCTION_INPUT_LENGTH = 64 * 1024
         private const val MAX_FUNCTION_RESULT_LENGTH = 256 * 1024
         private val JS_IDENTIFIER = Regex("[A-Za-z_$][A-Za-z0-9_$]*")
@@ -76,6 +74,9 @@ internal class QuickJsEngine {
     private val mutex = Mutex()
     private var runtime: Runtime? = null
 
+    // Accessed only on the runtime thread while holding mutex; never retain a player after evaluation.
+    private var evaluationInput: String? = null
+
     /**
      * Initialize the QuickJS runtime.
      *
@@ -83,21 +84,26 @@ internal class QuickJsEngine {
      * its suspending evaluate API can resume on another worker of a shared pool. Each runtime
      * therefore gets one dedicated thread that creates, runs, and closes it.
      */
-    @OptIn(DelicateCoroutinesApi::class, ExperimentalCoroutinesApi::class)
     suspend fun initialize() =
         mutex.withLock {
             if (runtime != null) return@withLock
             // Keep publication non-cancellable too: returning from the dedicated thread can
             // otherwise discard the newly created runtime when the caller has been cancelled.
             withContext(NonCancellable) {
-                val thread = newSingleThreadContext("InnerTubeX-QuickJS")
+                val thread = newQuickJsThread()
                 try {
                     val js =
                         withContext(thread) {
                             QuickJs.create(thread).also {
                                 it.evaluationTimeoutMillis = EVALUATION_TIMEOUT_MS
                                 it.memoryLimit = NATIVE_MEMORY_LIMIT_BYTES
-                                it.maxStackSize = MAX_STACK_SIZE_BYTES
+                                it.maxStackSize = QUICKJS_MAX_STACK_SIZE_BYTES
+                                it.defineBinding(
+                                    "__itxTakeInput",
+                                    FunctionBinding {
+                                        evaluationInput.also { evaluationInput = null }
+                                    },
+                                )
                             }
                         }
                     runtime = Runtime(js, thread)
@@ -125,21 +131,30 @@ internal class QuickJsEngine {
         code: String,
         maxResultLength: Int,
         collectGarbage: Boolean = false,
+        input: String? = null,
     ): String {
         require(maxResultLength in 1..MAX_EVALUATION_RESULT_LENGTH) { "Invalid QuickJS result limit" }
+        require(input == null || input.length <= MAX_EVALUATION_INPUT_LENGTH) { "QuickJS input too large" }
+        // Native quickjs-kt marshals binding strings through C strings, which end at NUL.
+        val inlineInput = input?.takeIf { '\u0000' in it }
+        val takeInput =
+            inlineInput?.let { "(function() { var v = ${jsStringLiteral(it)}; return function() { var r = v; v = null; return r; }; })()" }
+                ?: "__itxTakeInput"
         val boundedCode =
             """
-            (function() {
+            (function(__itxTakeInput) {
               const value = ($code);
               if (value == null) return "";
               const text = String(value);
               return text.length <= $maxResultLength ? text : "";
-            })()
+            })($takeInput)
             """
         return withRuntime {
+            evaluationInput = input.takeIf { inlineInput == null }
             try {
                 evaluate<String?>(boundedCode).orEmpty()
             } finally {
+                evaluationInput = null
                 if (collectGarbage) gc()
             }
         }
@@ -260,3 +275,9 @@ internal class QuickJsEngine {
             }
         }
 }
+
+/** QuickJS stack limit; must stay below the stack of the thread from [newQuickJsThread]. */
+internal expect val QUICKJS_MAX_STACK_SIZE_BYTES: Long
+
+/** Dedicated thread that creates, runs, and closes one QuickJS runtime. */
+internal expect fun newQuickJsThread(): CloseableCoroutineDispatcher

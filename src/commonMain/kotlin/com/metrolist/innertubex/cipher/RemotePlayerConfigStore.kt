@@ -434,6 +434,7 @@ class RemotePlayerConfigStore private constructor(
             .getOrNull()
             ?.takeIf { url ->
                 url.protocol.name == "https" &&
+                    url.port == 443 && url.user == null && url.password == null &&
                     when (url.host) {
                         "raw.githubusercontent.com" -> url.encodedPath.startsWith("/MetrolistGroup/faraday/")
                         "cdn.jsdelivr.net" -> url.encodedPath.startsWith("/gh/MetrolistGroup/faraday@")

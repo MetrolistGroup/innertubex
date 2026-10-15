@@ -1,6 +1,10 @@
 package com.metrolist.innertubex.cipher
 
 import com.metrolist.innertubex.InnerTubeLogger
+import com.metrolist.innertubex.cipher.EjsPlayerFixture.LARGE_PLAYER_JS_LENGTH
+import com.metrolist.innertubex.cipher.EjsPlayerFixture.OTHER_PLAYER_URL
+import com.metrolist.innertubex.cipher.EjsPlayerFixture.PLAYER_CODE
+import com.metrolist.innertubex.cipher.EjsPlayerFixture.PLAYER_URL
 import com.metrolist.innertubex.utils.sha1
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -47,7 +51,7 @@ class EjsChallengeSolverTest {
                 assertFalse(stored.values.single().contains(challenge))
                 assertFalse(stored.values.single().contains(challenge.reversed()))
                 assertEquals("value_done", memoryHit.nByChallenge["value"])
-                assertEquals(2, reads)
+                assertEquals(1, reads)
             } finally {
                 firstEngine.dispose()
             }
@@ -69,7 +73,7 @@ class EjsChallengeSolverTest {
 
                 assertEquals("fresh_done", restored.nByChallenge["fresh"])
                 assertEquals(0, fullPlayerLoads)
-                assertEquals(3, reads)
+                assertEquals(2, reads)
                 assertTrue(stored.keys.single().matches(Regex("[a-f0-9]{40}")))
             } finally {
                 secondEngine.dispose()
@@ -111,6 +115,43 @@ class EjsChallengeSolverTest {
                 assertEquals("2", engine.evaluate("__itxPlayers.size", maxResultLength = 8))
             } finally {
                 engine.dispose()
+            }
+        }
+
+    @Test
+    fun replacingPreprocessedPlayerInvalidatesCompiledFunctionsAndSolvedAnswers() =
+        runBlocking {
+            val engine = QuickJsEngine()
+            val solver = EjsChallengeSolver(engine, InnerTubeLogger.NONE)
+            try {
+                val old = "_result.n = function(c) { return 'old_' + c; };"
+                val replacement = "_result.n = function(c) { return 'new_' + c; };"
+                solver.cachePreprocessedPlayer(PLAYER_URL, old)
+                assertEquals("old_a", solver.solve(PLAYER_URL, "", listOf("n" to listOf("a"))).nByChallenge["a"])
+                solver.cachePreprocessedPlayer(PLAYER_URL, replacement)
+                assertEquals("0", engine.evaluate("__itxPlayers.size", 8))
+                val result = solver.solve(PLAYER_URL, "", listOf("n" to listOf("a", "b")))
+                assertEquals(mapOf("a" to "new_a", "b" to "new_b"), result.nByChallenge)
+            } finally {
+                solver.dispose()
+            }
+        }
+
+    @Test
+    fun partialChallengeCacheOnlySolvesMissingValues() =
+        runBlocking {
+            val engine = QuickJsEngine()
+            val solver = EjsChallengeSolver(engine, InnerTubeLogger.NONE)
+            try {
+                solver.cachePreprocessedPlayer(
+                    PLAYER_URL,
+                    "_result.n = function(c) { if (globalThis.seen === c) throw Error('repeated'); globalThis.seen = c; return c + '_done'; };",
+                )
+                assertEquals("old_done", solver.solve(PLAYER_URL, "", listOf("n" to listOf("old"))).nByChallenge["old"])
+                val result = solver.solve(PLAYER_URL, { error("Valid caches must be used") }, listOf("n" to listOf("old", "new")))
+                assertEquals(mapOf("old" to "old_done", "new" to "new_done"), result.nByChallenge)
+            } finally {
+                solver.dispose()
             }
         }
 
@@ -214,44 +255,22 @@ class EjsChallengeSolverTest {
         }
 
     @Test
-    fun idleReleaseStopsTheThreadAndCachedOutputsSurviveWithoutRestartingIt() =
+    fun idleReleaseRetainsPreprocessingWithoutPersistentCacheButDisposeClearsIt() =
         runBlocking {
             val engine = QuickJsEngine()
-            // Slow CI workers can idle-release a 100ms runtime before the thread count is sampled.
-            val solver = EjsChallengeSolver(engine, InnerTubeLogger.NONE, idleTimeoutMs = 1_000)
-            val threadsBefore = quickJsThreads()
-            val stored = mutableMapOf<String, String>()
-            var reads = 0
-            solver.setPreprocessedPlayerCache(
-                read = {
-                    reads++
-                    stored[it]
-                },
-                write = { key, value -> if (value == null) stored.remove(key) else stored[key] = value },
-            )
+            val solver = EjsChallengeSolver(engine, InnerTubeLogger.NONE, idleTimeoutMs = 100)
             try {
-                val requests = listOf("sig" to listOf("abc"), "n" to listOf("abc"))
-                val first = solver.solve(PLAYER_URL, PLAYER_CODE, requests)
-                assertEquals("cba", first.sigByChallenge["abc"])
-                assertEquals("abc_done", first.nByChallenge["abc"])
-                val createdThreads = quickJsThreads() - threadsBefore
-                assertEquals(1, createdThreads.size)
+                assertNotNull(solver.solve(PLAYER_URL, PLAYER_CODE, listOf("sig" to listOf("abc"))).preprocessedPlayer)
                 awaitReleased(engine)
-                withTimeout(5_000) { while (createdThreads.any { it.isAlive }) delay(10) }
-
-                val cached = solver.solve(PLAYER_URL, { error("Cached results must not load player JS") }, requests)
-                assertEquals(first.sigByChallenge, cached.sigByChallenge)
-                assertEquals(first.nByChallenge, cached.nByChallenge)
-                assertNull(cached.preprocessedPlayer)
-                assertFailsWith<IllegalStateException> { engine.evaluate("1", 1) }
-
-                val next = solver.solve(PLAYER_URL, { error("Player should be restored from disk") }, listOf("n" to listOf("new")))
+                val next = solver.solve(PLAYER_URL, { error("Idle release must retain preprocessing") }, listOf("n" to listOf("new")))
                 assertEquals("new_done", next.nByChallenge["new"])
-                assertEquals(2, reads)
-                assertEquals("1", engine.evaluate("__itxPlayers.size", 8))
-                // Same challenge in a different player must not reuse the old player's output.
-                val other = solver.solve(OTHER_PLAYER_URL, PLAYER_CODE.replace("_done", "_other"), listOf("n" to listOf("abc")))
-                assertEquals("abc_other", other.nByChallenge["abc"])
+                solver.dispose()
+                var loads = 0
+                solver.solve(PLAYER_URL, {
+                    loads++
+                    PLAYER_CODE
+                }, listOf("n" to listOf("new")))
+                assertEquals(1, loads)
             } finally {
                 solver.dispose()
             }
@@ -354,7 +373,7 @@ class EjsChallengeSolverTest {
                         }, listOf("n" to listOf("retry")))
                         .nByChallenge["retry"],
                 )
-                assertEquals(1, loads)
+                assertEquals(0, loads)
             } finally {
                 solver.dispose()
             }
@@ -371,37 +390,4 @@ class EjsChallengeSolverTest {
                 delay(10)
             }
         }
-
-    private fun quickJsThreads(): Set<Thread> =
-        Thread
-            .getAllStackTraces()
-            .keys
-            .filter { it.name == "InnerTubeX-QuickJS" }
-            .toSet()
-
-    private companion object {
-        const val LARGE_PLAYER_JS_LENGTH = 2 * 1024 * 1024
-        const val PLAYER_URL = "https://www.youtube.com/s/player/12345678/player.js"
-        const val OTHER_PLAYER_URL = "https://www.youtube.com/s/player/87654321/player.js"
-        val PLAYER_CODE =
-            """
-            (function() {
-              function PlayerUrl(url, key, signature) {
-                this.values = {s: signature || null, n: null};
-              }
-              PlayerUrl.prototype.set = function(key, value) { this.values[key] = value; };
-              PlayerUrl.prototype.get = function(key) { return this.values[key]; };
-              PlayerUrl.prototype.clone = function() { return this; };
-              PlayerUrl.prototype.apply = function() {
-                if (this.values.s) this.values.s = this.values.s.split("").reverse().join("");
-                if (this.values.n) this.values.n += "_done";
-              };
-              function transform(url, key, signature) {
-                var value = new PlayerUrl(url, key, signature);
-                value.set("alr", "yes");
-                return value;
-              }
-            }).call(this);
-            """.trimIndent()
-    }
 }

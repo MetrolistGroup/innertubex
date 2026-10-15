@@ -24,7 +24,7 @@ public fun replaceClientPlaybackNonce(
 ): String {
     if (!validNonce(clientPlaybackNonce)) return url
     if (approvedMediaUrl(url) == null) return url
-    val match = CPN_REGEX.find(url)
+    val match = CPN_REGEX.find(url.substringBefore('#'))
     return if (match == null) {
         appendClientPlaybackNonce(url, clientPlaybackNonce)
     } else {

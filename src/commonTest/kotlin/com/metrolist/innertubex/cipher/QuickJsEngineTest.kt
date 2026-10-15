@@ -15,6 +15,39 @@ import kotlin.test.assertNull
 
 class QuickJsEngineTest {
     @Test
+    fun evaluationInputIsBoundedTransferredVerbatimAndReleasedAfterFailure() =
+        runBlocking {
+            val engine = QuickJsEngine()
+            try {
+                engine.initialize()
+                val input = "\"\\\n\r\t\u2028".repeat(100_000)
+                assertEquals(input, engine.evaluate("__itxTakeInput()", input.length, input = input))
+                // Native results end at NUL, so check NUL-bearing input inside JavaScript.
+                val withNul = "a\u0000b".repeat(100_000)
+                assertEquals(
+                    "300000:1:98",
+                    engine.evaluate(
+                        "(function(s) { return s.length + ':' + s.indexOf('\\u0000') + ':' + s.charCodeAt(s.length - 1); })(__itxTakeInput())",
+                        64,
+                        input = withNul,
+                    ),
+                )
+                assertEquals("", engine.evaluate("__itxTakeInput()", 8))
+                assertFailsWith<QuickJsException> {
+                    engine.evaluate("(function() { throw Error('failed'); })()", 8, input = input)
+                }
+                assertEquals("", engine.evaluate("__itxTakeInput()", 8))
+                assertEquals("", engine.evaluate("__itxTakeInput()", 8, input = "x".repeat(100)))
+                assertFailsWith<IllegalArgumentException> {
+                    engine.evaluate("__itxTakeInput()", 8, input = "x".repeat(8 * 1024 * 1024 + 1))
+                }
+                Unit
+            } finally {
+                engine.dispose()
+            }
+        }
+
+    @Test
     fun cancellationDuringInitializationDoesNotLoseTheCreatedRuntime() =
         runBlocking {
             val engine = QuickJsEngine()
@@ -40,7 +73,7 @@ class QuickJsEngineTest {
                 }
                 // Callers on other threads must still hit the limit measured on the runtime's own thread.
                 List(8) {
-                    async(Dispatchers.IO) {
+                    async(Dispatchers.Default) {
                         assertFailsWith<QuickJsException> {
                             engine.evaluate("(function recurse() { return recurse(); })()", maxResultLength = 1)
                         }

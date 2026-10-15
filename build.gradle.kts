@@ -124,6 +124,22 @@ apiValidation { ignoredProjects.add("harness") }
 
 tasks.named("allTests") { dependsOn(":harness:test") }
 
+// Host tests run on the build machine's JVM, which cannot load Android's JNI library.
+configurations.named("androidHostTestRuntimeClasspath") {
+    resolutionStrategy.dependencySubstitution {
+        substitute(module("io.github.dokar3:quickjs-kt"))
+            .using(module("io.github.dokar3:quickjs-kt-jvm:${libs.versions.quickjs.get()}"))
+    }
+}
+
+tasks.withType<Test>().configureEach {
+    if (name == "testAndroidHostTest") {
+        val aar = tasks.named<Zip>("bundleAndroidMainAar").flatMap { it.archiveFile }
+        inputs.file(aar)
+        systemProperty("innertubex.test.aar", aar.get().asFile.absolutePath)
+    }
+}
+
 configure<KtlintExtension> {
     version.set("1.8.0")
     additionalEditorconfig.set(

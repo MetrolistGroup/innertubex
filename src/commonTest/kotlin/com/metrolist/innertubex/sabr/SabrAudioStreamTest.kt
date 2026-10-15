@@ -16,6 +16,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -29,6 +30,125 @@ import kotlin.test.assertNotNull
 
 @OptIn(ExperimentalSabrApi::class)
 class SabrAudioStreamTest {
+    @Test
+    fun boundsCompletedSegmentsWaitingForTheOpeningSequence() =
+        runBlocking {
+            val response =
+                initializationResponsePrefix(1_025) +
+                    (1..1_025)
+                        .flatMap { sequence ->
+                            mediaResponseSegment(2, sequence, 0, byteArrayOf(1)).asIterable()
+                        }.toByteArray()
+            val engine =
+                MockEngine {
+                    respond(response, headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"))
+                }
+            val error =
+                assertFailsWith<SabrProtocolException> {
+                    SabrAudioStream(HttpClient(engine), bootstrap().copy(contentLengthBytes = null)).chunks().toList()
+                }
+            assertEquals("SABR pending segment count exceeded the memory limit", error.message)
+        }
+
+    @Test
+    fun samplesHeaderDiagnosticsWithManyDuplicateSegments() =
+        runBlocking {
+            val response =
+                initializationResponsePrefix(0) +
+                    (1..200)
+                        .flatMap {
+                            mediaResponseSegment(2, 0, 0, byteArrayOf(5, 6, 7)).asIterable()
+                        }.toByteArray()
+            val engine =
+                MockEngine {
+                    respond(response, headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"))
+                }
+            val diagnostics = mutableListOf<SabrResponseDiagnostics>()
+            val chunks = SabrAudioStream(HttpClient(engine), bootstrap(), onResponse = diagnostics::add).chunks().toList()
+            assertEquals(2, chunks.size)
+            assertEquals(128, diagnostics.single().receivedSequences.size)
+            assertEquals(128, diagnostics.single().receivedStartRanges.size)
+            assertEquals(128, diagnostics.single().receivedContentLengths.size)
+            assertEquals(1, diagnostics.single().selectedSegmentCount)
+        }
+
+    @Test
+    fun rejectsMissingOpeningMediaWithoutDeclaredContentLength() =
+        runBlocking {
+            for (sequence in listOf(0, 5)) {
+                val engine =
+                    MockEngine {
+                        respond(
+                            initializationResponsePrefix(sequence, durationMs = 2_000) +
+                                mediaResponseSegment(2, sequence, 1_000, byteArrayOf(5, 6, 7)),
+                            headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"),
+                        )
+                    }
+                val error =
+                    assertFailsWith<SabrProtocolException> {
+                        SabrAudioStream(HttpClient(engine), bootstrap().copy(durationMs = 2_000, contentLengthBytes = null))
+                            .chunks()
+                            .toList()
+                    }
+                assertEquals("SABR first media segment does not cover the requested start", error.message)
+            }
+        }
+
+    @Test
+    fun acceptsNonzeroSequenceNumberWhenOpeningTimestampCoversStart() =
+        runBlocking {
+            for (startMs in listOf(0L, 1L)) {
+                val engine =
+                    MockEngine {
+                        respond(
+                            initializationResponsePrefix(5) + mediaResponseSegment(2, 5, startMs, byteArrayOf(5, 6, 7)),
+                            headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"),
+                        )
+                    }
+                val chunks = SabrAudioStream(HttpClient(engine), bootstrap()).chunks().toList()
+                assertEquals(listOf(null, 5), chunks.map(SabrChunk::sequenceNumber))
+            }
+        }
+
+    @Test
+    fun recollectionRestartsRequestNumbersAfterCompletionAndCancellation() =
+        runBlocking {
+            val engine =
+                MockEngine { request ->
+                    assertEquals("0", request.url.parameters["rn"])
+                    respond(completeResponse(0), headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"))
+                }
+            val flow = SabrAudioStream(HttpClient(engine), bootstrap()).chunks()
+            val first = flow.toList()
+            assertEquals(first, flow.toList())
+            assertEquals(first.take(1), flow.take(1).toList())
+            assertEquals(first, flow.toList())
+            assertEquals(4, engine.requestHistory.size)
+        }
+
+    @Test
+    fun concurrentCollectorsHaveIndependentRequestNumbers() =
+        runBlocking {
+            val bothStarted = CompletableDeferred<Unit>()
+            val started = kotlinx.coroutines.channels.Channel<Unit>(2)
+            val engine =
+                MockEngine { request ->
+                    assertEquals("0", request.url.parameters["rn"])
+                    started.send(Unit)
+                    bothStarted.await()
+                    respond(completeResponse(0), headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"))
+                }
+            val flow = SabrAudioStream(HttpClient(engine), bootstrap()).chunks()
+            withTimeout(5_000) {
+                val first = async { flow.toList() }
+                val second = async { flow.toList() }
+                repeat(2) { started.receive() }
+                bothStarted.complete(Unit)
+                assertEquals(first.await(), second.await())
+                assertEquals(2, first.await().size)
+            }
+        }
+
     @Test
     fun videoStreamEmitsOnlySelectedVideoSegments() =
         runBlocking {
@@ -503,7 +623,7 @@ class SabrAudioStreamTest {
                         content =
                             if (requests == 1) {
                                 initializationResponsePrefix(endSegmentNumber = 2, durationMs = 3_000) +
-                                    mediaResponseSegment(headerId = 2, sequenceNumber = 1, startMs = 1_000, data = byteArrayOf(8, 9, 10))
+                                    mediaResponseSegment(headerId = 2, sequenceNumber = 1, startMs = 0, data = byteArrayOf(8, 9, 10))
                             } else {
                                 mediaResponseSegment(headerId = 3, sequenceNumber = 0, startMs = 0, data = byteArrayOf(5, 6, 7)) +
                                     mediaResponseSegment(

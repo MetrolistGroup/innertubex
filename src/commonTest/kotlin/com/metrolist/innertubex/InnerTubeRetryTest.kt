@@ -14,6 +14,7 @@ import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 class InnerTubeRetryTest {
     @Test
@@ -31,6 +32,7 @@ class InnerTubeRetryTest {
                         }
                     },
                 ) {
+                    expectSuccess = true
                     install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
                 }
 
@@ -52,6 +54,7 @@ class InnerTubeRetryTest {
                         respond("{}", HttpStatusCode.Unauthorized, JSON_HEADERS)
                     },
                 ) {
+                    expectSuccess = true
                     install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
                 }
 
@@ -80,6 +83,7 @@ class InnerTubeRetryTest {
                         }
                     },
                 ) {
+                    expectSuccess = true
                     install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
                 }
 
@@ -103,6 +107,7 @@ class InnerTubeRetryTest {
                         respond("{}", HttpStatusCode.ServiceUnavailable, JSON_HEADERS)
                     },
                 ) {
+                    expectSuccess = true
                     install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
                 }
 
@@ -124,6 +129,7 @@ class InnerTubeRetryTest {
                         error("connection closed after dispatch")
                     },
                 ) {
+                    expectSuccess = true
                     install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
                 }
 
@@ -131,6 +137,64 @@ class InnerTubeRetryTest {
                 InnerTube(client, retryDelay = {}).likeVideo(YouTubeClient.WEB_REMIX, "video")
             }
             assertEquals(1, requests)
+            client.close()
+        }
+
+    @Test
+    fun doesNotRetryDeterministicFailures() =
+        runBlocking {
+            var requests = 0
+            val client =
+                HttpClient(
+                    MockEngine {
+                        requests++
+                        throw IllegalArgumentException("invalid request")
+                    },
+                ) { install(ContentNegotiation) { json() } }
+            assertFailsWith<IllegalArgumentException> { InnerTube(client, retryDelay = {}).browse(YouTubeClient.WEB) }
+            assertEquals(1, requests)
+            client.close()
+        }
+
+    @Test
+    fun retriesTransientTransportFailures() =
+        runBlocking {
+            var requests = 0
+            val client =
+                HttpClient(
+                    MockEngine {
+                        requests++
+                        if (requests == 1) {
+                            throw io.ktor.utils.io.errors
+                                .IOException("connection interrupted")
+                        }
+                        respond("{}", HttpStatusCode.OK, JSON_HEADERS)
+                    },
+                ) { install(ContentNegotiation) { json() } }
+            assertEquals(HttpStatusCode.OK, InnerTube(client, retryDelay = {}).browse(YouTubeClient.WEB).status)
+            assertEquals(2, requests)
+            client.close()
+        }
+
+    @Test
+    fun permanentFailureAfterRetryIsNotLoggedAsSuccess() =
+        runBlocking {
+            var requests = 0
+            val messages = mutableListOf<String>()
+            val client =
+                HttpClient(
+                    MockEngine {
+                        requests++
+                        respond("{}", if (requests == 1) HttpStatusCode.ServiceUnavailable else HttpStatusCode.Forbidden, JSON_HEADERS)
+                    },
+                ) {
+                    expectSuccess = true
+                    install(ContentNegotiation) { json() }
+                }
+            val innerTube = InnerTube(client, retryDelay = {}, logger = InnerTubeLogger { messages += it.message })
+            assertFailsWith<InnerTubeHttpException> { innerTube.browse(YouTubeClient.WEB) }
+            assertEquals(2, requests)
+            assertTrue(messages.none { "succeeded" in it })
             client.close()
         }
 

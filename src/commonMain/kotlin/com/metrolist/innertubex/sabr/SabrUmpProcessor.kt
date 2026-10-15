@@ -8,10 +8,21 @@ internal class SabrUmpProcessor(
     private val maxPendingMediaBytes: Int = DEFAULT_MAX_PENDING_MEDIA_BYTES,
     private val maxResponseBytes: Long = DEFAULT_MAX_RESPONSE_BYTES,
 ) {
-    private val reader = UmpReader(maxPartSize)
+    private val reader =
+        UmpReader(maxPartSize) { type ->
+            if (type == UmpPartType.SABR_CONTEXT_UPDATE || type == UmpPartType.NEXT_REQUEST_POLICY) {
+                MAX_CONTROL_PART_BYTES
+            } else {
+                maxPartSize
+            }
+        }
     private val pendingSegments = mutableMapOf<Int, PendingSegment>()
+    internal val retainedMediaBufferCount: Int
+        get() = pendingSegments.values.count { it.bytes != null }
+
     private var pendingMediaBytes = 0L
     private var responseBytes = 0L
+    private var responseHeaderCount = 0
 
     fun feed(chunk: ByteArray): List<SabrEvent> = feed(chunk, chunk.size)
 
@@ -22,12 +33,7 @@ internal class SabrUmpProcessor(
         accountResponseBytes(length)
         val events = mutableListOf<SabrEvent>()
         reader.feed(chunk, offset = 0, length = length) { type, data, from, to ->
-            // MEDIA payloads go straight from the reader buffer into the segment; other parts are small.
-            if (type == UmpPartType.MEDIA) {
-                appendMedia(data, from, to)
-            } else {
-                events += process(UmpPart(type, data.copyOfRange(from, to)))
-            }
+            events += process(type, data, from, to)
         }
         return events
     }
@@ -49,10 +55,18 @@ internal class SabrUmpProcessor(
         }
     }
 
-    private fun process(part: UmpPart): List<SabrEvent> =
-        when (part.type) {
+    private fun process(
+        type: Int,
+        data: ByteArray,
+        from: Int,
+        to: Int,
+    ): List<SabrEvent> =
+        when (type) {
             UmpPartType.MEDIA_HEADER -> {
-                val header = SabrProtoCodec.decodeMediaHeader(part.data)
+                if (++responseHeaderCount > MAX_RESPONSE_HEADERS) {
+                    throw SabrProtocolException("SABR response exceeded the media header limit")
+                }
+                val header = SabrProtoCodec.decodeMediaHeader(data, from, to)
                 if (pendingSegments.containsKey(header.headerId)) {
                     throw SabrProtocolException("Duplicate SABR media header ID ${header.headerId}")
                 }
@@ -70,28 +84,28 @@ internal class SabrUmpProcessor(
             }
 
             UmpPartType.MEDIA -> {
-                appendMedia(part.data, 0, part.data.size)
+                appendMedia(data, from, to)
                 emptyList()
             }
 
             UmpPartType.MEDIA_END -> {
-                listOfNotNull(finalizeMedia(part.data))
+                listOfNotNull(finalizeMedia(data, from, to))
             }
 
             UmpPartType.FORMAT_INITIALIZATION_METADATA -> {
-                listOf(SabrEvent.FormatInitialized(SabrProtoCodec.decodeFormatInitialization(part.data)))
+                listOf(SabrEvent.FormatInitialized(SabrProtoCodec.decodeFormatInitialization(data, from, to)))
             }
 
             UmpPartType.NEXT_REQUEST_POLICY -> {
-                listOf(SabrProtoCodec.decodeNextRequestPolicy(part.data))
+                listOf(SabrProtoCodec.decodeNextRequestPolicy(data, from, to))
             }
 
             UmpPartType.SABR_REDIRECT -> {
-                SabrProtoCodec.decodeRedirect(part.data)?.let { listOf(SabrEvent.Redirect(it)) }.orEmpty()
+                SabrProtoCodec.decodeRedirect(data, from, to)?.let { listOf(SabrEvent.Redirect(it)) }.orEmpty()
             }
 
             UmpPartType.SABR_ERROR -> {
-                listOf(SabrProtoCodec.decodeError(part.data))
+                listOf(SabrProtoCodec.decodeError(data, from, to))
             }
 
             UmpPartType.RELOAD_PLAYER_RESPONSE -> {
@@ -99,15 +113,15 @@ internal class SabrUmpProcessor(
             }
 
             UmpPartType.SABR_CONTEXT_UPDATE -> {
-                SabrProtoCodec.decodeContextUpdate(part.data)?.let { listOf(SabrEvent.ContextUpdate(it)) }.orEmpty()
+                SabrProtoCodec.decodeContextUpdate(data, from, to)?.let { listOf(SabrEvent.ContextUpdate(it)) }.orEmpty()
             }
 
             UmpPartType.STREAM_PROTECTION_STATUS -> {
-                listOf(SabrProtoCodec.decodeStreamProtectionStatus(part.data))
+                listOf(SabrProtoCodec.decodeStreamProtectionStatus(data, from, to))
             }
 
             UmpPartType.SABR_CONTEXT_SENDING_POLICY -> {
-                listOf(SabrProtoCodec.decodeContextSendingPolicy(part.data))
+                listOf(SabrProtoCodec.decodeContextSendingPolicy(data, from, to))
             }
 
             UmpPartType.END_OF_TRACK -> {
@@ -139,19 +153,27 @@ internal class SabrUmpProcessor(
         if (segment.byteCount > maxCollectedSegmentSize) {
             throw SabrProtocolException("SABR segment is too large: ${segment.byteCount} bytes")
         }
-        if (segment.header.contentLength > 0) {
-            var bytes = segment.bytes
-            if (bytes == null) {
-                val contentLength = segment.header.contentLength.toInt()
-                reservePendingBytes(segment, contentLength)
-                bytes = ByteArray(contentLength)
-                segment.bytes = bytes
-            }
-            data.copyInto(bytes, destinationOffset = destinationOffset, startIndex = from + 1, endIndex = to)
-        } else {
-            reservePendingBytes(segment, payloadSize)
-            segment.chunks += data.copyOfRange(from + 1, to)
+        var bytes = segment.bytes
+        if (bytes == null || bytes.size < segment.byteCount) {
+            val capacity =
+                if (segment.header.contentLength > 0) {
+                    segment.header.contentLength.toInt()
+                } else {
+                    maxOf(segment.byteCount, (bytes?.size?.toLong() ?: INITIAL_SEGMENT_CAPACITY / 2L) * 2)
+                        .coerceAtMost(maxCollectedSegmentSize.toLong())
+                        .toInt()
+                }
+            // Reserve both buffers during growth; the previous allocation is still live during the copy.
+            reservePendingBytes(segment, capacity)
+            val expanded = ByteArray(capacity)
+            bytes?.copyInto(expanded, endIndex = destinationOffset)
+            val previousCapacity = bytes?.size ?: 0
+            pendingMediaBytes -= previousCapacity
+            segment.reservedBytes -= previousCapacity
+            bytes = expanded
+            segment.bytes = expanded
         }
+        data.copyInto(bytes, destinationOffset = destinationOffset, startIndex = from + 1, endIndex = to)
     }
 
     private fun reservePendingBytes(
@@ -165,9 +187,13 @@ internal class SabrUmpProcessor(
         segment.reservedBytes += bytes
     }
 
-    private fun finalizeMedia(data: ByteArray): SabrEvent.Segment? {
-        if (data.isEmpty()) throw SabrProtocolException("Empty UMP MEDIA_END part")
-        val headerId = data[0].toInt() and 0xff
+    private fun finalizeMedia(
+        data: ByteArray,
+        from: Int,
+        to: Int,
+    ): SabrEvent.Segment? {
+        if (from >= to) throw SabrProtocolException("Empty UMP MEDIA_END part")
+        val headerId = data[from].toInt() and 0xff
         val pending =
             pendingSegments.remove(headerId)
                 ?: throw SabrProtocolException("UMP MEDIA_END refers to unknown header ID $headerId")
@@ -178,28 +204,32 @@ internal class SabrUmpProcessor(
             )
         }
         if (!pending.collect) return null
-        pendingMediaBytes -= pending.reservedBytes
+        if (pending.byteCount == 0L) throw SabrProtocolException("Empty selected SABR media segment")
+        val buffer = checkNotNull(pending.bytes)
+        val size = pending.byteCount.toInt()
         val bytes =
-            pending.bytes ?: ByteArray(pending.byteCount.toInt()).also { combined ->
-                var offset = 0
-                pending.chunks.forEach { chunk ->
-                    chunk.copyInto(combined, destinationOffset = offset)
-                    offset += chunk.size
-                }
+            if (buffer.size == size) {
+                buffer
+            } else {
+                reservePendingBytes(pending, size)
+                buffer.copyOf(size)
             }
+        pendingMediaBytes -= pending.reservedBytes
         return SabrEvent.Segment(SabrSegment(pending.header, bytes))
     }
 
     private data class PendingSegment(
         val header: SabrMediaHeader,
         val collect: Boolean,
-        val chunks: MutableList<ByteArray> = mutableListOf(),
         var bytes: ByteArray? = null,
         var byteCount: Long = 0,
         var reservedBytes: Long = 0,
     )
 
     private companion object {
+        const val INITIAL_SEGMENT_CAPACITY = 4 * 1024
+        const val MAX_CONTROL_PART_BYTES = 128 * 1024
+        const val MAX_RESPONSE_HEADERS = 4_096
         const val COMPRESSION_NONE = 0
         const val DEFAULT_MAX_COLLECTED_SEGMENT_SIZE = 16 * 1024 * 1024
         const val DEFAULT_MAX_PENDING_MEDIA_BYTES = 32 * 1024 * 1024

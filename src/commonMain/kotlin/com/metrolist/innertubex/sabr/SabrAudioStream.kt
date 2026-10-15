@@ -26,6 +26,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlin.time.TimeSource
 
@@ -113,7 +115,9 @@ private class SabrMediaStream(
             SabrMediaType.VIDEO -> bootstrap.selectedVideoContentLengthBytes
         }
 
-    fun chunks(): Flow<SabrChunk> {
+    fun chunks(): Flow<SabrChunk> = flow { emitAll(collectionChunks()) }
+
+    private fun collectionChunks(): Flow<SabrChunk> {
         var requestNumber = 0
         var lastResponseStatus: Int? = null
         var lastResponseContentType: String? = null
@@ -162,6 +166,7 @@ private class SabrMediaStream(
             val contexts = mutableMapOf<Int, SabrContext>()
             val activeContextTypes = mutableSetOf<Int>()
             var retainedContextBytes = 0L
+            val requestWriter = ProtoWriter()
 
             while (
                 !ended &&
@@ -196,6 +201,7 @@ private class SabrMediaStream(
                         contexts = contexts.values,
                         activeContextTypes = activeContextTypes,
                         mediaType = mediaType,
+                        writer = requestWriter,
                     )
                 val retryResponse =
                     httpClient.withRedirectsDisabled {
@@ -292,6 +298,12 @@ private class SabrMediaStream(
                             var newSegmentCount = 0
 
                             suspend fun emitMediaSegment(segment: SabrSegment) {
+                                if (firstSequenceNumber == null) {
+                                    val startGapMs = segment.header.startMs - requestPlayerTimeMs
+                                    if (startGapMs > START_TIME_TOLERANCE_MS || segment.checkedEndTimeMs() <= requestPlayerTimeMs) {
+                                        throw SabrProtocolException("SABR first media segment does not cover the requested start")
+                                    }
+                                }
                                 send(segment.toChunk())
                                 if (firstSequenceNumber == null) firstSequenceNumber = segment.header.sequenceNumber
                                 lastSequenceNumber = segment.header.sequenceNumber
@@ -360,9 +372,11 @@ private class SabrMediaStream(
                                             event.header.formatId.matches(selectedFormat) &&
                                             (event.header.videoId == null || event.header.videoId == bootstrap.videoId)
                                         ) {
-                                            selectedHeaderSequences += event.header.sequenceNumber
-                                            selectedHeaderStartRanges += event.header.startRange
-                                            selectedHeaderContentLengths += event.header.contentLength
+                                            if (selectedHeaderSequences.size < MAX_HEADER_DIAGNOSTICS) {
+                                                selectedHeaderSequences += event.header.sequenceNumber
+                                                selectedHeaderStartRanges += event.header.startRange
+                                                selectedHeaderContentLengths += event.header.contentLength
+                                            }
                                         } else if (!event.header.isInitSegment) {
                                             unselectedHeaderCount++
                                         }
@@ -397,6 +411,9 @@ private class SabrMediaStream(
                                                         sequenceNumber >= checkNotNull(firstSequenceNumber) && sequenceNumber <= last
                                                     } == true
                                             if (!alreadyEmitted) {
+                                                if (pendingMediaBySequence.size >= MAX_PENDING_SEGMENTS) {
+                                                    throw SabrProtocolException("SABR pending segment count exceeded the memory limit")
+                                                }
                                                 if (pendingMediaBySequence.put(sequenceNumber, segment) != null) {
                                                     throw SabrProtocolException("SABR returned duplicate segment $sequenceNumber")
                                                 }
@@ -853,10 +870,15 @@ private class SabrMediaStream(
         const val MAX_REQUEST_COUNT = 10_000
         const val MAX_BACKOFF_MS = 30_000L
         const val MAX_RESPONSE_MEDIA_BYTES = 64L * 1024 * 1024
+        const val MAX_HEADER_DIAGNOSTICS = 128
+        const val MAX_PENDING_SEGMENTS = 1_024
         const val MAX_CONTEXT_COUNT = 64
         const val MAX_CONTEXT_VALUE_BYTES = 64 * 1024
         const val MAX_CONTEXT_BYTES = 256L * 1024
         const val MAX_PLAYBACK_COOKIE_BYTES = 64 * 1024
+
+        // Tick-to-millisecond rounding can shift the opening boundary by one millisecond.
+        const val START_TIME_TOLERANCE_MS = 1L
         const val MIN_DURATION_TOLERANCE_MS = 2_000L
         const val STARVATION_TOLERANCE_MS = 2_000L
         const val PLAYBACK_POLL_INTERVAL_MS = 250L
