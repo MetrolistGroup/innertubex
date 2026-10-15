@@ -10,6 +10,7 @@ import com.metrolist.innertubex.extraction.strategy.ClientSelectionRequest
 import com.metrolist.innertubex.extraction.strategy.ClientSelectionResult
 import com.metrolist.innertubex.extraction.strategy.ContentAwareFallbackStrategy
 import com.metrolist.innertubex.extraction.strategy.PlaybackClientCatalog
+import com.metrolist.innertubex.extraction.strategy.PlaybackTransport
 import com.metrolist.innertubex.extraction.strategy.PoTokenProviderKind
 import com.metrolist.innertubex.extraction.strategy.SelectedClient
 import com.metrolist.innertubex.models.YouTubeClient
@@ -41,6 +42,57 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
 class InnerTubeExtractorTest {
+    @Test
+    fun unusableUntokenizedProfileCanRetryWithToken() =
+        runBlocking {
+            var requests = 0
+            val client =
+                HttpClient(
+                    MockEngine {
+                        requests++
+                        respond(
+                            if (requests == 1) DIRECT_RESPONSE.replace("/videoplayback", "/invalid") else DIRECT_RESPONSE,
+                            HttpStatusCode.OK,
+                            headersOf("Content-Type", "application/json"),
+                        )
+                    },
+                ) { install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) } }
+            val innerTube =
+                InnerTube(client, retryDelay = {}).also {
+                    it.cookie = "SAPISID=session"
+                    it.visitorData = "visitor"
+                }
+            var tokens = 0
+            val provider =
+                object : TokenProvider {
+                    override val capabilities = TokenProviderCapabilities(setOf(PoTokenProviderKind.WEB_BOTGUARD))
+
+                    override suspend fun getPoToken(
+                        videoId: String,
+                        visitorData: String,
+                        cookie: String?,
+                    ): PoTokenResult {
+                        tokens++
+                        return PoTokenResult("player", "stream", visitorData)
+                    }
+                }
+            try {
+                val extractor =
+                    InnerTubeExtractor(
+                        CountingParser(),
+                        PlayerClientDirector(innerTube, WebRemixFallback, provider),
+                        AudioOnlyCipherService,
+                        innerTube,
+                    )
+                val stream = extractor.extract("video", ContentHints(isUploaded = true))
+                assertTrue(checkNotNull(stream).profileId.endsWith("_po"))
+                assertEquals(1, tokens)
+                assertEquals(2, requests)
+            } finally {
+                client.close()
+            }
+        }
+
     @Test
     fun signedOutWatchFailureStillTriesEmbeddedVideo() =
         runBlocking {
@@ -89,6 +141,46 @@ class InnerTubeExtractorTest {
                         .extract("video", ContentHints(isExplicit = true))
                 assertTrue(checkNotNull(stream).audioUrl.contains("track=original"))
                 assertEquals(listOf(listOf(140)), cipher.calls)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun unusableDirectProfileDoesNotExcludeSameNameSabrProfile() =
+        runBlocking {
+            var requests = 0
+            val client =
+                HttpClient(
+                    MockEngine {
+                        requests++
+                        respond(
+                            if (requests == 1) DIRECT_RESPONSE.replace("/videoplayback", "/invalid") else SABR_RESPONSE,
+                            HttpStatusCode.OK,
+                            headersOf("Content-Type", "application/json"),
+                        )
+                    },
+                ) { install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) } }
+            val sabr = checkNotNull(PlaybackClientCatalog.findManifest("WEB_REMIX_SABR"))
+            val direct =
+                sabr.copy(
+                    id = "WEB_REMIX_DIRECT_TEST",
+                    client = sabr.client.copy(useSabr = false),
+                    transports = setOf(PlaybackTransport.DIRECT),
+                )
+            val candidates = listOf(SelectedClient(direct.client, direct), SelectedClient(sabr.client, sabr))
+            val fallback =
+                object : ClientFallbackStrategy {
+                    override fun resolveClients(hints: ContentHints) = candidates.map { it.client }
+
+                    override fun selectClients(request: ClientSelectionRequest) = ClientSelectionResult(candidates)
+                }
+            try {
+                val stream =
+                    makeExtractor(client, InnerTube(client, retryDelay = {}), CountingParser(), fallback, AudioOnlyCipherService)
+                        .extract("video", ContentHints(isExplicit = true))
+                assertEquals("WEB_REMIX_SABR__nopo", stream?.profileId)
+                assertTrue(checkNotNull(stream).streamDiagnostics!!.attempts.any { it.profileId == "WEB_REMIX_DIRECT_TEST__nopo" })
             } finally {
                 client.close()
             }

@@ -1437,7 +1437,7 @@ class InnerTubeExtractor internal constructor(
         logger.d(TAG, "playable clients produced no usable audio")
         val failedProfiles =
             results
-                .flatMap { result -> listOf(result.profileId, result.clientName) }
+                .map { result -> result.profileId }
                 .filter(String::isNotBlank)
                 .toSet()
         val nextExcludedClients = excludedClients + failedProfiles
