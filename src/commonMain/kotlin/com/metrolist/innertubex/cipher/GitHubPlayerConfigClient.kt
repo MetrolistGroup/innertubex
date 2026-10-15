@@ -73,8 +73,8 @@ internal class GitHubPlayerConfigClient(
     )
 
     private data class CachedConfig(
-        val url: String,
-        val config: PlayerConfig,
+        val playerHash: String,
+        val preprocessedPlayer: String,
         val fetchedAtMs: Long,
     )
 
@@ -146,8 +146,7 @@ internal class GitHubPlayerConfigClient(
         playerHash: String,
     ): String? {
         for ((index, url) in configUrls(configUrl).withIndex()) {
-            val config = loadConfig(url, playerHash)
-            val preprocessedPlayer = config?.nTransformFor(playerHash)?.decodedPreprocessedPlayerOrNull()
+            val preprocessedPlayer = loadConfig(url, playerHash)
             if (preprocessedPlayer != null) {
                 if (url != configUrl) {
                     logger.d(TAG, "GitHub preprocessed-player used fallback config hash=$playerHash")
@@ -162,16 +161,16 @@ internal class GitHubPlayerConfigClient(
     private suspend fun loadConfig(
         configUrl: String,
         playerHash: String,
-    ): PlayerConfig? {
+    ): String? {
         val now = Clock.System.now().toEpochMilliseconds()
         cacheMutex.withLock {
             cachedConfigs
                 .remove(configUrl)
                 ?.takeIf { now - it.fetchedAtMs < CONFIG_TTL_MS }
-                ?.takeIf { it.config.hasConfigFor(playerHash) }
+                ?.takeIf { it.playerHash == playerHash }
                 ?.let {
                     cachedConfigs[configUrl] = it
-                    return it.config
+                    return it.preprocessedPlayer
                 }
             missingConfigs[configUrl]?.let { missingAt ->
                 if (now - missingAt in 0 until MISSING_CONFIG_TTL_MS) return null
@@ -179,7 +178,7 @@ internal class GitHubPlayerConfigClient(
             }
         }
 
-        val fetched = fetchConfig(configUrl)?.takeIf { it.hasConfigFor(playerHash) }
+        val fetched = fetchConfig(configUrl)?.nTransformFor(playerHash)?.decodedPreprocessedPlayerOrNull()
         if (fetched == null) {
             cacheMutex.withLock {
                 missingConfigs[configUrl] = Clock.System.now().toEpochMilliseconds()
@@ -190,7 +189,7 @@ internal class GitHubPlayerConfigClient(
             return null
         }
         cacheMutex.withLock {
-            cachedConfigs[configUrl] = CachedConfig(configUrl, fetched, Clock.System.now().toEpochMilliseconds())
+            cachedConfigs[configUrl] = CachedConfig(playerHash, fetched, Clock.System.now().toEpochMilliseconds())
             trimConfigCacheLocked()
         }
         return fetched
@@ -242,8 +241,6 @@ internal class GitHubPlayerConfigClient(
             logger.d(TAG, "GitHub config fetch failed (${e.logType()})")
             null
         }
-
-    private fun PlayerConfig.hasConfigFor(playerHash: String): Boolean = nTransformFor(playerHash) != null
 
     private fun PlayerConfig.nTransformFor(playerHash: String): NTransformConfig? =
         takeIf { it.playerHash == playerHash }

@@ -47,7 +47,7 @@ class EjsChallengeSolverTest {
                 assertFalse(stored.values.single().contains(challenge))
                 assertFalse(stored.values.single().contains(challenge.reversed()))
                 assertEquals("value_done", memoryHit.nByChallenge["value"])
-                assertEquals(2, reads)
+                assertEquals(1, reads)
             } finally {
                 firstEngine.dispose()
             }
@@ -69,7 +69,7 @@ class EjsChallengeSolverTest {
 
                 assertEquals("fresh_done", restored.nByChallenge["fresh"])
                 assertEquals(0, fullPlayerLoads)
-                assertEquals(3, reads)
+                assertEquals(2, reads)
                 assertTrue(stored.keys.single().matches(Regex("[a-f0-9]{40}")))
             } finally {
                 secondEngine.dispose()
@@ -111,6 +111,25 @@ class EjsChallengeSolverTest {
                 assertEquals("2", engine.evaluate("__itxPlayers.size", maxResultLength = 8))
             } finally {
                 engine.dispose()
+            }
+        }
+
+    @Test
+    fun replacingPreprocessedPlayerInvalidatesCompiledFunctionsAndSolvedAnswers() =
+        runBlocking {
+            val engine = QuickJsEngine()
+            val solver = EjsChallengeSolver(engine, InnerTubeLogger.NONE)
+            try {
+                val old = "_result.n = function(c) { return 'old_' + c; };"
+                val replacement = "_result.n = function(c) { return 'new_' + c; };"
+                solver.cachePreprocessedPlayer(PLAYER_URL, old)
+                assertEquals("old_a", solver.solve(PLAYER_URL, "", listOf("n" to listOf("a"))).nByChallenge["a"])
+                solver.cachePreprocessedPlayer(PLAYER_URL, replacement)
+                assertEquals("0", engine.evaluate("__itxPlayers.size", 8))
+                val result = solver.solve(PLAYER_URL, "", listOf("n" to listOf("a", "b")))
+                assertEquals(mapOf("a" to "new_a", "b" to "new_b"), result.nByChallenge)
+            } finally {
+                solver.dispose()
             }
         }
 
@@ -245,13 +264,35 @@ class EjsChallengeSolverTest {
                 assertNull(cached.preprocessedPlayer)
                 assertFailsWith<IllegalStateException> { engine.evaluate("1", 1) }
 
-                val next = solver.solve(PLAYER_URL, { error("Player should be restored from disk") }, listOf("n" to listOf("new")))
+                val next = solver.solve(PLAYER_URL, { error("Preprocessing should survive idle release") }, listOf("n" to listOf("new")))
                 assertEquals("new_done", next.nByChallenge["new"])
-                assertEquals(2, reads)
+                assertEquals(1, reads)
                 assertEquals("1", engine.evaluate("__itxPlayers.size", 8))
                 // Same challenge in a different player must not reuse the old player's output.
                 val other = solver.solve(OTHER_PLAYER_URL, PLAYER_CODE.replace("_done", "_other"), listOf("n" to listOf("abc")))
                 assertEquals("abc_other", other.nByChallenge["abc"])
+            } finally {
+                solver.dispose()
+            }
+        }
+
+    @Test
+    fun idleReleaseRetainsPreprocessingWithoutPersistentCacheButDisposeClearsIt() =
+        runBlocking {
+            val engine = QuickJsEngine()
+            val solver = EjsChallengeSolver(engine, InnerTubeLogger.NONE, idleTimeoutMs = 100)
+            try {
+                assertNotNull(solver.solve(PLAYER_URL, PLAYER_CODE, listOf("sig" to listOf("abc"))).preprocessedPlayer)
+                awaitReleased(engine)
+                val next = solver.solve(PLAYER_URL, { error("Idle release must retain preprocessing") }, listOf("n" to listOf("new")))
+                assertEquals("new_done", next.nByChallenge["new"])
+                solver.dispose()
+                var loads = 0
+                solver.solve(PLAYER_URL, {
+                    loads++
+                    PLAYER_CODE
+                }, listOf("n" to listOf("new")))
+                assertEquals(1, loads)
             } finally {
                 solver.dispose()
             }
@@ -354,7 +395,7 @@ class EjsChallengeSolverTest {
                         }, listOf("n" to listOf("retry")))
                         .nByChallenge["retry"],
                 )
-                assertEquals(1, loads)
+                assertEquals(0, loads)
             } finally {
                 solver.dispose()
             }

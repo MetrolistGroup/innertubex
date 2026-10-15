@@ -58,6 +58,9 @@ internal class EjsChallengeSolver(
         private const val MAX_PAYLOAD_LENGTH = 10 * 1024 * 1024
         private const val MAX_RAW_OUTPUT_LENGTH = 10 * 1024 * 1024
         private const val MAX_SOLVER_OUTPUT_LENGTH = 256 * 1024
+        private val solverLib by lazy { readYtEjsSolverScript("yt.solver.lib.min.js") }
+        private val solverCore by lazy { readYtEjsSolverScript("yt.solver.core.min.js") }
+        private val solverBundleHash by lazy { sha1(solverLib + solverCore) }
         private val payloadJson = Json { encodeDefaults = false }
     }
 
@@ -122,7 +125,6 @@ internal class EjsChallengeSolver(
     private suspend fun releaseRuntime() {
         bootstrapped = false
         compiledPlayers.clear()
-        preprocessedByPlayerUrl.clear()
         engine.dispose()
     }
 
@@ -132,6 +134,7 @@ internal class EjsChallengeSolver(
                 idleJob?.cancel()
                 idleJob = null
                 solvedChallenges.clear()
+                preprocessedByPlayerUrl.clear()
                 releaseRuntime()
             }
         }
@@ -152,11 +155,14 @@ internal class EjsChallengeSolver(
     ) {
         if (preprocessedPlayer.isBlank() || preprocessedPlayer.length > MAX_PLAYER_JS_LENGTH) return
         withActivity {
+            if (preprocessedByPlayerUrl[playerUrl] == preprocessedPlayer) return@withActivity
+            forgetCompiledPlayer(playerUrl)
+            solvedChallenges.keys.removeAll { it.playerUrl == playerUrl }
             if (hasPersistentCache) {
                 ensureBundleHash()
                 persistPreprocessedPlayer(bundleHash?.let { preprocessedPlayerCacheKey(playerUrl, it) }, preprocessedPlayer)
             }
-            // Keep one supplied player until its next solve, even if persistent storage fails.
+            // Retain one supplied player even if persistent storage fails.
             preprocessedByPlayerUrl.clear()
             preprocessedByPlayerUrl[playerUrl] = preprocessedPlayer
         }
@@ -168,12 +174,10 @@ internal class EjsChallengeSolver(
             val startMs = Clock.System.now().toEpochMilliseconds()
             engine.initialize()
             engine.setupYoutubeGlobals()
-            val lib = readYtEjsSolverScript("yt.solver.lib.min.js")
-            val core = readYtEjsSolverScript("yt.solver.core.min.js")
-            bundleHash = sha1(lib + core)
-            engine.execute(lib)
+            ensureBundleHash()
+            engine.execute(solverLib)
             engine.execute("Object.assign(globalThis, lib);")
-            engine.execute(core)
+            engine.execute(solverCore)
             // Mirrors the final step of jsc() for preprocessed players, but keeps the compiled
             // functions so later challenges for the same player skip recompiling ~4 MB of JS.
             engine.execute(
@@ -212,7 +216,7 @@ internal class EjsChallengeSolver(
 
     private fun ensureBundleHash() {
         if (bundleHash == null) {
-            bundleHash = sha1(readYtEjsSolverScript("yt.solver.lib.min.js") + readYtEjsSolverScript("yt.solver.core.min.js"))
+            bundleHash = solverBundleHash
         }
     }
 
@@ -474,10 +478,7 @@ internal class EjsChallengeSolver(
         playerUrl: String,
         cacheKey: String?,
     ): String? {
-        preprocessedByPlayerUrl.remove(playerUrl)?.also {
-            if (!hasPersistentCache) preprocessedByPlayerUrl[playerUrl] = it
-            return it
-        }
+        preprocessedByPlayerUrl[playerUrl]?.let { return it }
         cacheKey ?: return null
         val stored =
             try {
@@ -520,8 +521,9 @@ internal class EjsChallengeSolver(
         while (compiledPlayers.size > MAX_COMPILED_PLAYERS) compiledPlayers.remove(compiledPlayers.first())
     }
 
-    private fun forgetCompiledPlayer(playerUrl: String) {
+    private suspend fun forgetCompiledPlayer(playerUrl: String) {
         compiledPlayers.remove(playerUrl)
+        if (bootstrapped) engine.execute("__itxPlayers.delete(${QuickJsEngine.jsStringLiteral(playerUrl)});")
     }
 
     private suspend fun safeWritePreprocessedPlayer(
@@ -610,7 +612,6 @@ internal class EjsChallengeSolver(
         playerUrl: String,
         preprocessedPlayer: String,
     ) {
-        if (hasPersistentCache) return
         preprocessedByPlayerUrl.remove(playerUrl)
         preprocessedByPlayerUrl[playerUrl] = preprocessedPlayer
         while (preprocessedByPlayerUrl.size > MAX_PREPROCESSED_PLAYERS) {
