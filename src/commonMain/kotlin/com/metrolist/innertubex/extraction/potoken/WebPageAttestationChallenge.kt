@@ -10,6 +10,14 @@ private const val WEB_PAGE_LIMIT = 4 * 1024 * 1024
 private const val IDENTIFIER_LIMIT = 1024
 private const val JSON_FIELD_LIMIT = 256
 
+private val YT_CONFIG_SET = Regex("ytcfg\\s*\\.\\s*set")
+
+private val YT_AT_N = Regex("window\\s*\\.\\s*ytAtN")
+
+private val CHALLENGE_KEY = Regex("(?:[\\\"']R[\\\"']|\\bR)\\s*:")
+
+private val YT_AT_R = Regex("window\\s*\\.\\s*ytAtR")
+
 /**
  * Sensitive BotGuard page data. Do not log this value: it contains an event ID and raw challenge data.
  */
@@ -42,10 +50,14 @@ public fun extractWebPageAttestationChallenge(webPage: String): String? {
 }
 
 private fun extractYtConfigEventId(webPage: String): String? {
-    for (call in Regex("ytcfg\\s*\\.\\s*set").findAll(webPage)) {
+    var position = 0
+    while (position < webPage.length) {
+        val call = YT_CONFIG_SET.find(webPage, position) ?: break
         val openParenthesis = webPage.indexOf('(', call.range.last + 1)
-        if (openParenthesis < 0) continue
-        val rawConfig = extractJavaScriptObject(webPage, openParenthesis + 1) ?: continue
+        if (openParenthesis < 0) break
+        val scan = extractJavaScriptObject(webPage, openParenthesis + 1)
+        position = scan.end
+        val rawConfig = scan.value ?: continue
         val eventId =
             runCatching {
                 val config = Json.parseToJsonElement(rawConfig).jsonObject
@@ -57,19 +69,29 @@ private fun extractYtConfigEventId(webPage: String): String? {
     return null
 }
 
-private fun extractYtAtN(webPage: String): String? {
-    for (call in Regex("window\\s*\\.\\s*ytAtN").findAll(webPage)) {
-        extractYtAtNCall(webPage, call.range.last + 1)?.let { return it }
+internal fun extractYtAtN(webPage: CharSequence): String? {
+    var position = 0
+    while (position < webPage.length) {
+        val call = YT_AT_N.find(webPage, position) ?: break
+        val scan = extractYtAtNCall(webPage, call.range.last + 1)
+        scan.value?.let { return it }
+        // Never retry a prefix inside the suffix we have already scanned.
+        position = scan.end
     }
     return null
 }
 
+private data class JavaScriptScan(
+    val value: String?,
+    val end: Int,
+)
+
 private fun extractYtAtNCall(
-    webPage: String,
+    webPage: CharSequence,
     callEnd: Int,
-): String? {
+): JavaScriptScan {
     val openParenthesis = webPage.indexOf('(', callEnd)
-    if (openParenthesis < 0) return null
+    if (openParenthesis < 0) return JavaScriptScan(null, webPage.length)
     var position = openParenthesis + 1
     var quote: Char? = null
     var escaped = false
@@ -87,22 +109,23 @@ private fun extractYtAtNCall(
             when (char) {
                 '\'', '"' -> quote = char
                 '{' -> break
-                ')' -> return null
+                ')' -> return JavaScriptScan(null, position + 1)
             }
         }
         position++
     }
-    if (position >= webPage.length || webPage[position] != '{') return null
-    return extractYtAtNRawChallenge(extractJavaScriptObject(webPage, position) ?: return null)
+    if (position >= webPage.length) return JavaScriptScan(null, webPage.length)
+    val scan = extractJavaScriptObject(webPage, position)
+    return scan.copy(value = scan.value?.let(::extractYtAtNRawChallenge))
 }
 
 private fun extractJavaScriptObject(
-    source: String,
+    source: CharSequence,
     start: Int,
-): String? {
+): JavaScriptScan {
     var position = start
     while (position < source.length && source[position].isWhitespace()) position++
-    if (position >= source.length || source[position] != '{') return null
+    if (position >= source.length || source[position] != '{') return JavaScriptScan(null, position)
     val objectStart = position
     var depth = 0
     var quote: Char? = null
@@ -130,26 +153,26 @@ private fun extractJavaScriptObject(
 
             '}' -> {
                 depth--
-                if (depth == 0) return source.substring(objectStart, position)
+                if (depth == 0) return JavaScriptScan(source.subSequence(objectStart, position).toString(), position)
             }
         }
     }
-    return null
+    return JavaScriptScan(null, source.length)
 }
 
 private fun extractYtAtNRawChallenge(wrapper: String): String? {
-    val key = Regex("(?:[\\\"']R[\\\"']|\\bR)\\s*:").find(wrapper) ?: return null
+    val key = CHALLENGE_KEY.find(wrapper) ?: return null
     var position = key.range.last + 1
     while (position < wrapper.length && wrapper[position].isWhitespace()) position++
     return when (wrapper.getOrNull(position)) {
         '\'', '"' -> decodeJavaScriptString(wrapper, position)
-        '{' -> extractJavaScriptObject(wrapper, position)
+        '{' -> extractJavaScriptObject(wrapper, position).value
         else -> null
     }
 }
 
 private fun extractYtAtR(webPage: String): String? {
-    val assignment = Regex("window\\s*\\.\\s*ytAtR").find(webPage) ?: return null
+    val assignment = YT_AT_R.find(webPage) ?: return null
     val equals = webPage.indexOf('=', assignment.range.last + 1)
     if (equals < 0) return null
     var position = equals + 1

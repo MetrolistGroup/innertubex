@@ -5,8 +5,43 @@ import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class WebPageAttestationChallengeTest {
+    @Test
+    fun malformedPrefixesHaveLinearScanCost() {
+        for (prefix in listOf("window.ytAtN(", "window.ytAtN({", "window.ytAtN('")) {
+            val page = CountingCharacters(prefix.repeat(10_000))
+            assertNull(extractYtAtN(page))
+            assertTrue(page.reads <= page.length * 8, "Scanner exceeded its linear work bound")
+        }
+    }
+
+    @Test
+    fun skipsCompleteInvalidCallsBeforeValidChallenge() {
+        val page =
+            "window.ytAtN({invalid: true});".repeat(100) +
+                "window.ytAtN({R:'{\"bgChallenge\":{\"program\":\"valid\"}}'});"
+        assertContains(requireNotNull(extractWebPageAttestationChallenge(page)), "valid")
+    }
+
+    private class CountingCharacters(
+        private val source: String,
+    ) : CharSequence {
+        var reads = 0
+        override val length: Int get() = source.length
+
+        override fun get(index: Int): Char {
+            reads++
+            return source[index]
+        }
+
+        override fun subSequence(
+            startIndex: Int,
+            endIndex: Int,
+        ): CharSequence = source.subSequence(startIndex, endIndex)
+    }
+
     @Test
     fun interpreterUrlRequiresTrustedEndpoint() {
         assertEquals(
