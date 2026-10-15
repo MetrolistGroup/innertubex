@@ -104,6 +104,35 @@ class YouTubeCipherServiceTest {
         }
 
     @Test
+    fun batchUrlReusePreservesAuthorityValidationAndFragments() =
+        runBlocking {
+            val client = HttpClient(MockEngine { respond(PLAYER_CODE) })
+            val service = YouTubeCipherService(client)
+            try {
+                val unsafe =
+                    listOf(
+                        "http://example.googlevideo.com/videoplayback?n=bad",
+                        "https://example.googlevideo.com:444/videoplayback?n=bad",
+                        "https://example.googlevideo.com.evil.test/videoplayback?n=bad",
+                        "https://user@example.googlevideo.com/videoplayback?n=bad",
+                        "https://example.googlevideo.com/other?n=bad",
+                    )
+                val untouched = unsafe.map(::format) + format("$MEDIA_URL#fragment&n=bad")
+                val valid = format("$MEDIA_URL?n=good&x=1#fragment")
+                val result = service.processFormats(PLAYER_URL, untouched + listOf(valid, valid))
+                assertEquals(untouched, result.take(untouched.size))
+                assertEquals(List(2) { "$MEDIA_URL?n=good_done&x=1#fragment" }, result.takeLast(2).map { it.url })
+                for (url in unsafe) {
+                    val cipher = format(MEDIA_URL).copy(url = null, signatureCipher = "s=abc&url=$url")
+                    assertNull(service.processFormats(PLAYER_URL, listOf(cipher)).single().url)
+                }
+            } finally {
+                service.dispose()
+                client.close()
+            }
+        }
+
+    @Test
     fun cancelledDownloadReleasesWaitersAndReservationUnderLockContention() =
         runBlocking {
             val started = CompletableDeferred<Unit>()
