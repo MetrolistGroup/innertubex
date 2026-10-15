@@ -1064,6 +1064,7 @@ internal fun validatedPlayerScriptUrl(value: String): Url {
             url.host.endsWith(".youtube-nocookie.com")
     require(
         url.protocol.name == "https" &&
+            url.port == 443 && url.user == null && url.password == null &&
             isYouTubeHost &&
             url.encodedPath.startsWith("/s/player/") &&
             url.encodedPath.endsWith(".js"),
