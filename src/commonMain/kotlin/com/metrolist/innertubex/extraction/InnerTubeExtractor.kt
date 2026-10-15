@@ -17,6 +17,7 @@ import com.metrolist.innertubex.sabr.ExperimentalSabrApi
 import com.metrolist.innertubex.sabr.requireAllowedSabrUrl
 import com.metrolist.innertubex.sabr.sabrRequestOrigin
 import com.metrolist.innertubex.sabr.toSabrBootstrap
+import com.metrolist.innertubex.utils.encodeQueryComponent
 import com.metrolist.innertubex.w
 import io.ktor.http.URLProtocol
 import io.ktor.http.Url
@@ -1563,29 +1564,10 @@ class InnerTubeExtractor internal constructor(
             append(this@withPoToken, 0, fragmentStart)
             append(separator)
             append("pot=")
-            append(poToken.encodeQueryComponent())
+            append(encodeQueryComponent(poToken))
             append(this@withPoToken, fragmentStart, this@withPoToken.length)
         }
     }
-
-    private fun String.encodeQueryComponent(): String =
-        buildString(length) {
-            this@encodeQueryComponent.encodeToByteArray().forEach { byte ->
-                val value = byte.toInt() and 0xff
-                if (
-                    value in '0'.code..'9'.code ||
-                    value in 'A'.code..'Z'.code ||
-                    value in 'a'.code..'z'.code ||
-                    value == '-'.code || value == '.'.code || value == '_'.code || value == '~'.code
-                ) {
-                    append(value.toChar())
-                } else {
-                    append('%')
-                    append("0123456789ABCDEF"[value ushr 4])
-                    append("0123456789ABCDEF"[value and 15])
-                }
-            }
-        }
 
     private fun PlayerResponse.PlaybackTracking?.toPlaybackTrackingData(clientPlaybackNonce: String) =
         PlaybackTrackingData(

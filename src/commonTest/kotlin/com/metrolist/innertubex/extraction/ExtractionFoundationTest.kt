@@ -12,6 +12,20 @@ import kotlin.time.Duration.Companion.hours
 
 class ExtractionFoundationTest {
     @Test
+    fun queryEncodingPreservesUnreservedBytesAndEscapesReservedUtf8() {
+        assertEquals(
+            "AZaz09-._~",
+            com.metrolist.innertubex.utils
+                .encodeQueryComponent("AZaz09-._~"),
+        )
+        assertEquals(
+            "%20%2B%2F%3F%26%3D%23%25%C3%A9%F0%9F%8E%B5",
+            com.metrolist.innertubex.utils
+                .encodeQueryComponent(" +/?&=#%é🎵"),
+        )
+    }
+
+    @Test
     fun streamCopyPreservesMetadataAndIncludesItInValueSemantics() {
         val stream =
             ExtractedStream(

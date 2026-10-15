@@ -5,6 +5,7 @@ import com.metrolist.innertubex.d
 import com.metrolist.innertubex.extraction.ExtractionCipherService
 import com.metrolist.innertubex.models.response.PlayerResponse.StreamingData.Format
 import com.metrolist.innertubex.utils.decodeQueryComponent
+import com.metrolist.innertubex.utils.encodeQueryComponent
 import com.metrolist.innertubex.w
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
@@ -1065,22 +1066,6 @@ class YouTubeCipherService(
         val start = match.range.last + 1 - match.groupValues[1].length
         return url.replaceRange(start, match.range.last + 1, encodeQueryComponent(value))
     }
-
-    private fun encodeQueryComponent(value: String): String =
-        buildString(value.length) {
-            value.encodeToByteArray().forEach { byte ->
-                val c = byte.toInt() and 0xff
-                if (c in 0x30..0x39 || c in 0x41..0x5a || c in 0x61..0x7a || c == '-'.code || c == '.'.code || c == '_'.code ||
-                    c == '~'.code
-                ) {
-                    append(c.toChar())
-                } else {
-                    append('%')
-                    append("0123456789ABCDEF"[c ushr 4])
-                    append("0123456789ABCDEF"[c and 15])
-                }
-            }
-        }
 
     private fun String.findNParameter(): MatchResult? = if (isApprovedMediaUrl()) findNParameterInQuery() else null
 
