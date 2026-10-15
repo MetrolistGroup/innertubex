@@ -1075,7 +1075,7 @@ class InnerTubeExtractor internal constructor(
                     audioQuality,
                     requireUrl = false,
                 )
-            val directAudioIsBest = directFastPathCandidate?.itag == bestAvailableAudioFormat?.itag
+            val directAudioIsBest = directFastPathCandidate === bestAvailableAudioFormat
             val wantVideo = hints.wantVideo
             val directVideoFormats =
                 if (wantVideo) preferredVideoFormats(streamingData, requireUrl = true) else emptyList()

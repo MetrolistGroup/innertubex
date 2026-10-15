@@ -73,6 +73,28 @@ class InnerTubeExtractorTest {
         }
 
     @Test
+    fun sameItagDubDoesNotBypassCipheredDefaultTrack() =
+        runBlocking {
+            val response =
+                """
+                {"playabilityStatus":{"status":"OK"},"streamingData":{"adaptiveFormats":[
+                {"itag":140,"url":"https://r.googlevideo.com/videoplayback?track=dub","mimeType":"audio/mp4","bitrate":128000,"audioTrack":{"id":"dub","audioIsDefault":false}},
+                {"itag":140,"signatureCipher":"encrypted","mimeType":"audio/mp4","bitrate":128000,"audioTrack":{"id":"original","audioIsDefault":true}}]}}
+                """.trimIndent()
+            val client = jsonClient(response)
+            val cipher = RecordingCipherService("&track=original")
+            try {
+                val stream =
+                    makeExtractor(client, InnerTube(client, retryDelay = {}), CountingParser(), cipherService = cipher)
+                        .extract("video", ContentHints(isExplicit = true))
+                assertTrue(checkNotNull(stream).audioUrl.contains("track=original"))
+                assertEquals(listOf(listOf(140)), cipher.calls)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
     fun authenticatedTvDiscoveryIsOptionalAndBearerIsIsolated() =
         runBlocking {
             var bearerRequests = 0
