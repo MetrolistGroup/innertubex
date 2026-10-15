@@ -42,6 +42,37 @@ import kotlin.time.Instant
 
 class InnerTubeExtractorTest {
     @Test
+    fun signedOutWatchFailureStillTriesEmbeddedVideo() =
+        runBlocking {
+            val client = jsonClient(VIDEO_RESPONSE)
+            var embedCalls = 0
+            val parser =
+                object : YtConfigParser {
+                    override suspend fun fetchConfig(
+                        videoId: String,
+                        useLoginCookies: Boolean,
+                    ): PlayerConfig = error("watch unavailable")
+
+                    override suspend fun fetchEmbeddedConfig(
+                        videoId: String,
+                        useLoginCookies: Boolean,
+                    ): PlayerConfig {
+                        embedCalls++
+                        return PlayerConfig("", 123, "visitor", null, encryptedHostFlags = "flags")
+                    }
+                }
+            try {
+                val stream =
+                    makeExtractor(client, InnerTube(client, retryDelay = {}), parser, cipherService = AudioOnlyCipherService)
+                        .extract("video", ContentHints(wantVideo = true))
+                assertNotNull(stream?.videoUrl)
+                assertEquals(1, embedCalls)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
     fun authenticatedTvDiscoveryIsOptionalAndBearerIsIsolated() =
         runBlocking {
             var bearerRequests = 0

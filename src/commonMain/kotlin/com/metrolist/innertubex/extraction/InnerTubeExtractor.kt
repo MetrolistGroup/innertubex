@@ -461,9 +461,8 @@ class InnerTubeExtractor internal constructor(
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
-                if (!useLoginCookies && !innerTube.hasSapCookieAuth()) throw error
+                diagnostics.requestFailures += error
                 if (useLoginCookies) {
-                    diagnostics.requestFailures += error
                     logger.w(
                         TAG,
                         "authenticated watch config unavailable",
@@ -483,16 +482,7 @@ class InnerTubeExtractor internal constructor(
                         hints.isUploaded == true ||
                         hints.wantVideo
                 )
-        val stream =
-            try {
-                extractWithWatchConfig(useLoginCookies = cookieFirst)
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Exception) {
-                if (!deferConfigFree) throw error
-                diagnostics.requestFailures += error
-                null
-            }
+        val stream = extractWithWatchConfig(useLoginCookies = cookieFirst)
         if (stream != null) return stream
         if (deferConfigFree) extractConfigFree()?.let { return it }
 
