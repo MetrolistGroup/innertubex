@@ -63,7 +63,7 @@ class QuickJsEngineTest {
                 }
                 // Callers on other threads must still hit the limit measured on the runtime's own thread.
                 List(8) {
-                    async(Dispatchers.IO) {
+                    async(Dispatchers.Default) {
                         assertFailsWith<QuickJsException> {
                             engine.evaluate("(function recurse() { return recurse(); })()", maxResultLength = 1)
                         }
