@@ -186,9 +186,10 @@ class SabrCoreTest {
         for (type in listOf(UmpPartType.SABR_CONTEXT_UPDATE, UmpPartType.NEXT_REQUEST_POLICY)) {
             val error =
                 assertFailsWith<SabrProtocolException> {
-                    SabrUmpProcessor().feed(umpPart(type, ByteArray(128 * 1024 + 1)))
+                    // Only the framing header is present: reject before buffering the declared payload.
+                    SabrUmpProcessor().feed(umpVarint(type) + umpVarint(128 * 1024 + 1))
                 }
-            assertEquals("SABR control part exceeded 131072 bytes", error.message)
+            assertEquals("UMP part is too large: 131073 bytes", error.message)
         }
     }
 

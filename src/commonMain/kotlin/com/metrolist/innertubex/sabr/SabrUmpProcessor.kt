@@ -8,7 +8,14 @@ internal class SabrUmpProcessor(
     private val maxPendingMediaBytes: Int = DEFAULT_MAX_PENDING_MEDIA_BYTES,
     private val maxResponseBytes: Long = DEFAULT_MAX_RESPONSE_BYTES,
 ) {
-    private val reader = UmpReader(maxPartSize)
+    private val reader =
+        UmpReader(maxPartSize) { type ->
+            if (type == UmpPartType.SABR_CONTEXT_UPDATE || type == UmpPartType.NEXT_REQUEST_POLICY) {
+                MAX_CONTROL_PART_BYTES
+            } else {
+                maxPartSize
+            }
+        }
     private val pendingSegments = mutableMapOf<Int, PendingSegment>()
     internal val retainedMediaBufferCount: Int
         get() = pendingSegments.values.count { it.bytes != null }
@@ -26,11 +33,6 @@ internal class SabrUmpProcessor(
         accountResponseBytes(length)
         val events = mutableListOf<SabrEvent>()
         reader.feed(chunk, offset = 0, length = length) { type, data, from, to ->
-            if ((type == UmpPartType.SABR_CONTEXT_UPDATE || type == UmpPartType.NEXT_REQUEST_POLICY) &&
-                to - from > MAX_CONTROL_PART_BYTES
-            ) {
-                throw SabrProtocolException("SABR control part exceeded $MAX_CONTROL_PART_BYTES bytes")
-            }
             events += process(type, data, from, to)
         }
         return events
