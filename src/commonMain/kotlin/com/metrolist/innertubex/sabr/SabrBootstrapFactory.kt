@@ -135,10 +135,7 @@ private fun PlayerResponse.StreamingData.sabrDiscardVideoFormat(): PlayerRespons
  */
 internal fun PlayerResponse.hasSabrBootstrapPrerequisites(): Boolean {
     val streaming = streamingData ?: return false
-    val audio =
-        streaming.adaptiveFormats.filter {
-            it.isAudio && it.itag > 0 && (it.lastModified?.toLongOrNull() ?: 0L) > 0L
-        }
+    val audio = streaming.adaptiveFormats.filter { isSabrAudioCandidate(it) }
     return !streaming.serverAbrStreamingUrl.isNullOrBlank() &&
         !playerConfig
             ?.mediaCommonConfig
@@ -147,12 +144,12 @@ internal fun PlayerResponse.hasSabrBootstrapPrerequisites(): Boolean {
             .isNullOrBlank() &&
         videoDetails?.videoId != null &&
         streaming.sabrDiscardVideoFormat() != null &&
-        audio.isNotEmpty() &&
-        (
-            videoDetails.lengthSeconds?.toLongOrNull()?.let { it > 0 } == true ||
-                audio.any { (it.approxDurationMs?.toLongOrNull() ?: 0L) > 0L }
-        )
+        audio.isNotEmpty()
 }
+
+internal fun PlayerResponse.isSabrAudioCandidate(format: PlayerResponse.StreamingData.Format): Boolean =
+    format.isAudio && format.itag > 0 && (format.lastModified?.toLongOrNull() ?: 0L) > 0L &&
+        (format.approxDurationMs?.toLongOrNull() ?: videoDetails?.lengthSeconds?.toLongOrNull()?.times(1000) ?: 0L) > 0L
 
 fun sabrRequestOrigin(clientName: String): String? =
     when (clientName) {

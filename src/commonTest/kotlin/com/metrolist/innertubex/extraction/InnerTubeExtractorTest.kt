@@ -1670,7 +1670,7 @@ class InnerTubeExtractorTest {
         }
 
     @Test
-    fun explicitTokenMintingRunsConcurrentlyWithConfigFetch() =
+    fun explicitTokenMintingWaitsForCandidateSelection() =
         runBlocking {
             val started = CompletableDeferred<Unit>()
             val client = jsonClient(DIRECT_RESPONSE)
@@ -1696,7 +1696,7 @@ class InnerTubeExtractorTest {
                         videoId: String,
                         useLoginCookies: Boolean,
                     ): PlayerConfig {
-                        started.await()
+                        assertFalse(started.isCompleted)
                         return PlayerConfig("https://www.youtube.com/s/player/test/base.js", 123, "visitor", null)
                     }
                 }
@@ -1717,7 +1717,7 @@ class InnerTubeExtractorTest {
         }
 
     @Test
-    fun directPlaybackCancelsUnusedTokenPrefetch() =
+    fun directPlaybackDoesNotStartUnusedTokenPrefetch() =
         runBlocking {
             val client = jsonClient(DIRECT_RESPONSE)
             val innerTube = InnerTube(client, retryDelay = {}).also { it.visitorData = "visitor" }
@@ -1745,10 +1745,8 @@ class InnerTubeExtractorTest {
                     tokenProvider,
                 )
             try {
-                // coroutineScope only returns once the never-ending prefetch is cancelled; the prefetch may be
-                // cancelled before it is dispatched when the direct path completes without suspending.
                 assertNotNull(withTimeout(1_000) { extractor.extract("video", ContentHints(isExplicit = true)) })
-                assertTrue(tokenCalls <= 1)
+                assertEquals(0, tokenCalls)
             } finally {
                 client.close()
             }

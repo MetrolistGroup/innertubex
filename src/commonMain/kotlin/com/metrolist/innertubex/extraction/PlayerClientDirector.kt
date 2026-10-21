@@ -23,9 +23,9 @@ import com.metrolist.innertubex.models.response.PlayerResponse
 import com.metrolist.innertubex.sabr.hasSabrBootstrapPrerequisites
 import com.metrolist.innertubex.w
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -111,6 +111,37 @@ internal class PlayerClientDirector(
         prefetchedPoToken: PoTokenPrefetch? = null,
         tvBearerCredential: TvBearerCredential? = null,
     ): PlayerResponseBatch {
+        val budget = requestBudget ?: PlayerRequestBudget(if (hints.playbackClientOverrideId != null) 1 else maxPlayerRequests)
+        return budget.withTokenScope {
+            fetchPlayerResponsesInScope(
+                videoId,
+                playerConfig,
+                hints,
+                excludedClients,
+                acceptCipherOnlyResponse,
+                directAudioOnlyClients,
+                wantVideo,
+                premiumHighQuality,
+                budget,
+                prefetchedPoToken,
+                tvBearerCredential,
+            )
+        }
+    }
+
+    private suspend fun fetchPlayerResponsesInScope(
+        videoId: String,
+        playerConfig: PlayerConfig,
+        hints: ContentHints,
+        excludedClients: Set<String>,
+        acceptCipherOnlyResponse: Boolean,
+        directAudioOnlyClients: Boolean,
+        wantVideo: Boolean,
+        premiumHighQuality: Boolean,
+        requestBudget: PlayerRequestBudget,
+        prefetchedPoToken: PoTokenPrefetch?,
+        tvBearerCredential: TvBearerCredential?,
+    ): PlayerResponseBatch {
         val startTime = Clock.System.now().toEpochMilliseconds()
         val initialSession = innerTube.sessionSnapshot()
         // Embed-page encryptedHostFlags are only honoured with the visitor that fetched that page.
@@ -121,8 +152,7 @@ internal class PlayerClientDirector(
                 ?: playerConfig.visitorData?.takeIf { it.isNotBlank() }
         var requestSession = initialSession.copy(visitorData = requestVisitorData)
         val authenticated = !requestSession.sapisid.isNullOrBlank()
-        val effectiveRequestBudget =
-            requestBudget ?: PlayerRequestBudget(if (hints.playbackClientOverrideId != null) 1 else maxPlayerRequests)
+        val effectiveRequestBudget = requestBudget
         if (hints.isAgeRestricted == true) effectiveRequestBudget.ageRestricted = true
         val routingHints = effectiveRequestBudget.withKnownAge(hints)
         val selectionRequest =
@@ -209,7 +239,16 @@ internal class PlayerClientDirector(
         var requestsConsumedInBatch = 0
         var forceTokenizedTvHtml5 = false
         var onlyAccountGateFailures = true
-        for (declaredClient in clients) {
+        var onlyUnavailableFailures = true
+        val pendingClients = clients.toMutableList()
+        while (pendingClients.isNotEmpty()) {
+            val sabrIndex =
+                if (effectiveRequestBudget.withKnownAge(hints).prefersGatedSabr(authenticated)) {
+                    pendingClients.indexOfFirst { it.manifest?.id == "WEB_REMIX_SABR" }
+                } else {
+                    -1
+                }
+            val declaredClient = pendingClients.removeAt(sabrIndex.takeIf { it >= 0 } ?: 0)
             if (requestsConsumedInBatch >= maxPlayerRequests || effectiveRequestBudget.remaining <= 0) break
             if (hints.playbackClientOverrideId == null && effectiveRequestBudget.ageRestricted &&
                 declaredClient.manifest?.content?.ageRestricted == CapabilitySupport.UNSUPPORTED
@@ -267,6 +306,8 @@ internal class PlayerClientDirector(
             requestsConsumedInBatch += remainingBeforeAttempt - effectiveRequestBudget.remaining
             val attempt = attemptResult.attempt
             onlyAccountGateFailures = onlyAccountGateFailures && attemptResult.failure?.status.isAccountGateStatus() &&
+                attemptResult.requestFailure == null
+            onlyUnavailableFailures = onlyUnavailableFailures && attemptResult.failure?.status == "ERROR" &&
                 attemptResult.requestFailure == null
             val healthScope = ClientHealthScope.from(effectiveRequestBudget.withKnownAge(hints), authenticated)
             selectedClient.manifest
@@ -478,6 +519,7 @@ internal class PlayerClientDirector(
             requestFailures,
             attempts,
             onlyAccountGateFailures = onlyAccountGateFailures && failures.isNotEmpty(),
+            onlyUnavailableFailures = onlyUnavailableFailures && failures.isNotEmpty(),
         )
     }
 
@@ -653,44 +695,21 @@ internal class PlayerClientDirector(
                         prefetchedPoToken?.key != it && requestBudget.mintedToken(it) == null
                 }
             if (overlappedMint != null) {
-                return coroutineScope {
-                    val prefetch =
-                        PoTokenPrefetch(
-                            overlappedMint,
-                            async {
-                                try {
-                                    tokenProvider.getPoToken(videoId, overlappedMint.visitorData, overlappedMint.cookie)
-                                } catch (e: CancellationException) {
-                                    throw e
-                                } catch (_: Exception) {
-                                    null
-                                }
-                            },
-                        )
-                    try {
-                        tryUntokenizedFirst(
-                            selectedClient,
-                            tokenPlan,
-                            videoId,
-                            playerConfig,
-                            hints,
-                            allowUntokenizedWebPoClient,
-                            requestSession,
-                            requestBudget,
-                            prefetch,
-                        )
-                    } finally {
-                        // A mint that already finished serves later clients even when this response was unusable.
-                        if (prefetch.result.isCompleted && !prefetch.result.isCancelled) {
-                            @OptIn(ExperimentalCoroutinesApi::class)
-                            when (val token = prefetch.result.getCompleted()) {
-                                null -> requestBudget.markTokenUnavailable(overlappedMint)
-                                else -> requestBudget.rememberToken(overlappedMint, token)
-                            }
-                        }
-                        prefetch.result.cancel()
+                val prefetch =
+                    requestBudget.prefetchToken(overlappedMint) {
+                        tokenProvider.getPoToken(videoId, overlappedMint.visitorData, overlappedMint.cookie)
                     }
-                }
+                return tryUntokenizedFirst(
+                    selectedClient,
+                    tokenPlan,
+                    videoId,
+                    playerConfig,
+                    hints,
+                    allowUntokenizedWebPoClient,
+                    requestSession,
+                    requestBudget,
+                    prefetch,
+                )
             }
             tryUntokenizedFirst(
                 selectedClient,
@@ -848,7 +867,11 @@ internal class PlayerClientDirector(
                     if (prefetchedPoToken?.key == tokenKey) {
                         prefetchedPoToken.result.await()
                     } else {
-                        tokenProvider.getPoToken(videoId, visitorData, tokenKey.cookie)
+                        requestBudget
+                            .prefetchToken(tokenKey) {
+                                tokenProvider.getPoToken(videoId, visitorData, tokenKey.cookie)
+                            }.result
+                            .await()
                     }
                 }
             } catch (error: CancellationException) {
@@ -1438,6 +1461,50 @@ internal class PlayerRequestBudget(
 
     fun timeLeftOrNull(limit: Duration): Duration? = if ((-deadline.elapsedNow()).isPositive()) timeLeft(limit) else null
 
+    suspend fun <T> withinTime(block: suspend () -> T): T {
+        val result =
+            withTimeoutOrNull(timeLeft(Duration.INFINITE)) { Pair(block(), Unit) }
+                ?: throw PlayerRequestBudgetExhaustedException()
+        timeLeft(Duration.INFINITE)
+        return result.first
+    }
+
+    private var tokenScope: CoroutineScope? = null
+    private val inFlightTokens = mutableMapOf<PoTokenRequestKey, PoTokenPrefetch>()
+
+    suspend fun <T> withTokenScope(block: suspend () -> T): T {
+        if (tokenScope != null) return block()
+        return coroutineScope {
+            tokenScope = this
+            try {
+                block()
+            } finally {
+                inFlightTokens.values.forEach { it.result.cancel() }
+                inFlightTokens.clear()
+                tokenScope = null
+            }
+        }
+    }
+
+    fun prefetchToken(
+        key: PoTokenRequestKey,
+        mint: suspend () -> PoTokenResult?,
+    ): PoTokenPrefetch =
+        inFlightTokens.getOrPut(key) {
+            PoTokenPrefetch(
+                key,
+                checkNotNull(tokenScope).async {
+                    try {
+                        withTimeoutOrNull(timeLeft(18.seconds)) { mint() }
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (_: Exception) {
+                        null
+                    }
+                },
+            )
+        }
+
     var ageRestricted: Boolean = false
 
     fun withKnownAge(hints: ContentHints): ContentHints = if (ageRestricted) hints.copy(isAgeRestricted = true) else hints
@@ -1500,7 +1567,10 @@ internal class PlayerRequestBudget(
     }
 }
 
-private class PlayerRequestBudgetExhaustedException : Exception()
+internal class PlayerRequestBudgetExhaustedException : Exception()
+
+internal fun ContentHints.prefersGatedSabr(authenticated: Boolean): Boolean =
+    authenticated && !premium && !wantVideo && allowSabr && isAgeRestricted == true && playbackClientOverrideId == null
 
 internal data class PoTokenRequestKey(
     val videoId: String,

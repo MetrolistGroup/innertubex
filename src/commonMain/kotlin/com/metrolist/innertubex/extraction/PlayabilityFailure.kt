@@ -14,6 +14,7 @@ internal data class PlayerResponseBatch(
     val requestFailures: List<Throwable>,
     val attempts: List<StreamAttemptDiagnostic>,
     val onlyAccountGateFailures: Boolean = false,
+    val onlyUnavailableFailures: Boolean = false,
 )
 
 internal fun String?.isAccountGateStatus(): Boolean =
@@ -63,7 +64,7 @@ private fun classifyPlayabilityFailure(
 private fun PlayabilityFailure.isUnavailable(): Boolean {
     val normalizedStatus = status.orEmpty().uppercase()
     val normalizedReason = reason.orEmpty().lowercase()
-    return normalizedStatus in setOf("UNPLAYABLE", "VIDEO_UNAVAILABLE", "LIVE_STREAM_OFFLINE") ||
+    return normalizedStatus in setOf("ERROR", "UNPLAYABLE", "VIDEO_UNAVAILABLE", "LIVE_STREAM_OFFLINE") ||
         listOf("video unavailable", "not available", "private video", "has been removed")
             .any(normalizedReason::contains)
 }
