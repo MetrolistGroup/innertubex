@@ -2,6 +2,7 @@ package com.metrolist.innertubex.cipher
 
 import com.metrolist.innertubex.InnerTubeLogger
 import com.metrolist.innertubex.d
+import com.metrolist.innertubex.utils.sha1
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.timeout
 import io.ktor.client.request.header
@@ -15,6 +16,8 @@ import kotlinx.serialization.json.Json
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.time.Clock
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 /**
  * Legacy GitHub-hosted preprocessed-player config fallback.
@@ -35,6 +38,7 @@ internal class GitHubPlayerConfigClient(
         private const val REQUEST_TIMEOUT_MS = 2_000L
         private const val CONFIG_TTL_MS = 24 * 60 * 60 * 1000L
         private const val MISSING_CONFIG_TTL_MS = 15 * 60 * 1000L
+        private val FAILED_ARTIFACT_COOLDOWN = 60.seconds
         private const val MAX_CONFIG_CACHE_ENTRIES = 8
         private const val MAX_CONFIG_RESPONSE_BYTES = 4 * 1024 * 1024
         private const val PREPROCESSED_TYPE = "yt-dlp-ejs-preprocessed-player"
@@ -57,6 +61,14 @@ internal class GitHubPlayerConfigClient(
 
     /** URLs that recently had no usable config; retried after [MISSING_CONFIG_TTL_MS]. */
     private val missingConfigs = LinkedHashMap<String, Long>()
+    private val failedArtifacts = LinkedHashMap<String, TimeSource.Monotonic.ValueTimeMark>()
+
+    suspend fun clearCache() =
+        cacheMutex.withLock {
+            cachedConfigs.clear()
+            missingConfigs.clear()
+            failedArtifacts.clear()
+        }
 
     @Serializable
     private data class PlayerConfig(
@@ -112,6 +124,13 @@ internal class GitHubPlayerConfigClient(
         val uniqueValues = nValues.distinct()
         return try {
             val preprocessedPlayer = loadPreprocessedPlayer(configUrl, playerHash) ?: return SolveResult(emptyMap(), emptyMap())
+            val artifactKey = sha1("$playerUrl:$preprocessedPlayer")
+            cacheMutex.withLock {
+                if (failedArtifacts[artifactKey]?.elapsedNow()?.let { it < FAILED_ARTIFACT_COOLDOWN } == true) {
+                    return SolveResult(emptyMap(), emptyMap())
+                }
+                failedArtifacts.remove(artifactKey)
+            }
 
             ejs.cachePreprocessedPlayer(playerUrl, preprocessedPlayer)
             val result =
@@ -128,6 +147,12 @@ internal class GitHubPlayerConfigClient(
                 sigByChallenge = result.sigByChallenge.filterValues { it.isNotBlank() },
                 nByChallenge = result.nByChallenge.filterValues { it.isNotBlank() },
             ).also { solved ->
+                if (uniqueSigValues.any { it !in solved.sigByChallenge } || uniqueValues.any { it !in solved.nByChallenge }) {
+                    cacheMutex.withLock {
+                        failedArtifacts[artifactKey] = TimeSource.Monotonic.markNow()
+                        while (failedArtifacts.size > MAX_CONFIG_CACHE_ENTRIES) failedArtifacts.remove(failedArtifacts.keys.first())
+                    }
+                }
                 logger.d(
                     TAG,
                     "GitHub preprocessed-player response sigRequested=${uniqueSigValues.size} sigSolved=${solved.sigByChallenge.size} nRequested=${uniqueValues.size} nSolved=${solved.nByChallenge.size} hash=$playerHash",

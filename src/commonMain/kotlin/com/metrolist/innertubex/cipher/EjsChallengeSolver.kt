@@ -274,7 +274,7 @@ internal class EjsChallengeSolver(
         withActivity {
             if (bootstrapped && playerUrl in compiledPlayers) return@withActivity
             val warmup = listOf("sig" to listOf(WARMUP_CHALLENGE))
-            val result = solveUncached(playerUrl, loadFullPlayerJs, warmup)
+            val result = solveUncached(playerUrl, loadFullPlayerJs, warmup, warmup = true)
             // The full-player path returns preprocessing without keeping compiled functions; compile it now so the
             // first real challenge does not.
             val preprocessed = result.preprocessedPlayer ?: preprocessedByPlayerUrl[playerUrl] ?: return@withActivity
@@ -343,6 +343,7 @@ internal class EjsChallengeSolver(
         playerUrl: String,
         loadFullPlayerJs: suspend () -> String?,
         requestOrder: List<Pair<String, List<String>>>,
+        warmup: Boolean = false,
     ): SolveResult {
         return try {
             ensureBootstrapped()
@@ -372,7 +373,8 @@ internal class EjsChallengeSolver(
                     } catch (_: Exception) {
                         SolveResult(emptyMap(), emptyMap(), null)
                     }
-                if (cachedResult.solvesAll(requestOrder)) return cachedResult
+                // A synthetic signature failure says nothing about an n-only player's usability.
+                if (warmup || cachedResult.solvesAll(requestOrder)) return cachedResult
                 evictPreprocessedPlayer(playerUrl, cacheKey)
             }
 
@@ -425,6 +427,10 @@ internal class EjsChallengeSolver(
                 playerInputText == null -> {
                     """
                     var fns = __itxPlayers.get($playerKey);
+                    if (fns) {
+                      __itxPlayers.delete($playerKey);
+                      __itxPlayers.set($playerKey, fns);
+                    }
                     var r = fns ? __itxRun(fns, $requestsJson) : null;
                     """
                 }
@@ -502,7 +508,6 @@ internal class EjsChallengeSolver(
             """
         val evaluateStartMs = Clock.System.now().toEpochMilliseconds()
         when {
-            playerInputText == null -> Unit
             preprocessed -> rememberCompiledPlayer(playerUrl)
             else -> compiledPlayers.clear()
         }

@@ -105,6 +105,13 @@ class YouTubeCipherService(
         val solver: ZemerCipherSolver,
     )
 
+    private data class ZemerInputs(
+        val playerUrl: String,
+        val config: RemotePlayerConfigParser.HardcodedPlayerConfig,
+        val configEpoch: Long,
+        val playerCode: String?,
+    )
+
     private data class FailedZemerSolver(
         val config: RemotePlayerConfigParser.HardcodedPlayerConfig,
         val configEpoch: Long,
@@ -155,12 +162,14 @@ class YouTubeCipherService(
         val generation = operationMutex.withLock { disposeGeneration }
         try {
             // Network work runs outside operationMutex so a speculative preload never blocks foreground solves.
-            if (prefetchZemerInputs(playerUrl)) {
-                // Build the executable solver now so first playback skips full-player evaluation.
-                withContext(Dispatchers.Default) {
-                    withSolverOperation { if (generation == disposeGeneration) warmZemerSolver(playerUrl) }
-                }
-            } else {
+            val inputs = prefetchZemerInputs(playerUrl)
+            val zemerReady =
+                inputs != null &&
+                    withContext(Dispatchers.Default) {
+                        withSolverOperation { generation == disposeGeneration && warmZemerSolver(inputs) }
+                    }
+            if (!zemerReady) {
+                if (operationMutex.withLock { generation != disposeGeneration }) return
                 val playerCode = if (ejs.needsFullPlayer(playerUrl)) getOrDownloadPlayerCode(playerUrl).code else null
                 withContext(Dispatchers.Default) {
                     withSolverOperation {
@@ -185,23 +194,26 @@ class YouTubeCipherService(
 
     /**
      * Resolves the remote config and, when no live Zemer solver exists, the raw player code. Runs outside
-     * [operationMutex]; the locked solve then hits these caches. Returns whether a remote config exists.
+     * [operationMutex]; warmup consumes these inputs without downloading under the lock.
      */
-    private suspend fun prefetchZemerInputs(playerUrl: String): Boolean {
-        val configStore = remotePlayerConfigStore ?: return false
-        val config = resolveZemerConfig(configStore, playerUrl) ?: return false
-        val faradayPlayerUrl = faradayCipherPlayerUrl(playerUrl) ?: return true
-        val live = cacheMutex.withLock { zemerSolverHitLocked(faradayPlayerUrl, config) }
-        if (live == null) {
-            try {
-                getOrDownloadPlayerCode(faradayPlayerUrl)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                // The locked solve reports the failure and falls back.
+    private suspend fun prefetchZemerInputs(playerUrl: String): ZemerInputs? {
+        val configStore = remotePlayerConfigStore ?: return null
+        val config = resolveZemerConfig(configStore, playerUrl) ?: return null
+        val configEpoch = configStore.configEpoch
+        val faradayPlayerUrl = faradayCipherPlayerUrl(playerUrl) ?: return null
+        cacheMutex.withLock {
+            if (zemerSolverHitLocked(faradayPlayerUrl, config) != null) {
+                return ZemerInputs(faradayPlayerUrl, config, configEpoch, null)
             }
+            if (zemerFailureCoolingLocked(faradayPlayerUrl, config, configEpoch)) return null
         }
-        return true
+        return try {
+            ZemerInputs(faradayPlayerUrl, config, configEpoch, getOrDownloadPlayerCode(faradayPlayerUrl).code)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private suspend fun resolveZemerConfig(
@@ -214,18 +226,18 @@ class YouTubeCipherService(
         return configStore.getConfig(playerUrl)
     }
 
-    private suspend fun warmZemerSolver(playerUrl: String) {
-        val configStore = remotePlayerConfigStore ?: return
-        val config = configStore.getConfig(playerUrl) ?: return
-        val faradayPlayerUrl = faradayCipherPlayerUrl(playerUrl) ?: return
+    private suspend fun warmZemerSolver(inputs: ZemerInputs): Boolean =
         try {
-            zemerSolverFor(faradayPlayerUrl, config, configStore.configEpoch)
+            cacheMutex.withLock { zemerSolverHitLocked(inputs.playerUrl, inputs.config) } != null ||
+                inputs.playerCode?.let {
+                    getOrCreateZemerSolver(inputs.playerUrl, it, inputs.config, inputs.configEpoch)
+                } != null
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
             // getOrCreateZemerSolver records the failure cooldown.
+            false
         }
-    }
 
     /**
      * Process streaming data formats and deobfuscate cipher URLs.
@@ -905,18 +917,23 @@ class YouTubeCipherService(
     private suspend fun getOrCreateSolver(
         playerUrl: String,
         playerCode: String,
-    ): CachedSolver {
-        var evicted = emptyList<CachedSolver>()
-        val solver =
-            cacheMutex.withLock {
-                solverCacheHitLocked(playerUrl) ?: createSolver(playerUrl, playerCode).also { created ->
-                    cache[playerUrl] = created
-                    evicted = trimSolverCacheLocked()
+    ): CachedSolver? =
+        try {
+            var evicted = emptyList<CachedSolver>()
+            val solver =
+                cacheMutex.withLock {
+                    solverCacheHitLocked(playerUrl) ?: createSolver(playerUrl, playerCode).also { created ->
+                        cache[playerUrl] = created
+                        evicted = trimSolverCacheLocked()
+                    }
                 }
-            }
-        evicted.forEach { it.engine.dispose() }
-        return solver
-    }
+            evicted.forEach { it.engine.dispose() }
+            solver
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
 
     private suspend fun getOrDownloadPlayerCode(playerUrl: String): PlayerCodeResult {
         while (true) {
@@ -1266,6 +1283,7 @@ class YouTubeCipherService(
                 }
             cachedSolvers.forEach { it.engine.dispose() }
             cachedZemerSolvers.forEach { it.solver.dispose() }
+            githubPreprocessedPlayer?.clearCache()
             ejs.dispose()
         }
 
