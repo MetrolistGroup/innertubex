@@ -10,6 +10,7 @@ import com.metrolist.innertubex.extraction.strategy.ClientHealthScope
 import com.metrolist.innertubex.extraction.strategy.ClientSelectionRequest
 import com.metrolist.innertubex.extraction.strategy.ClientSelectionResult
 import com.metrolist.innertubex.extraction.strategy.ContentAwareFallbackStrategy
+import com.metrolist.innertubex.extraction.strategy.InMemoryClientHealthMonitor
 import com.metrolist.innertubex.extraction.strategy.PlaybackClientCatalog
 import com.metrolist.innertubex.extraction.strategy.PlaybackTransportPreference
 import com.metrolist.innertubex.extraction.strategy.PoTokenProviderKind
@@ -33,6 +34,7 @@ import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.hours
@@ -147,6 +149,38 @@ class PlayerClientDirectorTest {
             assertTrue(failures.isEmpty())
             assertEquals("request_budget_exhausted", batch.attempts.single().outcome)
             client.close()
+        }
+
+    @Test
+    fun videoSpecificFailuresDoNotDemoteClientsAcrossVideos() =
+        runBlocking {
+            for (status in listOf("VIDEO_UNAVAILABLE", "LIVE_STREAM_OFFLINE", "UNPLAYABLE")) {
+                var response = """{"playabilityStatus":{"status":"$status"}}"""
+                val client = client { response }
+                try {
+                    val health = InMemoryClientHealthMonitor(nowMs = { 0L })
+                    val manifest = checkNotNull(PlaybackClientCatalog.findManifest("VISIONOS"))
+                    val hints = ContentHints(isLive = status == "LIVE_STREAM_OFFLINE")
+                    val scope = ClientHealthScope.from(hints, authenticated = false)
+                    val director = PlayerClientDirector(InnerTube(client), fixed(manifest), NoTokenProvider, health)
+                    repeat(2) {
+                        val batch = director.fetchPlayerResponses("unavailable-$it", PlayerConfig("player.js", null, null, null), hints)
+                        assertEquals(status, batch.failures.single().status)
+                    }
+                    val adjustment = health.scoreAdjustment(manifest.id, scope)
+                    if (status == "UNPLAYABLE") {
+                        assertTrue(adjustment < -1_000, "client-level failures still start a cooldown")
+                    } else {
+                        assertEquals(0, adjustment, status)
+                    }
+                    response = PLAYER_RESPONSE
+                    val next = director.fetchPlayerResponses("available", PlayerConfig("player.js", null, null, null), hints)
+                    assertEquals(1, next.playableResponses.size)
+                    assertEquals(adjustment, health.scoreAdjustment(manifest.id, scope), "only the host clears media cooldowns")
+                } finally {
+                    client.close()
+                }
+            }
         }
 
     @Test
@@ -334,6 +368,43 @@ class PlayerClientDirectorTest {
             assertEquals("visitor", receivedVisitor)
             assertEquals("stream-token", result.playableResponses.single().streamingDataPoToken)
             client.close()
+        }
+
+    @Test
+    fun incompatibleProviderDoesNotStartAnUnusedOverlappedMint() =
+        runBlocking {
+            var tokenRequests = 0
+            val client = client { TOKEN_PLAYER_RESPONSE }
+            try {
+                val provider =
+                    object : TokenProvider {
+                        override val capabilities = TokenProviderCapabilities(setOf(PoTokenProviderKind.WEB_BOTGUARD))
+
+                        override suspend fun getPoToken(
+                            videoId: String,
+                            visitorData: String,
+                            cookie: String?,
+                        ): PoTokenResult? {
+                            tokenRequests++
+                            return null
+                        }
+                    }
+                val manifest = checkNotNull(PlaybackClientCatalog.findManifest("WEB_SABR"))
+                val innerTube = InnerTube(client).also { it.visitorData = "visitor" }
+                val budget = PlayerRequestBudget(2)
+                val batch =
+                    PlayerClientDirector(innerTube, fixed(manifest), provider)
+                        .fetchPlayerResponses("video", PlayerConfig("player.js", null, null, null), ContentHints(), requestBudget = budget)
+
+                assertEquals(0, tokenRequests)
+                assertEquals(1, budget.remaining)
+                assertTrue(batch.playableResponses.isEmpty())
+                assertTrue(batch.requestFailures.isEmpty())
+                assertEquals("po_token_unavailable", batch.attempts.single().outcome)
+                assertFalse(budget.isTokenUnavailable(PoTokenRequestKey("video", "visitor", null)))
+            } finally {
+                client.close()
+            }
         }
 
     @Test

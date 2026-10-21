@@ -350,19 +350,8 @@ private class SabrMediaStream(
                             }
 
                             fun initialSeekSequence(): Int? {
-                                if (firstSequenceNumber != null) return null
-                                if (requestPlayerTimeMs <= 0L) {
-                                    // Sequence 0 keeps its dedicated path; a nonzero opening segment that verifiably starts
-                                    // the track is emitted now instead of after the whole response arrives.
-                                    if (pendingMediaBySequence.containsKey(0)) return null
-                                    // Only the lowest buffered sequence may open the stream, so nothing below it is dropped.
-                                    val lowest =
-                                        pendingMediaBySequence.keys.minOrNull()?.let(pendingMediaBySequence::getValue) ?: return null
-                                    return lowest.header.sequenceNumber.takeIf {
-                                        lowest.header.startMs - requestPlayerTimeMs <= START_TIME_TOLERANCE_MS &&
-                                            lowest.checkedEndTimeMs() > requestPlayerTimeMs
-                                    }
-                                }
+                                // Nonzero openings wait for response completion, when lower sequences can no longer arrive.
+                                if (firstSequenceNumber != null || requestPlayerTimeMs <= 0L) return null
                                 return pendingMediaBySequence.values
                                     .firstOrNull { pending ->
                                         pending.header.startMs <= requestPlayerTimeMs &&
@@ -373,8 +362,8 @@ private class SabrMediaStream(
 
                             suspend fun emitAvailableMediaSegments() {
                                 val establishSeekSequence = initialSeekSequence()
-                                // Only a real seek may drop earlier sequences; an opening segment still rejects unseen lower ones.
-                                if (establishSeekSequence != null && requestPlayerTimeMs > 0L) seekStartEstablished = true
+                                // Only a real seek may drop earlier sequences.
+                                if (establishSeekSequence != null) seekStartEstablished = true
                                 emitReadyMediaSegments(initialSeekSequence = establishSeekSequence)
                             }
 

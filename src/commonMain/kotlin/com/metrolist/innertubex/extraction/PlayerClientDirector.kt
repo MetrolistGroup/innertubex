@@ -325,7 +325,9 @@ internal class PlayerClientDirector(
                         // Success is left to the host: a playable response can still fail at the CDN,
                         // and recording it here would clear that failure's cooldown.
                         attempt == null && !attemptResult.tokenUnavailable && !attemptResult.budgetExhausted &&
-                            !attemptResult.failure?.status.isAccountGateStatus() -> {
+                            !attemptResult.failure?.status.isAccountGateStatus() &&
+                            attemptResult.failure?.status != "VIDEO_UNAVAILABLE" &&
+                            attemptResult.failure?.status != "LIVE_STREAM_OFFLINE" -> {
                             if (effectiveRequestBudget.firstHealthReport(manifestId, "playability")) {
                                 clientHealthMonitor.recordFailure(manifestId, ClientFailureKind.PLAYABILITY, healthScope)
                             }
@@ -687,7 +689,7 @@ internal class PlayerClientDirector(
             // A GVS-only token never enters the player request, so mint it while that request is in flight.
             val overlappedMint =
                 knownTokenKey?.takeIf {
-                    tokenPlan.gvsRequired && !tokenPlan.playerRequired && !allowUntokenizedWebPoClient &&
+                    tokenPlan.canMint && tokenPlan.gvsRequired && !tokenPlan.playerRequired && !allowUntokenizedWebPoClient &&
                         prefetchedPoToken?.key != it && requestBudget.mintedToken(it) == null
                 }
             if (overlappedMint != null) {
@@ -1432,18 +1434,18 @@ internal data class PlayerRequestKey(
 internal class PlayerRequestBudget(
     initial: Int,
     totalTime: Duration = DEFAULT_EXTRACTION_TIME_BUDGET,
+    timeSource: TimeSource = TimeSource.Monotonic,
 ) {
     // Per-stage timeouts (player, visitor, token, media probe) otherwise stack across clients and config passes.
-    private val deadline = TimeSource.Monotonic.markNow() + totalTime
+    private val deadline = timeSource.markNow() + totalTime
 
     /** [limit] clamped to the time left in this extraction; throws once that time is spent. */
-    fun timeLeft(limit: Duration): Duration {
-        val left = -deadline.elapsedNow()
-        if (!left.isPositive()) throw PlayerRequestBudgetExhaustedException()
-        return minOf(limit, left)
-    }
+    fun timeLeft(limit: Duration): Duration = timeLeftOrNull(limit) ?: throw PlayerRequestBudgetExhaustedException()
 
-    fun timeLeftOrNull(limit: Duration): Duration? = if ((-deadline.elapsedNow()).isPositive()) timeLeft(limit) else null
+    fun timeLeftOrNull(limit: Duration): Duration? {
+        val left = -deadline.elapsedNow()
+        return if (left.isPositive()) minOf(limit, left) else null
+    }
 
     suspend fun <T> withinTime(block: suspend () -> T): T {
         val result =

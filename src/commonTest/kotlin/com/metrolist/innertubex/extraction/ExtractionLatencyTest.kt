@@ -36,9 +36,13 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.AbstractLongTimeSource
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.DurationUnit
+import kotlin.time.TestTimeSource
 
 class ExtractionLatencyTest {
     @Test
@@ -90,14 +94,34 @@ class ExtractionLatencyTest {
     }
 
     @Test
-    fun requestBudgetStopsOnceExtractionTimeIsSpent() =
-        runBlocking {
-            val budget = PlayerRequestBudget(10, totalTime = 1.seconds)
-            assertEquals(5.milliseconds, budget.timeLeft(5.milliseconds))
-            kotlinx.coroutines.delay(1_200)
-            assertEquals(0, budget.remaining)
-            assertTrue(runCatching { budget.consume() }.isFailure)
-        }
+    fun requestBudgetStopsOnceExtractionTimeIsSpent() {
+        val clock = TestTimeSource()
+        val budget = PlayerRequestBudget(10, totalTime = 1.seconds, timeSource = clock)
+        assertEquals(5.milliseconds, budget.timeLeft(5.milliseconds))
+        assertEquals(5.milliseconds, budget.timeLeftOrNull(5.milliseconds))
+        clock += 999.milliseconds
+        assertEquals(1.milliseconds, budget.timeLeftOrNull(5.milliseconds))
+        clock += 1.milliseconds
+        assertNull(budget.timeLeftOrNull(5.milliseconds))
+        assertEquals(0, budget.remaining)
+        assertFailsWith<PlayerRequestBudgetExhaustedException> { budget.timeLeft(5.milliseconds) }
+        assertFailsWith<PlayerRequestBudgetExhaustedException> { budget.consume() }
+    }
+
+    @Test
+    fun optionalTimeBudgetReadsTheDeadlineOnce() {
+        var now = 0L
+        var advancing = false
+        val clock =
+            object : AbstractLongTimeSource(DurationUnit.MILLISECONDS) {
+                override fun read(): Long = now.also { if (advancing) now++ }
+            }
+        val budget = PlayerRequestBudget(1, totalTime = 2.milliseconds, timeSource = clock)
+        now = 1L
+        advancing = true
+        assertEquals(1.milliseconds, budget.timeLeftOrNull(5.milliseconds))
+        assertNull(budget.timeLeftOrNull(5.milliseconds))
+    }
 
     @Test
     fun oversizedFormatListsAreRejectedWhileDecoding() {
