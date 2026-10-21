@@ -94,7 +94,7 @@ class ContentAwareFallbackStrategy(
             candidates += SelectedClient(manifest.client, manifest, score, reasons)
         }
 
-        val orderedCandidates =
+        var orderedCandidates =
             candidates.sortedWith(
                 compareBy<SelectedClient> {
                     // Direct web GVS playback fails after 1 MiB; try tokenless SABR, then page-bound web SABR.
@@ -137,6 +137,16 @@ class ContentAwareFallbackStrategy(
                 }.thenByDescending { it.score }
                     .thenBy { it.manifest?.id },
             )
+        if (request.transportPreference == PlaybackTransportPreference.AUTO &&
+            !request.hints.wantVideo && request.hints.allowSabr && !(request.premium && request.authenticated)
+        ) {
+            val directIndex = orderedCandidates.indexOfFirst { it.manifest?.id == "WEB_REMIX" }
+            val sabrIndex = orderedCandidates.indexOfFirst { it.manifest?.id == "WEB_REMIX_SABR" }
+            if (directIndex >= 0 && sabrIndex > directIndex) {
+                // Live direct GVS playback 403s after 1 MiB; try SABR on the same cached response before minting.
+                orderedCandidates = orderedCandidates.toMutableList().apply { add(directIndex, removeAt(sabrIndex)) }
+            }
+        }
         return ClientSelectionResult(
             candidates = orderedCandidates,
             rejected = rejected.distinctBy { it.manifest.id }.sortedBy { it.manifest.id },

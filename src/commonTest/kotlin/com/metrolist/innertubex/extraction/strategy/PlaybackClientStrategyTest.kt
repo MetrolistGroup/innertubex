@@ -380,7 +380,7 @@ class PlaybackClientStrategyTest {
     }
 
     @Test
-    fun automaticCandidatesKeepSabrBehindAllDirectClients() {
+    fun automaticCandidatesKeepOtherSabrBehindAllDirectClients() {
         val candidates =
             ContentAwareFallbackStrategy()
                 .selectClients(
@@ -391,11 +391,12 @@ class PlaybackClientStrategyTest {
                         webViewAvailable = true,
                     ),
                 ).candidates
-        val firstSabr = candidates.indexOfFirst { it.client.useSabr }
+        val otherCandidates = candidates.filterNot { it.manifest?.id == "WEB_REMIX_SABR" }
+        val firstSabr = otherCandidates.indexOfFirst { it.client.useSabr }
 
         assertTrue(firstSabr > 0)
-        assertTrue(candidates.take(firstSabr).none { it.client.useSabr })
-        assertTrue(candidates.drop(firstSabr).all { it.client.useSabr })
+        assertTrue(otherCandidates.take(firstSabr).none { it.client.useSabr })
+        assertTrue(otherCandidates.drop(firstSabr).all { it.client.useSabr })
     }
 
     @Test
