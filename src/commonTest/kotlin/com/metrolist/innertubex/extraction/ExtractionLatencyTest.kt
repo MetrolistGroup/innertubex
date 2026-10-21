@@ -26,8 +26,6 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.utils.io.ByteChannel
-import io.ktor.utils.io.writeFully
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.SerializationException
@@ -164,7 +162,7 @@ class ExtractionLatencyTest {
             val engine =
                 MockEngine {
                     val channel = ByteChannel(autoFlush = true)
-                    launch { channel.writeFully("{".encodeToByteArray()) } // never completes
+                    // Leave the body open: status handling must not wait for EOF.
                     respond(channel, HttpStatusCode.ServiceUnavailable, headersOf(HttpHeaders.ContentType, "application/json"))
                 }
             val innerTube =
