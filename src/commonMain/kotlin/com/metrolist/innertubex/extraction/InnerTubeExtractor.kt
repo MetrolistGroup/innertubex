@@ -58,7 +58,8 @@ class InnerTubeExtractor internal constructor(
         fallbackStrategy: ClientFallbackStrategy? = null,
         tokenProvider: TokenProvider? = null,
         /** Defaults to process-local memory; pass [ClientHealthMonitor.NONE] for stateless selection. */
-        clientHealthMonitor: ClientHealthMonitor = InMemoryClientHealthMonitor(),
+        clientHealthMonitor: ClientHealthMonitor =
+            InMemoryClientHealthMonitor(sessionGeneration = { innerTube.sessionSnapshot().generation }),
         logger: InnerTubeLogger = InnerTubeLogger.NONE,
     ) : this(
         configParser = configParser,
@@ -603,7 +604,7 @@ class InnerTubeExtractor internal constructor(
         }
 
         val classifiedFailure = classifyPlayabilityFailures(diagnostics.failures)
-        if (shouldTryUnknownKidsFallback(hints, classifiedFailure)) {
+        if (shouldTryUnknownKidsFallback(diagnostics.requestBudget.withKnownAge(hints), classifiedFailure)) {
             val kidsStream =
                 extractWithWebKidsFallback(
                     videoId = videoId,
@@ -675,6 +676,12 @@ class InnerTubeExtractor internal constructor(
         diagnostics: ExtractionDiagnostics,
     ): ExtractedStream? {
         diagnostics.ensureSessionCurrent()
+        if (diagnostics.requestBudget.remaining <= 0) return null
+        if (hints.playbackClientOverrideId == null &&
+            (hints.isAgeRestricted == true || diagnostics.requestBudget.ageRestricted)
+        ) {
+            return null
+        }
         val configStart = Clock.System.now().toEpochMilliseconds()
         val config =
             try {
@@ -703,7 +710,6 @@ class InnerTubeExtractor internal constructor(
         )
         val fallbackHints =
             hints.copy(
-                isAgeRestricted = true,
                 playbackClientOverrideId =
                     hints.playbackClientOverrideId?.takeIf { id ->
                         PlaybackClientCatalog.findManifest(id)?.request?.embedded == true
@@ -786,6 +792,8 @@ class InnerTubeExtractor internal constructor(
                         "ageMs" to cacheAgeMs.toString(),
                     ),
             )
+            val nonGatePassesBefore = diagnostics.nonGatePasses
+            val failuresBefore = diagnostics.failures.size
             val cachedStream =
                 extractWithConfig(
                     videoId = videoId,
@@ -800,6 +808,7 @@ class InnerTubeExtractor internal constructor(
                     tvBearerCredential = tvBearerCredential,
                 )
             if (cachedStream != null) return cachedStream
+            if (diagnostics.failures.size > failuresBefore && diagnostics.nonGatePasses == nonGatePassesBefore) return null
             logger.w(TAG, "watch page cache unusable", details = mapOf("authenticated" to useLoginCookies.toString()))
         }
 
@@ -939,6 +948,7 @@ class InnerTubeExtractor internal constructor(
                 tvBearerCredential = tvBearerCredential,
             )
         diagnostics.ensureSessionCurrent()
+        if (!batch.onlyAccountGateFailures) diagnostics.nonGatePasses++
         diagnostics.failures += batch.failures
         diagnostics.requestFailures += batch.requestFailures
         diagnostics.attempts += batch.attempts
@@ -1595,6 +1605,7 @@ class InnerTubeExtractor internal constructor(
         val failures = mutableListOf<PlayabilityFailure>()
         val requestFailures = mutableListOf<Throwable>()
         val attempts = mutableListOf<StreamAttemptDiagnostic>()
+        var nonGatePasses = 0
         var sawPlayableResponse = false
         var usedAuthenticatedWatchPage = false
 

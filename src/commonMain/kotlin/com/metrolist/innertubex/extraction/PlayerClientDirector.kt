@@ -4,6 +4,7 @@ import com.metrolist.innertubex.InnerTube
 import com.metrolist.innertubex.InnerTubeLogger
 import com.metrolist.innertubex.bodyAsTextLimited
 import com.metrolist.innertubex.d
+import com.metrolist.innertubex.extraction.strategy.CapabilitySupport
 import com.metrolist.innertubex.extraction.strategy.ClientFailureKind
 import com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy
 import com.metrolist.innertubex.extraction.strategy.ClientHealthMonitor
@@ -120,10 +121,13 @@ internal class PlayerClientDirector(
                 ?: playerConfig.visitorData?.takeIf { it.isNotBlank() }
         var requestSession = initialSession.copy(visitorData = requestVisitorData)
         val authenticated = !requestSession.sapisid.isNullOrBlank()
-        val healthScope = ClientHealthScope.from(hints, authenticated)
+        val effectiveRequestBudget =
+            requestBudget ?: PlayerRequestBudget(if (hints.playbackClientOverrideId != null) 1 else maxPlayerRequests)
+        if (hints.isAgeRestricted == true) effectiveRequestBudget.ageRestricted = true
+        val routingHints = effectiveRequestBudget.withKnownAge(hints)
         val selectionRequest =
             ClientSelectionRequest(
-                hints = hints,
+                hints = routingHints,
                 authenticated = authenticated,
                 premium = hints.premium,
                 availablePoTokenProviders = tokenProvider.capabilities.providers,
@@ -188,8 +192,6 @@ internal class PlayerClientDirector(
         val playableResults = mutableListOf<ClientResult>()
         val failures = mutableListOf<PlayabilityFailure>()
         val requestFailures = mutableListOf<Throwable>()
-        val effectiveRequestBudget =
-            requestBudget ?: PlayerRequestBudget(if (hints.playbackClientOverrideId != null) 1 else maxPlayerRequests)
         if (tvBearerCredential != null) {
             return fetchTvBearerResponse(
                 videoId = videoId,
@@ -206,8 +208,14 @@ internal class PlayerClientDirector(
         }
         var requestsConsumedInBatch = 0
         var forceTokenizedTvHtml5 = false
+        var onlyAccountGateFailures = true
         for (declaredClient in clients) {
             if (requestsConsumedInBatch >= maxPlayerRequests || effectiveRequestBudget.remaining <= 0) break
+            if (hints.playbackClientOverrideId == null && effectiveRequestBudget.ageRestricted &&
+                declaredClient.manifest?.content?.ageRestricted == CapabilitySupport.UNSUPPORTED
+            ) {
+                continue
+            }
             // A tokenized attempt may have published fresh visitor data. Carry it forward; any other change still cancels.
             innerTube
                 .sessionSnapshot()
@@ -258,6 +266,9 @@ internal class PlayerClientDirector(
                 )
             requestsConsumedInBatch += remainingBeforeAttempt - effectiveRequestBudget.remaining
             val attempt = attemptResult.attempt
+            onlyAccountGateFailures = onlyAccountGateFailures && attemptResult.failure?.status.isAccountGateStatus() &&
+                attemptResult.requestFailure == null
+            val healthScope = ClientHealthScope.from(effectiveRequestBudget.withKnownAge(hints), authenticated)
             selectedClient.manifest
                 ?.id
                 ?.takeUnless {
@@ -273,7 +284,8 @@ internal class PlayerClientDirector(
 
                         // Success is left to the host: a playable response can still fail at the CDN,
                         // and recording it here would clear that failure's cooldown.
-                        attempt == null && !attemptResult.tokenUnavailable && !attemptResult.budgetExhausted -> {
+                        attempt == null && !attemptResult.tokenUnavailable && !attemptResult.budgetExhausted &&
+                            !attemptResult.failure?.status.isAccountGateStatus() -> {
                             if (effectiveRequestBudget.firstHealthReport(manifestId, "playability")) {
                                 clientHealthMonitor.recordFailure(manifestId, ClientFailureKind.PLAYABILITY, healthScope)
                             }
@@ -460,7 +472,13 @@ internal class PlayerClientDirector(
         }
 
         logger.d(TAG, "player response batch completed", details = mapOf("resultCount" to "0", "elapsedMs" to elapsed.toString()))
-        return PlayerResponseBatch(emptyList(), failures, requestFailures, attempts)
+        return PlayerResponseBatch(
+            emptyList(),
+            failures,
+            requestFailures,
+            attempts,
+            onlyAccountGateFailures = onlyAccountGateFailures && failures.isNotEmpty(),
+        )
     }
 
     private suspend fun fetchTvBearerResponse(
@@ -962,6 +980,11 @@ internal class PlayerClientDirector(
                 if (timeout < playerRequestTimeoutMs.milliseconds) throw PlayerRequestBudgetExhaustedException()
                 throw PlayerRequestTimeoutException(client.clientName, playerRequestTimeoutMs, error)
             }
+        if (response?.playabilityStatus?.status == "AGE_CHECK_REQUIRED" ||
+            response?.playabilityStatus?.status == "AGE_VERIFICATION_REQUIRED"
+        ) {
+            requestBudget.ageRestricted = true
+        }
         key?.let { requestBudget.remember(it, response) }
         return response
     }
@@ -1414,6 +1437,10 @@ internal class PlayerRequestBudget(
     }
 
     fun timeLeftOrNull(limit: Duration): Duration? = if ((-deadline.elapsedNow()).isPositive()) timeLeft(limit) else null
+
+    var ageRestricted: Boolean = false
+
+    fun withKnownAge(hints: ContentHints): ContentHints = if (ageRestricted) hints.copy(isAgeRestricted = true) else hints
 
     private val responses = mutableMapOf<PlayerRequestKey, PlayerResponse?>()
     private val healthReports = mutableSetOf<Pair<String, String>>()

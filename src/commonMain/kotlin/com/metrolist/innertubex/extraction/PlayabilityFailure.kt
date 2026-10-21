@@ -13,7 +13,12 @@ internal data class PlayerResponseBatch(
     val failures: List<PlayabilityFailure>,
     val requestFailures: List<Throwable>,
     val attempts: List<StreamAttemptDiagnostic>,
+    val onlyAccountGateFailures: Boolean = false,
 )
+
+internal fun String?.isAccountGateStatus(): Boolean =
+    this == "LOGIN_REQUIRED" || this == "AGE_CHECK_REQUIRED" ||
+        this == "AGE_VERIFICATION_REQUIRED" || this == "CONTENT_CHECK_REQUIRED"
 
 internal fun classifyPlayabilityFailures(failures: List<PlayabilityFailure>): StreamResolveException.Reason? {
     if (failures.any(PlayabilityFailure::isAgeRestricted)) {

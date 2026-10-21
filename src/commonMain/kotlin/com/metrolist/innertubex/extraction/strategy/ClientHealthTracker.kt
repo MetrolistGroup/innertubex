@@ -81,6 +81,7 @@ interface ClientHealthMonitor {
  */
 @OptIn(ExperimentalAtomicApi::class)
 internal class InMemoryClientHealthMonitor(
+    private val sessionGeneration: () -> Long = { 0L },
     private val nowMs: () -> Long = { Clock.System.now().toEpochMilliseconds() },
 ) : ClientHealthMonitor {
     private data class Key(
@@ -94,14 +95,20 @@ internal class InMemoryClientHealthMonitor(
         val lastFailureAtMs: Long,
     )
 
-    private val state = AtomicReference<Map<Key, Health>>(emptyMap())
+    private data class State(
+        val generation: Long,
+        val health: Map<Key, Health> = emptyMap(),
+    )
+
+    private val state = AtomicReference(State(sessionGeneration()))
 
     override fun scoreAdjustment(
         clientId: String,
         scope: ClientHealthScope?,
     ): Int {
         val now = nowMs()
-        val health = state.load()
+        if (state.load().generation != sessionGeneration()) update { it }
+        val health = state.load().health
         return listOfNotNull(health[Key(clientId, null)], scope?.let { health[Key(clientId, it)] })
             // The library only reports failures, so old ones must fade out or a client would stay demoted forever.
             .filter { now - it.lastFailureAtMs < FAILURE_MEMORY_MS }
@@ -144,7 +151,11 @@ internal class InMemoryClientHealthMonitor(
     private inline fun update(transform: (Map<Key, Health>) -> Map<Key, Health>) {
         while (true) {
             val current = state.load()
-            if (state.compareAndSet(current, transform(current))) return
+            val generation = sessionGeneration()
+            // Generation also changes for visitor/locale updates: conservatively forget authenticated learning.
+            val health =
+                if (current.generation == generation) current.health else current.health.filterKeys { it.scope?.authenticated != true }
+            if (state.compareAndSet(current, State(generation, transform(health)))) return
         }
     }
 

@@ -100,11 +100,22 @@ data class ClientContentCapabilities(
 ) {
     fun supportFor(hints: ContentHints): CapabilitySupport =
         when {
+            (hints.isUploaded == true && uploads == CapabilitySupport.UNSUPPORTED) ||
+                (hints.isLive == true && live == CapabilitySupport.UNSUPPORTED) ||
+                (hints.isAgeRestricted == true && ageRestricted == CapabilitySupport.UNSUPPORTED) ||
+                (hints.isKidsContent == true && kids == CapabilitySupport.UNSUPPORTED) ||
+                (hints.isExplicit == true && explicit == CapabilitySupport.UNSUPPORTED) -> CapabilitySupport.UNSUPPORTED
+
             hints.isUploaded == true -> uploads
+
             hints.isLive == true -> live
+
             hints.isAgeRestricted == true -> ageRestricted
+
             hints.isKidsContent == true -> kids
+
             hints.isExplicit == true -> explicit
+
             else -> normal
         }
 }
