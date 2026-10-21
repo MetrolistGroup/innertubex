@@ -1,8 +1,6 @@
 package com.metrolist.innertubex.extraction.strategy
 
 import com.metrolist.innertubex.extraction.ContentHints
-import com.metrolist.innertubex.extraction.gatedSabrPriority
-import com.metrolist.innertubex.extraction.prefersGatedSabr
 import com.metrolist.innertubex.extraction.requiresBoundedMediaRange
 import com.metrolist.innertubex.models.YouTubeClient
 
@@ -94,18 +92,16 @@ class ContentAwareFallbackStrategy(
             candidates += SelectedClient(manifest.client, manifest, score, reasons)
         }
 
-        var orderedCandidates =
+        val orderedCandidates =
             candidates.sortedWith(
                 compareBy<SelectedClient> {
-                    // Direct web GVS playback fails after 1 MiB; try tokenless SABR, then page-bound web SABR.
-                    if (request.hints.prefersGatedSabr(request.authenticated)) it.gatedSabrPriority() else 0
-                }.thenBy {
                     when (request.transportPreference) {
                         PlaybackTransportPreference.AUTO -> {
                             when {
                                 // Repeatedly failing clients go behind every healthy transport instead of only losing points.
                                 it.manifest?.id in healthDemoted -> 3
 
+                                // Tokenless gated SABR stops at ~50s with ATTESTATION_REQUIRED (live 2026-10-21); keep token-backed direct audio first.
                                 it.client.useSabr -> 2
 
                                 request.hints.isKidsContent == true && it.client in kidsClients -> 0
@@ -137,16 +133,6 @@ class ContentAwareFallbackStrategy(
                 }.thenByDescending { it.score }
                     .thenBy { it.manifest?.id },
             )
-        if (request.transportPreference == PlaybackTransportPreference.AUTO &&
-            !request.hints.wantVideo && request.hints.allowSabr && !(request.premium && request.authenticated)
-        ) {
-            val directIndex = orderedCandidates.indexOfFirst { it.manifest?.id == "WEB_REMIX" }
-            val sabrIndex = orderedCandidates.indexOfFirst { it.manifest?.id == "WEB_REMIX_SABR" }
-            if (directIndex >= 0 && sabrIndex > directIndex) {
-                // Live direct GVS playback 403s after 1 MiB; try SABR on the same cached response before minting.
-                orderedCandidates = orderedCandidates.toMutableList().apply { add(directIndex, removeAt(sabrIndex)) }
-            }
-        }
         return ClientSelectionResult(
             candidates = orderedCandidates,
             rejected = rejected.distinctBy { it.manifest.id }.sortedBy { it.manifest.id },

@@ -284,7 +284,7 @@ internal class EjsChallengeSolver(
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                // Warmup is best effort; the next real solve takes the normal path.
+                evictPreprocessedPlayer(playerUrl, bundleHash?.let { preprocessedPlayerCacheKey(playerUrl, it) })
             }
         }
     }
@@ -374,7 +374,7 @@ internal class EjsChallengeSolver(
                         SolveResult(emptyMap(), emptyMap(), null)
                     }
                 // A synthetic signature failure says nothing about an n-only player's usability.
-                if (warmup || cachedResult.solvesAll(requestOrder)) return cachedResult
+                if ((warmup && playerUrl in compiledPlayers) || cachedResult.solvesAll(requestOrder)) return cachedResult
                 evictPreprocessedPlayer(playerUrl, cacheKey)
             }
 
@@ -507,11 +507,9 @@ internal class EjsChallengeSolver(
             })()
             """
         val evaluateStartMs = Clock.System.now().toEpochMilliseconds()
-        when {
-            preprocessed -> rememberCompiledPlayer(playerUrl)
-            else -> compiledPlayers.clear()
-        }
+        if (!preprocessed) compiledPlayers.clear()
         val evaluated = engine.evaluate(js, MAX_RAW_OUTPUT_LENGTH, collectGarbage = !preprocessed, input = playerInputText)
+        if (preprocessed) rememberCompiledPlayer(playerUrl)
         if (evaluated.length > MAX_RAW_OUTPUT_LENGTH) return SolveResult(emptyMap(), emptyMap(), null)
         val raw = evaluated.trim()
         logger.d(

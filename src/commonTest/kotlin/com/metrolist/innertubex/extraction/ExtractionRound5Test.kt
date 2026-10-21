@@ -24,16 +24,16 @@ import kotlin.test.assertTrue
 
 class ExtractionRound5Test {
     @Test
-    fun unhintedGateUsesOneRemixRequestAndSabrWithoutMinting() =
+    fun unplayableAndErrorFallbackUsesOneRemixRequestAndDirectWithOneMint() =
         runBlocking {
             for (authenticated in listOf(true, false)) {
                 val fixture = Fixture(authenticated = authenticated)
                 try {
                     val result = fixture.fetch().playableResponses.single()
-                    assertEquals("WEB_REMIX_SABR__nopo", result.profileId)
-                    assertTrue(result.useSabr)
+                    assertEquals("WEB_REMIX__po", result.profileId)
+                    assertFalse(result.useSabr)
                     assertEquals(listOf("VISIONOS", "WEB_EMBEDDED_PLAYER", "WEB_REMIX"), fixture.requests)
-                    assertEquals(0, fixture.tokens.calls)
+                    assertEquals(1, fixture.tokens.calls)
                 } finally {
                     fixture.client.close()
                 }
@@ -41,7 +41,7 @@ class ExtractionRound5Test {
         }
 
     @Test
-    fun missingSabrDataReusesRemixResponseAndMintsOnceForDirect() =
+    fun missingSabrDataStillUsesOneRemixRequestAndOneMintForDirect() =
         runBlocking {
             for (body in listOf(
                 RESPONSE.replace("\"serverAbrStreamingUrl\":\"https://r1.googlevideo.com/videoplayback\",", ""),
@@ -77,7 +77,7 @@ class ExtractionRound5Test {
         }
 
     @Test
-    fun autoOnlyMovesEligibleRemixSabrAndLeavesEarlierClientsInPlace() {
+    fun autoKeepsDirectBeforeSabrAndHonorsEligibility() {
         val strategy = ContentAwareFallbackStrategy()
         val request =
             ClientSelectionRequest(
@@ -92,10 +92,7 @@ class ExtractionRound5Test {
         val original = ids(request.copy(premium = true))
         val directIndex = original.indexOf("WEB_REMIX")
         assertTrue(original.indexOf("WEB_REMIX_SABR") > directIndex)
-        val expected = original.toMutableList()
-        expected.remove("WEB_REMIX_SABR")
-        expected.add(directIndex, "WEB_REMIX_SABR")
-        assertEquals(expected, ids(request))
+        assertEquals(original, ids(request))
         assertEquals("VISIONOS_0_1", ids(request).first())
         for (transport in listOf(PlaybackTransportPreference.DIRECT, PlaybackTransportPreference.HLS)) {
             val unchanged = ids(request.copy(transportPreference = transport))

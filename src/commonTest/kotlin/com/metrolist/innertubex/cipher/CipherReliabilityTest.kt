@@ -129,6 +129,59 @@ class CipherReliabilityTest {
         }
 
     @Test
+    fun warmupEvictsCompilationFailureAndRepairsPersistentPreprocessing() =
+        runBlocking {
+            val engine = QuickJsEngine()
+            val solver = EjsChallengeSolver(engine, InnerTubeLogger.NONE)
+            var stored: String? = "_result.n = ;"
+            val writes = mutableListOf<String?>()
+            var rawLoads = 0
+            try {
+                solver.setPreprocessedPlayerCache({ stored }, { _, value ->
+                    stored = value
+                    writes += value
+                })
+                solver.warmPlayer(PLAYER_URL) {
+                    rawLoads++
+                    null
+                }
+                assertEquals(listOf<String?>(null), writes)
+                assertTrue(solver.needsFullPlayer(PLAYER_URL))
+                assertEquals("false", engine.evaluate("__itxPlayers.has(${QuickJsEngine.jsStringLiteral(PLAYER_URL)})", 8))
+                solver.warmPlayer(PLAYER_URL) {
+                    rawLoads++
+                    PLAYER_CODE
+                }
+                assertEquals(2, rawLoads)
+                assertNotNull(stored)
+                assertEquals("true", engine.evaluate("__itxPlayers.has(${QuickJsEngine.jsStringLiteral(PLAYER_URL)})", 8))
+                assertEquals("cba", solver.solve(PLAYER_URL, "", listOf("sig" to listOf("abc"))).sigByChallenge["abc"])
+            } finally {
+                solver.dispose()
+            }
+        }
+
+    @Test
+    fun partialLegacyFailureDoesNotCoolDownWorkingNTransform() =
+        runBlocking {
+            val httpEngine = MockEngine { respond(legacyConfig(N_ONLY)) }
+            val http = HttpClient(httpEngine)
+            val solver = EjsChallengeSolver(QuickJsEngine(), InnerTubeLogger.NONE)
+            val client = GitHubPlayerConfigClient(http, solver, legacyRepository(), { Url(it) }, InnerTubeLogger.NONE)
+            try {
+                val partial = client.solve(PLAYER_URL, listOf("sig"), listOf("first"))
+                assertTrue(partial.sigByChallenge.isEmpty())
+                assertEquals("first_done", partial.nByChallenge["first"])
+                assertEquals("fresh_done", client.solve(PLAYER_URL, emptyList(), listOf("fresh")).nByChallenge["fresh"])
+                assertTrue(client.solve(PLAYER_URL, listOf("another"), emptyList()).sigByChallenge.isEmpty())
+                assertEquals(1, httpEngine.requestHistory.size)
+            } finally {
+                solver.dispose()
+                http.close()
+            }
+        }
+
+    @Test
     fun compiledHitsRefreshBothLruOrderings() =
         runBlocking {
             val engine = QuickJsEngine()

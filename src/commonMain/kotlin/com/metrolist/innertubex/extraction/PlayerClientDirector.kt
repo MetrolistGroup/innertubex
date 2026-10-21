@@ -239,17 +239,11 @@ internal class PlayerClientDirector(
         var requestsConsumedInBatch = 0
         var forceTokenizedTvHtml5 = false
         var onlyAccountGateFailures = true
-        var onlyUnavailableFailures = true
+        var onlyUnavailableFailures =
+            !directAudioOnlyClients && playerConfig.playerUrl.isNotBlank() &&
+                (!authenticated || clients.any { it.client.loginSupported })
         var onlyBootstrapIndependentFailures = true
-        val pendingClients = clients.toMutableList()
-        while (pendingClients.isNotEmpty()) {
-            val sabrIndex =
-                if (effectiveRequestBudget.withKnownAge(hints).prefersGatedSabr(authenticated)) {
-                    pendingClients.indices.minBy { pendingClients[it].gatedSabrPriority() }
-                } else {
-                    -1
-                }
-            val declaredClient = pendingClients.removeAt(sabrIndex.takeIf { it >= 0 } ?: 0)
+        for (declaredClient in clients) {
             if (requestsConsumedInBatch >= maxPlayerRequests || effectiveRequestBudget.remaining <= 0) break
             if (hints.playbackClientOverrideId == null && effectiveRequestBudget.ageRestricted &&
                 declaredClient.manifest?.content?.ageRestricted == CapabilitySupport.UNSUPPORTED
@@ -309,7 +303,8 @@ internal class PlayerClientDirector(
             onlyAccountGateFailures = onlyAccountGateFailures && attemptResult.failure?.status.isAccountGateStatus() &&
                 attemptResult.requestFailure == null
             onlyUnavailableFailures = onlyUnavailableFailures && attemptResult.failure?.status == "ERROR" &&
-                attemptResult.requestFailure == null
+                attemptResult.requestFailure == null &&
+                (!client.isEmbedded || !playerConfig.encryptedHostFlags.isNullOrBlank())
             onlyBootstrapIndependentFailures = onlyBootstrapIndependentFailures &&
                 (attemptResult.failure?.status.isAccountGateStatus() || attemptResult.failure?.status == "ERROR") &&
                 attemptResult.requestFailure == null
@@ -1562,18 +1557,6 @@ internal class PlayerRequestBudget(
 }
 
 internal class PlayerRequestBudgetExhaustedException : Exception()
-
-internal fun SelectedClient.gatedSabrPriority(): Int =
-    when (manifest?.id) {
-        "WEB_REMIX_SABR" -> 0
-        "WEB_SABR" -> 1
-        "WEB_SAFARI_SABR" -> 2
-        "MWEB_SABR" -> 3
-        else -> 4
-    }
-
-internal fun ContentHints.prefersGatedSabr(authenticated: Boolean): Boolean =
-    authenticated && !premium && !wantVideo && allowSabr && isAgeRestricted == true && playbackClientOverrideId == null
 
 internal data class PoTokenRequestKey(
     val videoId: String,

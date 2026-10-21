@@ -45,7 +45,7 @@ import kotlin.time.Duration.Companion.seconds
 
 class ExtractionRound2Test {
     @Test
-    fun gatedAudioPrefersSabrWithoutChangingPremiumOrdering() {
+    fun gatedAudioKeepsDirectFirstWithAndWithoutPremium() {
         fun candidates(
             premium: Boolean,
             age: Boolean,
@@ -62,7 +62,7 @@ class ExtractionRound2Test {
             .map { it.manifest!!.id }
         val gated = candidates(premium = false, age = true)
         for (direct in listOf("WEB_REMIX", "WEB_CREATOR")) {
-            assertTrue(gated.indexOf("WEB_REMIX_SABR") < gated.indexOf(direct))
+            assertTrue(gated.indexOf(direct) < gated.indexOf("WEB_REMIX_SABR"))
         }
         assertFalse("MWEB" in gated || "WEB_SAFARI" in gated)
         val premium = candidates(premium = true, age = true)
@@ -70,20 +70,20 @@ class ExtractionRound2Test {
     }
 
     @Test
-    fun hintedAndLearnedAgeUseTokenlessSabr() =
+    fun hintedAndLearnedAgeKeepTokenBackedDirectFirst() =
         runBlocking {
             for (hinted in listOf(false, true)) {
                 var requests = 0
-                val client = client { if (++requests == 1 && !hinted) denial("AGE_CHECK_REQUIRED") else SABR }
+                val client = client { if (++requests == 1 && !hinted) denial("AGE_CHECK_REQUIRED") else DIRECT }
                 try {
                     val tube = session(client)
                     val provider = CountingTokens()
                     val extractor =
                         extractor(tube, Parser(), FixedStrategy("VISIONOS", "WEB_REMIX", "WEB_CREATOR", "WEB_REMIX_SABR"), provider)
                     val stream = assertNotNull(extractor.extract("video", ContentHints(isAgeRestricted = hinted, isExplicit = true)))
-                    assertEquals("WEB_REMIX_SABR__nopo", stream.profileId)
+                    assertEquals("WEB_REMIX__po", stream.profileId)
                     assertEquals(if (hinted) 1 else 2, requests)
-                    assertEquals(0, provider.calls)
+                    assertEquals(1, provider.calls)
                 } finally {
                     client.close()
                 }
@@ -214,7 +214,7 @@ class ExtractionRound2Test {
         }
 
     @Test
-    fun errorOnlyPassStopsWithoutRefreshEmbedOrKidsRequests() =
+    fun errorOnlyConfiguredPassStopsWithoutRefreshEmbedOrKidsRequests() =
         runBlocking {
             for (cached in listOf(false, true)) {
                 var requests = 0
@@ -230,8 +230,8 @@ class ExtractionRound2Test {
                     if (cached) extractor.prewarm()
                     val failure = assertFailsWith<StreamResolveException> { extractor.extract("video", ContentHints(wantVideo = cached)) }
                     assertEquals(StreamResolveException.Reason.UNAVAILABLE, failure.reason)
-                    assertEquals(2, requests)
-                    assertEquals(if (cached) 1 else 0, parser.watches)
+                    assertEquals(if (cached) 2 else 4, requests)
+                    assertEquals(1, parser.watches)
                     assertEquals(0, parser.embeds)
                 } finally {
                     client.close()

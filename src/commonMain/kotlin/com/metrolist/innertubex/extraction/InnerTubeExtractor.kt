@@ -128,8 +128,12 @@ class InnerTubeExtractor internal constructor(
     private data class TerminalCacheKey(
         val videoId: String,
         val generation: Long,
-        val wantVideo: Boolean,
-    )
+        val hints: ContentHints,
+        val audioQuality: AudioQuality,
+        val excludedClients: Set<String>,
+    ) {
+        override fun toString(): String = "TerminalCacheKey(redacted)"
+    }
 
     private data class TerminalVerdict(
         val reason: StreamResolveException.Reason,
@@ -152,6 +156,7 @@ class InnerTubeExtractor internal constructor(
         reason: StreamResolveException.Reason,
     ) {
         if (innerTube.sessionSnapshot().generation != key.generation || diagnostics.sawPlayableResponse ||
+            (reason == StreamResolveException.Reason.UNAVAILABLE && !diagnostics.unavailable) ||
             diagnostics.requestFailures.isNotEmpty() || diagnostics.requestBudget.terminalFailureReason() != reason ||
             diagnostics.attempts.any { !it.outcome.startsWith("selection:") && !it.outcome.startsWith("playability:") }
         ) {
@@ -472,8 +477,8 @@ class InnerTubeExtractor internal constructor(
         clientPlaybackNonce: String,
     ): ExtractedStream? {
         val terminalKey =
-            if (hints.playbackClientOverrideId == null && excludedClients.isEmpty()) {
-                TerminalCacheKey(videoId, innerTube.sessionSnapshot().generation, hints.wantVideo)
+            if (hints.playbackClientOverrideId == null) {
+                TerminalCacheKey(videoId, innerTube.sessionSnapshot().generation, hints, audioQuality, excludedClients.toSet())
             } else {
                 null
             }

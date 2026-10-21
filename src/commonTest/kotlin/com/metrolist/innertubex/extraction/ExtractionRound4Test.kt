@@ -26,7 +26,7 @@ import kotlin.test.assertTrue
 
 class ExtractionRound4Test {
     @Test
-    fun gatedSelectionPlacesAllAutomaticWebSabrBeforeDirectWeb() {
+    fun gatedSelectionKeepsDirectWebBeforeSabr() {
         val strategy = ContentAwareFallbackStrategy()
         val request =
             ClientSelectionRequest(
@@ -35,9 +35,8 @@ class ExtractionRound4Test {
                 availablePoTokenProviders = setOf(PoTokenProviderKind.WEBPAGE_ATTESTATION),
             )
         val ids = strategy.selectClients(request).candidates.map { it.manifest!!.id }
-        assertEquals(SABR_ORDER, ids.take(4))
         for (direct in listOf("WEB_REMIX", "WEB_CREATOR")) {
-            assertTrue(ids.indexOf(direct) >= 4)
+            for (sabr in SABR_ORDER) assertTrue(ids.indexOf(direct) < ids.indexOf(sabr))
         }
         assertTrue("WEB_SAFARI" !in ids && "MWEB" !in ids)
         val premium = strategy.selectClients(request.copy(hints = request.hints.withPremium(), premium = true)).candidates
@@ -45,7 +44,7 @@ class ExtractionRound4Test {
     }
 
     @Test
-    fun hintedAndLearnedAgeReorderAllWebSabrAheadOfDirectProfiles() =
+    fun hintedAndLearnedAgePreserveSelectedSabrOrder() =
         runBlocking {
             for (hinted in listOf(false, true)) {
                 val fixture = Fixture(hinted)
@@ -155,7 +154,7 @@ class ExtractionRound4Test {
         fun director(maxRequests: Int = 20) =
             PlayerClientDirector(
                 tube,
-                FixedStrategy(listOf("VISIONOS", "WEB_REMIX", "WEB_CREATOR", "WEB_SAFARI", "MWEB") + SABR_ORDER.reversed()),
+                FixedStrategy(listOf("VISIONOS") + SABR_ORDER + listOf("WEB_REMIX", "WEB_CREATOR", "WEB_SAFARI", "MWEB")),
                 tokens,
                 maxPlayerRequests = maxRequests,
             )

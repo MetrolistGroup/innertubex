@@ -61,7 +61,7 @@ internal class GitHubPlayerConfigClient(
 
     /** URLs that recently had no usable config; retried after [MISSING_CONFIG_TTL_MS]. */
     private val missingConfigs = LinkedHashMap<String, Long>()
-    private val failedArtifacts = LinkedHashMap<String, TimeSource.Monotonic.ValueTimeMark>()
+    private val failedArtifacts = LinkedHashMap<Pair<String, String>, TimeSource.Monotonic.ValueTimeMark>()
 
     suspend fun clearCache() =
         cacheMutex.withLock {
@@ -125,11 +125,16 @@ internal class GitHubPlayerConfigClient(
         return try {
             val preprocessedPlayer = loadPreprocessedPlayer(configUrl, playerHash) ?: return SolveResult(emptyMap(), emptyMap())
             val artifactKey = sha1("$playerUrl:$preprocessedPlayer")
+            val requestOrder =
+                buildList {
+                    if (uniqueSigValues.isNotEmpty()) add("sig" to uniqueSigValues)
+                    if (uniqueValues.isNotEmpty()) add("n" to uniqueValues)
+                }
             cacheMutex.withLock {
-                if (failedArtifacts[artifactKey]?.elapsedNow()?.let { it < FAILED_ARTIFACT_COOLDOWN } == true) {
+                failedArtifacts.entries.removeAll { it.value.elapsedNow() >= FAILED_ARTIFACT_COOLDOWN }
+                if (requestOrder.any { (kind, _) -> artifactKey to kind in failedArtifacts }) {
                     return SolveResult(emptyMap(), emptyMap())
                 }
-                failedArtifacts.remove(artifactKey)
             }
 
             ejs.cachePreprocessedPlayer(playerUrl, preprocessedPlayer)
@@ -137,21 +142,18 @@ internal class GitHubPlayerConfigClient(
                 ejs.solve(
                     playerUrl = playerUrl,
                     fullPlayerJs = "",
-                    requestOrder =
-                        buildList {
-                            if (uniqueSigValues.isNotEmpty()) add("sig" to uniqueSigValues)
-                            if (uniqueValues.isNotEmpty()) add("n" to uniqueValues)
-                        },
+                    requestOrder = requestOrder,
                 )
             SolveResult(
                 sigByChallenge = result.sigByChallenge.filterValues { it.isNotBlank() },
                 nByChallenge = result.nByChallenge.filterValues { it.isNotBlank() },
             ).also { solved ->
-                if (uniqueSigValues.any { it !in solved.sigByChallenge } || uniqueValues.any { it !in solved.nByChallenge }) {
-                    cacheMutex.withLock {
-                        failedArtifacts[artifactKey] = TimeSource.Monotonic.markNow()
-                        while (failedArtifacts.size > MAX_CONFIG_CACHE_ENTRIES) failedArtifacts.remove(failedArtifacts.keys.first())
+                cacheMutex.withLock {
+                    for ((kind, challenges) in requestOrder) {
+                        val answers = if (kind == "sig") solved.sigByChallenge else solved.nByChallenge
+                        if (challenges.any { it !in answers }) failedArtifacts[artifactKey to kind] = TimeSource.Monotonic.markNow()
                     }
+                    while (failedArtifacts.size > MAX_CONFIG_CACHE_ENTRIES * 2) failedArtifacts.remove(failedArtifacts.keys.first())
                 }
                 logger.d(
                     TAG,

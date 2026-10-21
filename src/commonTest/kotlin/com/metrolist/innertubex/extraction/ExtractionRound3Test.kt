@@ -133,19 +133,19 @@ class ExtractionRound3Test {
                 fixture.restore(extractor)
                 failure(extractor)
                 failure(extractor)
-                assertEquals(1, fixture.players)
-                failure(extractor, "other")
                 assertEquals(2, fixture.players)
+                failure(extractor, "other")
+                assertEquals(4, fixture.players)
                 failure(extractor, hints = ContentHints(wantVideo = true))
-                assertEquals(3, fixture.players)
-                repeat(2) { failure(extractor, hints = ContentHints(playbackClientOverrideId = "WEB_REMIX")) }
                 assertEquals(5, fixture.players)
+                repeat(2) { failure(extractor, hints = ContentHints(playbackClientOverrideId = "WEB_REMIX")) }
+                assertEquals(7, fixture.players)
                 fixture.tube.cookie = "SAPISID=synthetic-new-session"
                 failure(extractor)
-                assertEquals(6, fixture.players)
+                assertEquals(9, fixture.players)
                 fixture.tube.cookie = null
                 failure(extractor)
-                assertEquals(7, fixture.players)
+                assertEquals(11, fixture.players)
             } finally {
                 fixture.close()
             }

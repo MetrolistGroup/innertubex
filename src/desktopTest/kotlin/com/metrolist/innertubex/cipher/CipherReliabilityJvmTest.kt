@@ -81,7 +81,7 @@ class CipherReliabilityJvmTest {
                 assertEquals(1, installs)
                 client.solve(PLAYER_URL, emptyList(), listOf("cooling"))
                 assertEquals(1, installs)
-                val failures = privateField<MutableMap<String, TimeSource.Monotonic.ValueTimeMark>>(client, "failedArtifacts")
+                val failures = privateField<MutableMap<Pair<String, String>, TimeSource.Monotonic.ValueTimeMark>>(client, "failedArtifacts")
                 failures[failures.keys.single()] = TimeSource.Monotonic.markNow() - 61.seconds
                 client.solve(PLAYER_URL, emptyList(), listOf("expired"))
                 assertEquals(2, installs)
