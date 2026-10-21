@@ -245,7 +245,7 @@ internal class PlayerClientDirector(
         while (pendingClients.isNotEmpty()) {
             val sabrIndex =
                 if (effectiveRequestBudget.withKnownAge(hints).prefersGatedSabr(authenticated)) {
-                    pendingClients.indexOfFirst { it.manifest?.id == "WEB_REMIX_SABR" }
+                    pendingClients.indices.minBy { pendingClients[it].gatedSabrPriority() }
                 } else {
                     -1
                 }
@@ -1562,6 +1562,15 @@ internal class PlayerRequestBudget(
 }
 
 internal class PlayerRequestBudgetExhaustedException : Exception()
+
+internal fun SelectedClient.gatedSabrPriority(): Int =
+    when (manifest?.id) {
+        "WEB_REMIX_SABR" -> 0
+        "WEB_SABR" -> 1
+        "WEB_SAFARI_SABR" -> 2
+        "MWEB_SABR" -> 3
+        else -> 4
+    }
 
 internal fun ContentHints.prefersGatedSabr(authenticated: Boolean): Boolean =
     authenticated && !premium && !wantVideo && allowSabr && isAgeRestricted == true && playbackClientOverrideId == null

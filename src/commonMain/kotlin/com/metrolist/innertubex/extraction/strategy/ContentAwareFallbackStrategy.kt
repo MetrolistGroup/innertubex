@@ -1,6 +1,7 @@
 package com.metrolist.innertubex.extraction.strategy
 
 import com.metrolist.innertubex.extraction.ContentHints
+import com.metrolist.innertubex.extraction.gatedSabrPriority
 import com.metrolist.innertubex.extraction.prefersGatedSabr
 import com.metrolist.innertubex.extraction.requiresBoundedMediaRange
 import com.metrolist.innertubex.models.YouTubeClient
@@ -96,8 +97,8 @@ class ContentAwareFallbackStrategy(
         val orderedCandidates =
             candidates.sortedWith(
                 compareBy<SelectedClient> {
-                    // Direct web GVS playback fails after 1 MiB; authenticated gated audio works over tokenless SABR.
-                    if (request.hints.prefersGatedSabr(request.authenticated) && it.manifest?.id == "WEB_REMIX_SABR") 0 else 1
+                    // Direct web GVS playback fails after 1 MiB; try tokenless SABR, then page-bound web SABR.
+                    if (request.hints.prefersGatedSabr(request.authenticated)) it.gatedSabrPriority() else 0
                 }.thenBy {
                     when (request.transportPreference) {
                         PlaybackTransportPreference.AUTO -> {
