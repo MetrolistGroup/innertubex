@@ -29,6 +29,9 @@ import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 
 /** Fixed-format, audio-only SABR transport. */
@@ -297,6 +300,7 @@ private class SabrMediaStream(
                             var lastNewSegmentHeader: SabrMediaHeader? = null
                             var newSegmentsBytes = 0L
                             var newSegmentCount = 0
+                            var openingDeadline: TimeMark? = null
 
                             suspend fun emitMediaSegment(segment: SabrSegment) {
                                 if (firstSequenceNumber == null) {
@@ -349,8 +353,15 @@ private class SabrMediaStream(
                                 }
                             }
 
+                            fun hasPendingOpening(): Boolean {
+                                if (!initSegmentEmitted || firstSequenceNumber != null || requestPlayerTimeMs > 0L) return false
+                                val sequence = pendingMediaBySequence.keys.minOrNull() ?: return false
+                                val segment = pendingMediaBySequence.getValue(sequence)
+                                return segment.header.startMs <= START_TIME_TOLERANCE_MS && segment.checkedEndTimeMs() > 0L
+                            }
+
                             fun initialSeekSequence(): Int? {
-                                // Nonzero openings wait for response completion, when lower sequences can no longer arrive.
+                                // Nonzero openings wait for response completion or a bounded reordering window.
                                 if (firstSequenceNumber != null || requestPlayerTimeMs <= 0L) return null
                                 return pendingMediaBySequence.values
                                     .firstOrNull { pending ->
@@ -520,6 +531,18 @@ private class SabrMediaStream(
                                 while (!terminalProtection) {
                                     // Only time spent waiting on the network counts; emitting can block on player readahead.
                                     val readStart = TimeSource.Monotonic.markNow()
+                                    // Time out readiness, not a consuming read, so a timeout race cannot lose bytes.
+                                    if (hasPendingOpening()) {
+                                        if (openingDeadline == null) {
+                                            openingDeadline = readStart + OPENING_REORDER_WAIT_MS.milliseconds
+                                        }
+                                        val timeLeft = -checkNotNull(openingDeadline).elapsedNow()
+                                        if (withTimeoutOrNull(timeLeft) { channel.awaitContent() } == null) {
+                                            networkReadMs += readStart.elapsedNow().inWholeMilliseconds
+                                            emitReadyMediaSegments(establishFromMinimum = true)
+                                            continue
+                                        }
+                                    }
                                     val count = channel.readAvailable(readBuffer, 0, readBuffer.size)
                                     networkReadMs += readStart.elapsedNow().inWholeMilliseconds
                                     if (count == -1) break
@@ -895,6 +918,9 @@ private class SabrMediaStream(
 
         // Tick-to-millisecond rounding can shift the opening boundary by one millisecond.
         const val START_TIME_TOLERANCE_MS = 1L
+
+        // shortcut: bound startup reordering to 250 ms; use a protocol ordering watermark if SABR exposes one.
+        const val OPENING_REORDER_WAIT_MS = 250L
         const val MIN_DURATION_TOLERANCE_MS = 2_000L
         const val STARVATION_TOLERANCE_MS = 2_000L
         const val PLAYBACK_POLL_INTERVAL_MS = 250L

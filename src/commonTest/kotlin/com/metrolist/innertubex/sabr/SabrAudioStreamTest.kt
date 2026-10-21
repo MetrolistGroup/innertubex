@@ -10,6 +10,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.OutgoingContent
 import io.ktor.http.headersOf
 import io.ktor.utils.io.ByteChannel
+import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.writeFully
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
@@ -113,17 +114,90 @@ class SabrAudioStreamTest {
         }
 
     @Test
-    fun nonzeroOpeningWaitsForResponseCompletionWhileInitializationStreams() =
+    fun nonzeroOpeningWaitsForTheNextReadWhileInitializationStreams() =
         runBlocking {
-            val releaseResponseTail = CompletableDeferred<Unit>()
             val firstChunk = CompletableDeferred<SabrChunk>()
+            val chunks = mutableListOf<SabrChunk>()
+            val engine =
+                MockEngine {
+                    val channel = ByteChannel(autoFlush = true)
+                    channel.writeFully(initializationResponsePrefix(5) + mediaResponseSegment(3, 5, 0L, byteArrayOf(8, 9)))
+                    val body =
+                        object : ByteReadChannel by channel {
+                            override suspend fun awaitContent(min: Int): Boolean {
+                                assertContentEquals(byteArrayOf(1, 2, 3, 4), firstChunk.await().data)
+                                assertEquals(listOf(null), chunks.map(SabrChunk::sequenceNumber), "only init precedes the next read")
+                                channel.writeFully(mediaResponseSegment(2, 4, 0L, byteArrayOf(5, 6, 7)))
+                                channel.close()
+                                return channel.awaitContent(min)
+                            }
+                        }
+                    respond(body, headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"))
+                }
+            val client = HttpClient(engine)
+            try {
+                withTimeout(2_000) {
+                    SabrAudioStream(client, bootstrap().copy(contentLengthBytes = 9)).chunks().collect { chunk ->
+                        chunks += chunk
+                        if (chunk.isInitialization) firstChunk.complete(chunk)
+                    }
+                }
+                assertEquals(listOf(null, 4, 5), chunks.map(SabrChunk::sequenceNumber))
+                assertContentEquals(byteArrayOf(5, 6, 7), chunks[1].data)
+                assertContentEquals(byteArrayOf(8, 9), chunks[2].data)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun nonzeroOpeningStreamsWhenResponseStallsAndCancellationClosesTheBody() =
+        runBlocking {
+            for (startMs in listOf(0L, 1L)) {
+                val releaseResponseTail = CompletableDeferred<Unit>()
+                val channel = ByteChannel(autoFlush = true)
+                val engine =
+                    MockEngine {
+                        launch {
+                            channel.writeFully(
+                                initializationResponsePrefix(5) + mediaResponseSegment(2, 5, startMs, byteArrayOf(5, 6, 7)),
+                            )
+                            releaseResponseTail.await()
+                            channel.close()
+                        }
+                        respond(channel, headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"))
+                    }
+                val client = HttpClient(engine)
+                try {
+                    val chunks = withTimeout(5_000) { SabrAudioStream(client, bootstrap()).chunks().take(2).toList() }
+                    assertEquals(listOf(null, 5), chunks.map(SabrChunk::sequenceNumber))
+                    assertContentEquals(byteArrayOf(5, 6, 7), chunks.last().data)
+                    assertFalse(releaseResponseTail.isCompleted, "the response is still open when media arrives")
+                    assertTrue(channel.isClosedForRead, "take must cancel the stalled response body")
+                } finally {
+                    releaseResponseTail.complete(Unit)
+                    client.close()
+                }
+            }
+        }
+
+    @Test
+    fun nonzeroOpeningWaitIsBoundedWhileControlPartsArriveAndPreservesTheTail() =
+        runBlocking {
+            val firstMedia = CompletableDeferred<Unit>()
             val engine =
                 MockEngine {
                     val channel = ByteChannel(autoFlush = true)
                     launch {
-                        channel.writeFully(initializationResponsePrefix(5) + mediaResponseSegment(3, 5, 0L, byteArrayOf(8, 9)))
-                        releaseResponseTail.await()
-                        channel.writeFully(mediaResponseSegment(2, 4, 0L, byteArrayOf(5, 6, 7)))
+                        channel.writeFully(
+                            initializationResponsePrefix(6, durationMs = 2_000) +
+                                mediaResponseSegment(2, 5, 0L, byteArrayOf(5, 6, 7)),
+                        )
+                        while (!firstMedia.isCompleted) {
+                            channel.writeFully(umpPart(UmpPartType.NEXT_REQUEST_POLICY, nextRequestPolicy(0)))
+                            delay(25)
+                        }
+                        channel.writeFully(mediaResponseSegment(3, 6, 1_000L, byteArrayOf(8, 9, 10)))
                         channel.close()
                     }
                     respond(channel, headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"))
@@ -131,26 +205,16 @@ class SabrAudioStreamTest {
             val client = HttpClient(engine)
             try {
                 val chunks = mutableListOf<SabrChunk>()
-                val collection =
-                    async {
-                        SabrAudioStream(client, bootstrap().copy(contentLengthBytes = 9)).chunks().collect { chunk ->
-                            if (chunk.isInitialization) {
-                                firstChunk.complete(chunk)
-                            } else {
-                                assertTrue(releaseResponseTail.isCompleted, "a nonzero opening must wait for the ordering boundary")
-                            }
-                            chunks += chunk
-                        }
+                withTimeout(5_000) {
+                    SabrAudioStream(client, bootstrap().copy(durationMs = 2_000, contentLengthBytes = 10)).chunks().collect { chunk ->
+                        chunks += chunk
+                        if (chunk.sequenceNumber == 5) firstMedia.complete(Unit)
                     }
-                assertContentEquals(byteArrayOf(1, 2, 3, 4), withTimeout(2_000) { firstChunk.await() }.data)
-                assertFalse(collection.isCompleted)
-                releaseResponseTail.complete(Unit)
-                withTimeout(2_000) { collection.await() }
-                assertEquals(listOf(null, 4, 5), chunks.map(SabrChunk::sequenceNumber))
-                assertContentEquals(byteArrayOf(5, 6, 7), chunks[1].data)
-                assertContentEquals(byteArrayOf(8, 9), chunks[2].data)
+                }
+                assertEquals(listOf(null, 5, 6), chunks.map(SabrChunk::sequenceNumber))
+                assertContentEquals(byteArrayOf(8, 9, 10), chunks.last().data)
             } finally {
-                releaseResponseTail.complete(Unit)
+                firstMedia.complete(Unit)
                 client.close()
             }
         }
