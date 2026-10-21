@@ -76,6 +76,16 @@ kotlin {
     }
 }
 
+// Kotlin finalizes publication artifacts after evaluating the build scripts.
+gradle.projectsEvaluated {
+    publishing.publications.withType<MavenPublication>().configureEach {
+        // JitPack strips the metadata classifier from native URLs; retain a matching copy.
+        artifacts.filter { it.classifier == "metadata" }.forEach { metadata ->
+            artifact(metadata.file) { builtBy(metadata.buildDependencies) }
+        }
+    }
+}
+
 apiValidation { ignoredProjects.add("harness") }
 
 tasks.named("allTests") { dependsOn(":harness:test") }
