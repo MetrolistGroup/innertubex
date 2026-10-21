@@ -1,9 +1,13 @@
 package com.metrolist.innertubex.models.response
 
+import com.metrolist.innertubex.models.TranscriptActionListSerializer
+import com.metrolist.innertubex.models.TranscriptCueGroupListSerializer
+import com.metrolist.innertubex.models.TranscriptCueListSerializer
 import kotlinx.serialization.Serializable
 
 @Serializable
 data class GetTranscriptResponse(
+    @Serializable(with = TranscriptActionListSerializer::class)
     val actions: List<Action>? = null,
 ) {
     @Serializable
@@ -33,6 +37,7 @@ data class GetTranscriptResponse(
 
     @Serializable
     data class TranscriptBodyRenderer(
+        @Serializable(with = TranscriptCueGroupListSerializer::class)
         val cueGroups: List<CueGroup> = emptyList(),
     )
 
@@ -43,6 +48,7 @@ data class GetTranscriptResponse(
 
     @Serializable
     data class TranscriptCueGroupRenderer(
+        @Serializable(with = TranscriptCueListSerializer::class)
         val cues: List<Cue> = emptyList(),
     )
 

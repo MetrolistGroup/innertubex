@@ -296,6 +296,52 @@ class InnerTubeExtractorTest {
         }
 
     @Test
+    fun restoredPlayerBootstrapSkipsTheWatchPageAndFreshConfigsArePersisted() =
+        runBlocking {
+            val playerUrl = "https://www.youtube.com/s/player/abcdef12/player_ias.vflset/en_US/base.js"
+            for (restored in listOf(true, false)) {
+                val client = jsonClient(DIRECT_RESPONSE)
+                val innerTube = InnerTube(client, retryDelay = {}).also { it.visitorData = "visitor" }
+                var watchPageFetches = 0
+                val parser =
+                    object : YtConfigParser {
+                        override suspend fun fetchConfig(
+                            videoId: String,
+                            useLoginCookies: Boolean,
+                        ): PlayerConfig {
+                            watchPageFetches++
+                            return PlayerConfig(playerUrl, 123, "page-visitor", "1.20260101")
+                        }
+                    }
+                val stored =
+                    PlayerBootstrapSnapshot(
+                        playerUrl = playerUrl,
+                        signatureTimestamp = 456,
+                        hl = innerTube.locale.hl,
+                        gl = innerTube.locale.gl,
+                        savedAtMs = Clock.System.now().toEpochMilliseconds(),
+                    ).encode().takeIf { restored }
+                val written = CompletableDeferred<String>()
+                val extractor = makeExtractor(client, innerTube, parser, cipherService = AudioOnlyCipherService)
+                try {
+                    extractor.setPlayerBootstrapCache({ stored }) { written.complete(it) }
+                    assertNotNull(extractor.extract("video", ContentHints(isAgeRestricted = true)))
+                    if (restored) {
+                        assertEquals(0, watchPageFetches)
+                    } else {
+                        assertEquals(1, watchPageFetches)
+                        val persisted = withTimeout(2_000) { written.await() }
+                        assertTrue(playerUrl in persisted)
+                        // Only public bootstrap fields are stored, never the page's visitor data.
+                        assertFalse("page-visitor" in persisted)
+                    }
+                } finally {
+                    client.close()
+                }
+            }
+        }
+
+    @Test
     fun authenticatedConfigFetchDoesNotBlockAnonymousCacheHit() =
         runBlocking {
             val client = jsonClient(DIRECT_RESPONSE)
@@ -1624,7 +1670,7 @@ class InnerTubeExtractorTest {
         }
 
     @Test
-    fun explicitTokenMintingRunsConcurrentlyWithConfigFetch() =
+    fun explicitTokenMintingWaitsForCandidateSelection() =
         runBlocking {
             val started = CompletableDeferred<Unit>()
             val client = jsonClient(DIRECT_RESPONSE)
@@ -1650,7 +1696,7 @@ class InnerTubeExtractorTest {
                         videoId: String,
                         useLoginCookies: Boolean,
                     ): PlayerConfig {
-                        started.await()
+                        assertFalse(started.isCompleted)
                         return PlayerConfig("https://www.youtube.com/s/player/test/base.js", 123, "visitor", null)
                     }
                 }
@@ -1671,7 +1717,7 @@ class InnerTubeExtractorTest {
         }
 
     @Test
-    fun directPlaybackCancelsUnusedTokenPrefetch() =
+    fun directPlaybackDoesNotStartUnusedTokenPrefetch() =
         runBlocking {
             val client = jsonClient(DIRECT_RESPONSE)
             val innerTube = InnerTube(client, retryDelay = {}).also { it.visitorData = "visitor" }
@@ -1699,10 +1745,8 @@ class InnerTubeExtractorTest {
                     tokenProvider,
                 )
             try {
-                // coroutineScope only returns once the never-ending prefetch is cancelled; the prefetch may be
-                // cancelled before it is dispatched when the direct path completes without suspending.
                 assertNotNull(withTimeout(1_000) { extractor.extract("video", ContentHints(isExplicit = true)) })
-                assertTrue(tokenCalls <= 1)
+                assertEquals(0, tokenCalls)
             } finally {
                 client.close()
             }

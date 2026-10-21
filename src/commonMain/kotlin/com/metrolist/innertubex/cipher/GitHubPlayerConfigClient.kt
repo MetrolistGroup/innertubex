@@ -2,6 +2,7 @@ package com.metrolist.innertubex.cipher
 
 import com.metrolist.innertubex.InnerTubeLogger
 import com.metrolist.innertubex.d
+import com.metrolist.innertubex.utils.sha1
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.timeout
 import io.ktor.client.request.header
@@ -15,6 +16,8 @@ import kotlinx.serialization.json.Json
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.time.Clock
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 /**
  * Legacy GitHub-hosted preprocessed-player config fallback.
@@ -35,6 +38,7 @@ internal class GitHubPlayerConfigClient(
         private const val REQUEST_TIMEOUT_MS = 2_000L
         private const val CONFIG_TTL_MS = 24 * 60 * 60 * 1000L
         private const val MISSING_CONFIG_TTL_MS = 15 * 60 * 1000L
+        private val FAILED_ARTIFACT_COOLDOWN = 60.seconds
         private const val MAX_CONFIG_CACHE_ENTRIES = 8
         private const val MAX_CONFIG_RESPONSE_BYTES = 4 * 1024 * 1024
         private const val PREPROCESSED_TYPE = "yt-dlp-ejs-preprocessed-player"
@@ -57,6 +61,14 @@ internal class GitHubPlayerConfigClient(
 
     /** URLs that recently had no usable config; retried after [MISSING_CONFIG_TTL_MS]. */
     private val missingConfigs = LinkedHashMap<String, Long>()
+    private val failedArtifacts = LinkedHashMap<Pair<String, String>, TimeSource.Monotonic.ValueTimeMark>()
+
+    suspend fun clearCache() =
+        cacheMutex.withLock {
+            cachedConfigs.clear()
+            missingConfigs.clear()
+            failedArtifacts.clear()
+        }
 
     @Serializable
     private data class PlayerConfig(
@@ -112,22 +124,37 @@ internal class GitHubPlayerConfigClient(
         val uniqueValues = nValues.distinct()
         return try {
             val preprocessedPlayer = loadPreprocessedPlayer(configUrl, playerHash) ?: return SolveResult(emptyMap(), emptyMap())
+            val artifactKey = sha1("$playerUrl:$preprocessedPlayer")
+            val requestOrder =
+                buildList {
+                    if (uniqueSigValues.isNotEmpty()) add("sig" to uniqueSigValues)
+                    if (uniqueValues.isNotEmpty()) add("n" to uniqueValues)
+                }
+            cacheMutex.withLock {
+                failedArtifacts.entries.removeAll { it.value.elapsedNow() >= FAILED_ARTIFACT_COOLDOWN }
+                if (requestOrder.any { (kind, _) -> artifactKey to kind in failedArtifacts }) {
+                    return SolveResult(emptyMap(), emptyMap())
+                }
+            }
 
             ejs.cachePreprocessedPlayer(playerUrl, preprocessedPlayer)
             val result =
                 ejs.solve(
                     playerUrl = playerUrl,
                     fullPlayerJs = "",
-                    requestOrder =
-                        buildList {
-                            if (uniqueSigValues.isNotEmpty()) add("sig" to uniqueSigValues)
-                            if (uniqueValues.isNotEmpty()) add("n" to uniqueValues)
-                        },
+                    requestOrder = requestOrder,
                 )
             SolveResult(
                 sigByChallenge = result.sigByChallenge.filterValues { it.isNotBlank() },
                 nByChallenge = result.nByChallenge.filterValues { it.isNotBlank() },
             ).also { solved ->
+                cacheMutex.withLock {
+                    for ((kind, challenges) in requestOrder) {
+                        val answers = if (kind == "sig") solved.sigByChallenge else solved.nByChallenge
+                        if (challenges.any { it !in answers }) failedArtifacts[artifactKey to kind] = TimeSource.Monotonic.markNow()
+                    }
+                    while (failedArtifacts.size > MAX_CONFIG_CACHE_ENTRIES * 2) failedArtifacts.remove(failedArtifacts.keys.first())
+                }
                 logger.d(
                     TAG,
                     "GitHub preprocessed-player response sigRequested=${uniqueSigValues.size} sigSolved=${solved.sigByChallenge.size} nRequested=${uniqueValues.size} nSolved=${solved.nByChallenge.size} hash=$playerHash",

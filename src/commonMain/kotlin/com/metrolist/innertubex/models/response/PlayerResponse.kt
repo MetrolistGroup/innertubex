@@ -1,5 +1,6 @@
 package com.metrolist.innertubex.models.response
 
+import com.metrolist.innertubex.models.PlayerFormatListSerializer
 import com.metrolist.innertubex.models.Thumbnails
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
@@ -18,11 +19,16 @@ data class PlayerResponse(
     data class PlayabilityStatus(
         val status: String,
         val reason: String? = null,
-    )
+    ) {
+        // Keep this wire-only signal out of the public constructor and copy contract.
+        internal var desktopLegacyAgeGateReason: Int? = null
+    }
 
     @Serializable
     data class StreamingData(
+        @Serializable(with = PlayerFormatListSerializer::class)
         val formats: List<Format>? = null,
+        @Serializable(with = PlayerFormatListSerializer::class)
         val adaptiveFormats: List<Format> = emptyList(),
         val expiresInSeconds: Int? = null,
         val hlsManifestUrl: String? = null,

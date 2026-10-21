@@ -392,6 +392,7 @@ public final class com/metrolist/innertubex/extraction/InnerTubeExtractor : com/
 	public final fun extractWithAuthenticatedTvDiscovery (Ljava/lang/String;ZLcom/metrolist/innertubex/extraction/TvBearerCredentialProvider;Lcom/metrolist/innertubex/extraction/ContentHints;Ljava/util/Set;Lcom/metrolist/innertubex/extraction/AudioQuality;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static synthetic fun extractWithAuthenticatedTvDiscovery$default (Lcom/metrolist/innertubex/extraction/InnerTubeExtractor;Ljava/lang/String;ZLcom/metrolist/innertubex/extraction/TvBearerCredentialProvider;Lcom/metrolist/innertubex/extraction/ContentHints;Ljava/util/Set;Lcom/metrolist/innertubex/extraction/AudioQuality;Ljava/lang/String;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 	public fun prewarm (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun setPlayerBootstrapCache (Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
 public final class com/metrolist/innertubex/extraction/PlaybackNonceKt {

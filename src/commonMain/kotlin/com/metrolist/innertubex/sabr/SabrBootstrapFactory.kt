@@ -50,13 +50,7 @@ fun PlayerResponse.toSabrBootstrap(
                 ?.mediaUstreamerRequestConfig
                 ?.videoPlaybackUstreamerConfig,
         ) { "Player response has no videoPlaybackUstreamerConfig" }
-    val discardVideo =
-        streaming.adaptiveFormats
-            .asSequence()
-            .filterNot(PlayerResponse.StreamingData.Format::isAudio)
-            .filter { it.height != null }
-            .minWithOrNull(compareBy({ it.height }, { it.bitrate }))
-            ?: error("Player response has no SABR video format to discard")
+    val discardVideo = streaming.sabrDiscardVideoFormat() ?: error("Player response has no SABR video format to discard")
     val durationMs =
         audioFormat.approxDurationMs?.toLongOrNull()
             ?: videoDetails?.lengthSeconds?.toLongOrNull()?.times(1000)
@@ -126,6 +120,36 @@ fun PlayerResponse.toSabrBootstrap(
         videoVariants = videoVariants,
     )
 }
+
+/** Smallest rendition that can identify itself; a malformed 144p entry must not hide a usable 240p one. */
+private fun PlayerResponse.StreamingData.sabrDiscardVideoFormat(): PlayerResponse.StreamingData.Format? =
+    adaptiveFormats
+        .asSequence()
+        .filterNot(PlayerResponse.StreamingData.Format::isAudio)
+        .filter { (it.height ?: 0) > 0 && (it.lastModified?.toLongOrNull() ?: 0L) > 0L }
+        .minWithOrNull(compareBy({ it.height }, { it.bitrate }))
+
+/**
+ * Cheap version of the checks [toSabrBootstrap] enforces, so client discovery does not stop on a SABR response
+ * that bootstrap construction would reject anyway.
+ */
+internal fun PlayerResponse.hasSabrBootstrapPrerequisites(): Boolean {
+    val streaming = streamingData ?: return false
+    val audio = streaming.adaptiveFormats.filter { isSabrAudioCandidate(it) }
+    return !streaming.serverAbrStreamingUrl.isNullOrBlank() &&
+        !playerConfig
+            ?.mediaCommonConfig
+            ?.mediaUstreamerRequestConfig
+            ?.videoPlaybackUstreamerConfig
+            .isNullOrBlank() &&
+        videoDetails?.videoId != null &&
+        streaming.sabrDiscardVideoFormat() != null &&
+        audio.isNotEmpty()
+}
+
+internal fun PlayerResponse.isSabrAudioCandidate(format: PlayerResponse.StreamingData.Format): Boolean =
+    format.isAudio && format.itag > 0 && (format.lastModified?.toLongOrNull() ?: 0L) > 0L &&
+        (format.approxDurationMs?.toLongOrNull() ?: videoDetails?.lengthSeconds?.toLongOrNull()?.times(1000) ?: 0L) > 0L
 
 fun sabrRequestOrigin(clientName: String): String? =
     when (clientName) {

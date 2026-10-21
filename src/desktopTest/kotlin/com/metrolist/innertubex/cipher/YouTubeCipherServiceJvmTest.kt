@@ -126,13 +126,15 @@ class YouTubeCipherServiceJvmTest {
                 mutex.lock()
                 try {
                     owner.cancel()
-                    withTimeout(5_000) {
-                        assertFailsWith<CancellationException> { waiter.await() }
-                    }
+                    // Cancelling the owner must not cancel the waiter, even while the cache lock is contended.
+                    kotlinx.coroutines.delay(100)
+                    assertTrue(waiter.isActive)
                 } finally {
                     mutex.unlock()
                 }
                 withTimeout(5_000) {
+                    // The waiter retries the download itself instead of inheriting the owner's cancellation.
+                    assertEquals("retry code", waiter.await())
                     owner.join()
                     assertEquals("retry code", service.playerCode(PLAYER_URL))
                 }

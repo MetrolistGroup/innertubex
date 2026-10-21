@@ -4,6 +4,7 @@ import com.metrolist.innertubex.InnerTube
 import com.metrolist.innertubex.InnerTubeLogger
 import com.metrolist.innertubex.bodyAsTextLimited
 import com.metrolist.innertubex.d
+import com.metrolist.innertubex.extraction.strategy.CapabilitySupport
 import com.metrolist.innertubex.extraction.strategy.ClientFailureKind
 import com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy
 import com.metrolist.innertubex.extraction.strategy.ClientHealthMonitor
@@ -19,14 +20,20 @@ import com.metrolist.innertubex.i
 import com.metrolist.innertubex.models.PoTokenBinding
 import com.metrolist.innertubex.models.YouTubeClient
 import com.metrolist.innertubex.models.response.PlayerResponse
+import com.metrolist.innertubex.sabr.hasSabrBootstrapPrerequisites
 import com.metrolist.innertubex.w
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.MissingFieldException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -38,7 +45,10 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.time.Clock
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 internal class PlayerClientDirector(
     private val innerTube: InnerTube,
@@ -101,6 +111,37 @@ internal class PlayerClientDirector(
         prefetchedPoToken: PoTokenPrefetch? = null,
         tvBearerCredential: TvBearerCredential? = null,
     ): PlayerResponseBatch {
+        val budget = requestBudget ?: PlayerRequestBudget(if (hints.playbackClientOverrideId != null) 1 else maxPlayerRequests)
+        return budget.withTokenScope {
+            fetchPlayerResponsesInScope(
+                videoId,
+                playerConfig,
+                hints,
+                excludedClients,
+                acceptCipherOnlyResponse,
+                directAudioOnlyClients,
+                wantVideo,
+                premiumHighQuality,
+                budget,
+                prefetchedPoToken,
+                tvBearerCredential,
+            )
+        }
+    }
+
+    private suspend fun fetchPlayerResponsesInScope(
+        videoId: String,
+        playerConfig: PlayerConfig,
+        hints: ContentHints,
+        excludedClients: Set<String>,
+        acceptCipherOnlyResponse: Boolean,
+        directAudioOnlyClients: Boolean,
+        wantVideo: Boolean,
+        premiumHighQuality: Boolean,
+        requestBudget: PlayerRequestBudget,
+        prefetchedPoToken: PoTokenPrefetch?,
+        tvBearerCredential: TvBearerCredential?,
+    ): PlayerResponseBatch {
         val startTime = Clock.System.now().toEpochMilliseconds()
         val initialSession = innerTube.sessionSnapshot()
         // Embed-page encryptedHostFlags are only honoured with the visitor that fetched that page.
@@ -111,10 +152,12 @@ internal class PlayerClientDirector(
                 ?: playerConfig.visitorData?.takeIf { it.isNotBlank() }
         var requestSession = initialSession.copy(visitorData = requestVisitorData)
         val authenticated = !requestSession.sapisid.isNullOrBlank()
-        val healthScope = ClientHealthScope.from(hints, authenticated)
+        val effectiveRequestBudget = requestBudget
+        if (hints.isAgeRestricted == true) effectiveRequestBudget.ageRestricted = true
+        val routingHints = effectiveRequestBudget.withKnownAge(hints)
         val selectionRequest =
             ClientSelectionRequest(
-                hints = hints,
+                hints = routingHints,
                 authenticated = authenticated,
                 premium = hints.premium,
                 availablePoTokenProviders = tokenProvider.capabilities.providers,
@@ -179,8 +222,6 @@ internal class PlayerClientDirector(
         val playableResults = mutableListOf<ClientResult>()
         val failures = mutableListOf<PlayabilityFailure>()
         val requestFailures = mutableListOf<Throwable>()
-        val effectiveRequestBudget =
-            requestBudget ?: PlayerRequestBudget(if (hints.playbackClientOverrideId != null) 1 else maxPlayerRequests)
         if (tvBearerCredential != null) {
             return fetchTvBearerResponse(
                 videoId = videoId,
@@ -197,8 +238,18 @@ internal class PlayerClientDirector(
         }
         var requestsConsumedInBatch = 0
         var forceTokenizedTvHtml5 = false
+        var onlyAccountGateFailures = true
+        var onlyUnavailableFailures =
+            !directAudioOnlyClients && playerConfig.playerUrl.isNotBlank() &&
+                (!authenticated || clients.any { it.client.loginSupported })
+        var onlyBootstrapIndependentFailures = true
         for (declaredClient in clients) {
             if (requestsConsumedInBatch >= maxPlayerRequests || effectiveRequestBudget.remaining <= 0) break
+            if (hints.playbackClientOverrideId == null && effectiveRequestBudget.ageRestricted &&
+                declaredClient.manifest?.content?.ageRestricted == CapabilitySupport.UNSUPPORTED
+            ) {
+                continue
+            }
             // A tokenized attempt may have published fresh visitor data. Carry it forward; any other change still cancels.
             innerTube
                 .sessionSnapshot()
@@ -249,6 +300,15 @@ internal class PlayerClientDirector(
                 )
             requestsConsumedInBatch += remainingBeforeAttempt - effectiveRequestBudget.remaining
             val attempt = attemptResult.attempt
+            onlyAccountGateFailures = onlyAccountGateFailures && attemptResult.failure?.status.isAccountGateStatus() &&
+                attemptResult.requestFailure == null
+            onlyUnavailableFailures = onlyUnavailableFailures && attemptResult.failure?.status == "ERROR" &&
+                attemptResult.requestFailure == null &&
+                (!client.isEmbedded || !playerConfig.encryptedHostFlags.isNullOrBlank())
+            onlyBootstrapIndependentFailures = onlyBootstrapIndependentFailures &&
+                (attemptResult.failure?.status.isAccountGateStatus() || attemptResult.failure?.status == "ERROR") &&
+                attemptResult.requestFailure == null
+            val healthScope = ClientHealthScope.from(effectiveRequestBudget.withKnownAge(hints), authenticated)
             selectedClient.manifest
                 ?.id
                 ?.takeUnless {
@@ -264,7 +324,8 @@ internal class PlayerClientDirector(
 
                         // Success is left to the host: a playable response can still fail at the CDN,
                         // and recording it here would clear that failure's cooldown.
-                        attempt == null && !attemptResult.tokenUnavailable && !attemptResult.budgetExhausted -> {
+                        attempt == null && !attemptResult.tokenUnavailable && !attemptResult.budgetExhausted &&
+                            !attemptResult.failure?.status.isAccountGateStatus() -> {
                             if (effectiveRequestBudget.firstHealthReport(manifestId, "playability")) {
                                 clientHealthMonitor.recordFailure(manifestId, ClientFailureKind.PLAYABILITY, healthScope)
                             }
@@ -451,7 +512,15 @@ internal class PlayerClientDirector(
         }
 
         logger.d(TAG, "player response batch completed", details = mapOf("resultCount" to "0", "elapsedMs" to elapsed.toString()))
-        return PlayerResponseBatch(emptyList(), failures, requestFailures, attempts)
+        return PlayerResponseBatch(
+            emptyList(),
+            failures,
+            requestFailures,
+            attempts,
+            onlyAccountGateFailures = onlyAccountGateFailures && failures.isNotEmpty(),
+            onlyUnavailableFailures = onlyUnavailableFailures && failures.isNotEmpty(),
+            onlyBootstrapIndependentFailures = onlyBootstrapIndependentFailures && failures.isNotEmpty(),
+        )
     }
 
     private suspend fun fetchTvBearerResponse(
@@ -571,11 +640,7 @@ internal class PlayerClientDirector(
         } else {
             ClientAttemptResult(
                 attempt = null,
-                failure =
-                    PlayabilityFailure(
-                        status = response.playabilityStatus.status,
-                        reason = response.playabilityStatus.reason,
-                    ),
+                failure = response.playabilityStatus.toFailure(),
             )
         }
     }
@@ -619,68 +684,39 @@ internal class PlayerClientDirector(
                 )
             }
 
-            // Fast path: try once without PO token first.
-            val initialResponse =
-                requestPlayer(
-                    client,
-                    videoId,
-                    playerConfig.signatureTimestamp,
-                    poToken = null,
-                    requestSession = requestSession,
-                    encryptedHostFlags = playerConfig.encryptedHostFlags,
-                    requestBudget = requestBudget,
-                )
-                    ?: return ClientAttemptResult(null, null)
-            val initialPlayable = isPlayable(initialResponse, client)
-            val initialStatus = initialResponse.playabilityStatus.status
-            val initialFailure =
-                PlayabilityFailure(
-                    status = initialStatus,
-                    reason = initialResponse.playabilityStatus.reason,
-                )
-            if (initialPlayable) {
-                if (!tokenPlan.tokenRequired || allowUntokenizedWebPoClient) {
-                    if (tokenPlan.canMint && allowUntokenizedWebPoClient) {
-                        logger.d(TAG, "untokenized response accepted", details = mapOf("client" to client.clientName))
-                    }
-                    return ClientAttemptResult(ClientAttempt(initialResponse, usedPoToken = false), null)
+            // A GVS-only token never enters the player request, so mint it while that request is in flight.
+            val overlappedMint =
+                knownTokenKey?.takeIf {
+                    tokenPlan.gvsRequired && !tokenPlan.playerRequired && !allowUntokenizedWebPoClient &&
+                        prefetchedPoToken?.key != it && requestBudget.mintedToken(it) == null
                 }
-                logger.d(TAG, "token required for playback stability", details = mapOf("client" to client.clientName))
-            }
-
-            if (!tokenPlan.canMint) {
-                return ClientAttemptResult(
-                    attempt = null,
-                    failure = initialFailure.takeUnless { initialPlayable },
-                    tokenUnavailable = initialPlayable,
-                    observedResponse = initialResponse,
+            if (overlappedMint != null) {
+                val prefetch =
+                    requestBudget.prefetchToken(overlappedMint) {
+                        tokenProvider.getPoToken(videoId, overlappedMint.visitorData, overlappedMint.cookie)
+                    }
+                return tryUntokenizedFirst(
+                    selectedClient,
+                    tokenPlan,
+                    videoId,
+                    playerConfig,
+                    hints,
+                    allowUntokenizedWebPoClient,
+                    requestSession,
+                    requestBudget,
+                    prefetch,
                 )
             }
-            // Zemer-style recovery: restricted and uploaded media can return a non-OK
-            // response until the same client is retried with a fresh PO token. Keep the
-            // historical fast path for ordinary media, but do not stop this client early
-            // for the content classes that commonly require authenticated attestation.
-            val retryRestrictedWithPoToken =
-                !initialPlayable &&
-                    (hints.isUploaded == true || hints.isAgeRestricted == true)
-            if (!initialPlayable && !retryRestrictedWithPoToken) {
-                logger.d(TAG, "token fetch skipped", details = mapOf("client" to client.clientName, "playable" to "false"))
-                return ClientAttemptResult(null, initialFailure, observedResponse = initialResponse)
-            }
-            if (retryRestrictedWithPoToken) {
-                logger.d(TAG, "token fetch retried", details = mapOf("client" to client.clientName, "restrictedContent" to "true"))
-            }
-
-            tryTokenizedPlayer(
-                selectedClient = selectedClient,
-                tokenPlan = tokenPlan,
-                videoId = videoId,
-                playerConfig = playerConfig,
-                requestSession = requestSession,
-                fallbackFailure = initialFailure.takeUnless { initialPlayable },
-                existingPlayableResponse = initialResponse.takeIf { initialPlayable },
-                requestBudget = requestBudget,
-                prefetchedPoToken = prefetchedPoToken,
+            tryUntokenizedFirst(
+                selectedClient,
+                tokenPlan,
+                videoId,
+                playerConfig,
+                hints,
+                allowUntokenizedWebPoClient,
+                requestSession,
+                requestBudget,
+                prefetchedPoToken,
             )
         } catch (e: CancellationException) {
             throw e
@@ -700,6 +736,81 @@ internal class PlayerClientDirector(
             ClientAttemptResult(attempt = null, failure = null, requestFailure = e)
         }
 
+    private suspend fun tryUntokenizedFirst(
+        selectedClient: SelectedClient,
+        tokenPlan: TokenPlan,
+        videoId: String,
+        playerConfig: PlayerConfig,
+        hints: ContentHints,
+        allowUntokenizedWebPoClient: Boolean,
+        requestSession: InnerTube.SessionSnapshot,
+        requestBudget: PlayerRequestBudget,
+        prefetchedPoToken: PoTokenPrefetch?,
+    ): ClientAttemptResult {
+        val client = selectedClient.client
+        // Fast path: try once without PO token first.
+        val initialResponse =
+            requestPlayer(
+                client,
+                videoId,
+                playerConfig.signatureTimestamp,
+                poToken = null,
+                requestSession = requestSession,
+                encryptedHostFlags = playerConfig.encryptedHostFlags,
+                requestBudget = requestBudget,
+            )
+                ?: return ClientAttemptResult(null, null)
+        val initialPlayable = isPlayable(initialResponse, client)
+        val initialFailure = initialResponse.playabilityStatus.toFailure()
+        if (initialPlayable) {
+            if (!tokenPlan.tokenRequired || allowUntokenizedWebPoClient) {
+                if (tokenPlan.canMint && allowUntokenizedWebPoClient) {
+                    logger.d(TAG, "untokenized response accepted", details = mapOf("client" to client.clientName))
+                }
+                return ClientAttemptResult(ClientAttempt(initialResponse, usedPoToken = false), null)
+            }
+            logger.d(TAG, "token required for playback stability", details = mapOf("client" to client.clientName))
+        }
+
+        if (!tokenPlan.canMint) {
+            return ClientAttemptResult(
+                attempt = null,
+                failure = initialFailure.takeUnless { initialPlayable },
+                tokenUnavailable = initialPlayable,
+                observedResponse = initialResponse,
+            )
+        }
+        // Zemer-style recovery: restricted and uploaded media can return a non-OK
+        // response until the same client is retried with a fresh PO token. Keep the
+        // historical fast path for ordinary media, but do not stop this client early
+        // for the content classes that commonly require authenticated attestation.
+        // A GVS-only token with an unchanged visitor would resend the identical request and replay its cached failure.
+        val tokenCanChangeRequest = tokenPlan.playerBinding != null || requestSession.visitorData.isNullOrBlank()
+        val retryRestrictedWithPoToken =
+            !initialPlayable &&
+                tokenCanChangeRequest &&
+                (hints.isUploaded == true || hints.isAgeRestricted == true)
+        if (!initialPlayable && !retryRestrictedWithPoToken) {
+            logger.d(TAG, "token fetch skipped", details = mapOf("client" to client.clientName, "playable" to "false"))
+            return ClientAttemptResult(null, initialFailure, observedResponse = initialResponse)
+        }
+        if (retryRestrictedWithPoToken) {
+            logger.d(TAG, "token fetch retried", details = mapOf("client" to client.clientName, "restrictedContent" to "true"))
+        }
+
+        return tryTokenizedPlayer(
+            selectedClient = selectedClient,
+            tokenPlan = tokenPlan,
+            videoId = videoId,
+            playerConfig = playerConfig,
+            requestSession = requestSession,
+            fallbackFailure = initialFailure.takeUnless { initialPlayable },
+            existingPlayableResponse = initialResponse.takeIf { initialPlayable },
+            requestBudget = requestBudget,
+            prefetchedPoToken = prefetchedPoToken,
+        )
+    }
+
     private suspend fun tryTokenizedPlayer(
         selectedClient: SelectedClient,
         tokenPlan: TokenPlan,
@@ -715,12 +826,14 @@ internal class PlayerClientDirector(
         val tokenStart = Clock.System.now().toEpochMilliseconds()
         val tokenRequestSession =
             if (requestSession.visitorData.isNullOrBlank()) {
+                if (requestBudget.visitorUnavailable) return ClientAttemptResult(null, fallbackFailure, tokenUnavailable = true)
                 logger.d(TAG, "visitor data requested", details = mapOf("client" to client.clientName))
                 val visitorData =
-                    withTimeoutOrNull(visitorDataFetchTimeoutMs.milliseconds) {
+                    withTimeoutOrNull(requestBudget.timeLeft(visitorDataFetchTimeoutMs.milliseconds)) {
                         innerTube.fetchFreshVisitorData(requestSession)
                     }
                 if (visitorData.isNullOrBlank()) {
+                    requestBudget.visitorUnavailable = true
                     logger.d(TAG, "visitor data unavailable", details = mapOf("client" to client.clientName))
                     return ClientAttemptResult(null, fallbackFailure, tokenUnavailable = true)
                 }
@@ -740,19 +853,23 @@ internal class PlayerClientDirector(
             return ClientAttemptResult(null, fallbackFailure, tokenUnavailable = true)
         }
         val token =
-            try {
-                withTimeoutOrNull(PO_TOKEN_FETCH_TIMEOUT_MS.milliseconds) {
+            requestBudget.mintedToken(tokenKey) ?: try {
+                withTimeoutOrNull(requestBudget.timeLeft(PO_TOKEN_FETCH_TIMEOUT_MS.milliseconds)) {
                     if (prefetchedPoToken?.key == tokenKey) {
                         prefetchedPoToken.result.await()
                     } else {
-                        tokenProvider.getPoToken(videoId, visitorData, tokenKey.cookie)
+                        requestBudget
+                            .prefetchToken(tokenKey) {
+                                tokenProvider.getPoToken(videoId, visitorData, tokenKey.cookie)
+                            }.result
+                            .await()
                     }
                 }
             } catch (error: CancellationException) {
                 throw error
             } catch (_: Exception) {
                 null
-            }
+            }?.also { requestBudget.rememberToken(tokenKey, it) }
         val tokenElapsed = Clock.System.now().toEpochMilliseconds() - tokenStart
         logger.d(
             TAG,
@@ -806,7 +923,6 @@ internal class PlayerClientDirector(
                 requestBudget = requestBudget,
             )
                 ?: return ClientAttemptResult(null, fallbackFailure)
-        val tokenizedStatus = tokenizedResponse.playabilityStatus.status
         return if (isPlayable(tokenizedResponse, client)) {
             ClientAttemptResult(
                 ClientAttempt(
@@ -820,11 +936,7 @@ internal class PlayerClientDirector(
             logger.d(TAG, "tokenized response unavailable", details = mapOf("client" to client.clientName))
             ClientAttemptResult(
                 attempt = null,
-                failure =
-                    PlayabilityFailure(
-                        status = tokenizedStatus,
-                        reason = tokenizedResponse.playabilityStatus.reason,
-                    ),
+                failure = tokenizedResponse.playabilityStatus.toFailure(),
             )
         }
     }
@@ -843,7 +955,7 @@ internal class PlayerClientDirector(
         val key =
             if (bearerToken == null) {
                 PlayerRequestKey(
-                    client = client,
+                    client = client.wireIdentity(),
                     videoId = videoId,
                     signatureTimestamp = signatureTimestamp.takeIf { client.useSignatureTimestamp },
                     poToken = poToken,
@@ -858,9 +970,10 @@ internal class PlayerClientDirector(
             return requestBudget.response(key)
         }
         requestBudget.consume()
+        val timeout = requestBudget.timeLeft(playerRequestTimeoutMs.milliseconds)
         val response =
             try {
-                withTimeout(playerRequestTimeoutMs.milliseconds) {
+                withTimeout(timeout) {
                     requestPlayerWithoutTimeout(
                         client = client,
                         videoId = videoId,
@@ -872,8 +985,13 @@ internal class PlayerClientDirector(
                     )
                 }
             } catch (error: TimeoutCancellationException) {
+                // Running out of the extraction's own time is not this client's fault; don't record it as a failure.
+                if (timeout < playerRequestTimeoutMs.milliseconds) throw PlayerRequestBudgetExhaustedException()
                 throw PlayerRequestTimeoutException(client.clientName, playerRequestTimeoutMs, error)
             }
+        if (isConfirmedAgeGate(response?.playabilityStatus?.status, response?.playabilityStatus?.desktopLegacyAgeGateReason)) {
+            requestBudget.ageRestricted = true
+        }
         key?.let { requestBudget.remember(it, response) }
         return response
     }
@@ -898,26 +1016,23 @@ internal class PlayerClientDirector(
                     bearerToken = bearerToken,
                 ) ?: return null
             } else {
-                val httpResponse =
-                    innerTube.playerWithSessionBound(
-                        client = client,
-                        videoId = videoId,
-                        playlistId = null,
-                        signatureTimestamp = signatureTimestamp,
-                        poToken = poToken,
-                        requestVisitorData = requestSession.visitorData,
-                        requestSession = requestSession,
-                        encryptedHostFlags = encryptedHostFlags,
-                        retryTransientFailures = false,
-                    )
-                // Non-2xx responses already threw InnerTubeHttpException.
-                withContext(Dispatchers.Default) { httpResponse.bodyAsTextLimited(MAX_PLAYER_RESPONSE_BYTES) }
+                // Non-2xx responses throw InnerTubeHttpException before their bodies are read.
+                innerTube.playerTextWithSessionBound(
+                    client = client,
+                    videoId = videoId,
+                    signatureTimestamp = signatureTimestamp,
+                    poToken = poToken,
+                    requestSession = requestSession,
+                    encryptedHostFlags = encryptedHostFlags,
+                    maxBytes = MAX_PLAYER_RESPONSE_BYTES,
+                )
             }
         return withContext(Dispatchers.Default) {
             parsePlayerResponse(payload, videoId, client, startTime, bearerToken != null)
         }
     }
 
+    @OptIn(ExperimentalSerializationApi::class)
     private fun parsePlayerResponse(
         payload: String,
         videoId: String,
@@ -935,16 +1050,16 @@ internal class PlayerClientDirector(
             logger.w(TAG, "bearer player response rejected", details = mapOf("client" to client.clientName, "reason" to "drm"))
             return null
         }
-        val response =
+        val decoded =
             runCatching {
                 if (parsedRoot != null) {
                     json.decodeFromJsonElement(PlayerResponse.serializer(), parsedRoot)
                 } else {
                     json.decodeFromString<PlayerResponse>(payload)
                 }
-            }.getOrNull()
+            }
+        val response = decoded.getOrNull()
         if (response == null) {
-            val root = parsedRoot ?: runCatching { json.parseToJsonElement(payload).jsonObject }.getOrNull()
             val elapsed = Clock.System.now().toEpochMilliseconds() - startTime
             val details =
                 mapOf(
@@ -952,10 +1067,16 @@ internal class PlayerClientDirector(
                     "httpStatus" to "200",
                     "elapsedMs" to elapsed.toString(),
                 )
+            // Classified from the decode error instead of re-parsing the payload into a second, possibly huge, tree.
+            val error = decoded.exceptionOrNull()
             when {
-                root == null -> logger.w(TAG, "invalid player response", details = details)
-                "playabilityStatus" !in root -> logger.d(TAG, "player response missing status", details = details)
-                else -> logger.w(TAG, "player response decode failed", details = details)
+                error is MissingFieldException && "playabilityStatus" in error.missingFields -> {
+                    logger.d(TAG, "player response missing status", details = details)
+                }
+
+                else -> {
+                    logger.w(TAG, "player response decode failed", details = details)
+                }
             }
             return null
         }
@@ -1065,16 +1186,7 @@ internal class PlayerClientDirector(
                 hasUsableAudioFormat(response) || !response.streamingData?.hlsManifestUrl.isNullOrBlank()
             }
 
-    private fun hasUsableSabrAudio(response: PlayerResponse): Boolean {
-        val streamingData = response.streamingData ?: return false
-        return !streamingData.serverAbrStreamingUrl.isNullOrBlank() &&
-            !response.playerConfig
-                ?.mediaCommonConfig
-                ?.mediaUstreamerRequestConfig
-                ?.videoPlaybackUstreamerConfig
-                .isNullOrBlank() &&
-            streamingData.adaptiveFormats.any { it.isAudio && it.itag > 0 }
-    }
+    private fun hasUsableSabrAudio(response: PlayerResponse): Boolean = response.hasSabrBootstrapPrerequisites()
 
     private fun hasUsableAudioFormat(response: PlayerResponse): Boolean {
         val streamingData = response.streamingData ?: return false
@@ -1285,6 +1397,20 @@ internal class PlayerClientDirector(
     ) : Exception("Player request for $clientName exceeded ${timeoutMs}ms", cause)
 }
 
+/**
+ * Drops fields that only steer local transport/token policy, so profiles such as WEB_REMIX and WEB_REMIX_SABR
+ * share one identical untokenized request. Each caller still applies its own transport and token checks.
+ */
+internal fun YouTubeClient.wireIdentity(): YouTubeClient =
+    copy(
+        friendlyName = null,
+        requirePoToken = false,
+        poTokenBinding = PoTokenBinding.VIDEO_ID,
+        useWebPoTokens = false,
+        useSabr = false,
+        skipPlayerResponseValidation = false,
+    )
+
 /** Every input that can change a non-bearer player response. */
 internal data class PlayerRequestKey(
     val client: YouTubeClient,
@@ -1305,12 +1431,87 @@ internal data class PlayerRequestKey(
 @OptIn(ExperimentalAtomicApi::class)
 internal class PlayerRequestBudget(
     initial: Int,
+    totalTime: Duration = DEFAULT_EXTRACTION_TIME_BUDGET,
 ) {
+    // Per-stage timeouts (player, visitor, token, media probe) otherwise stack across clients and config passes.
+    private val deadline = TimeSource.Monotonic.markNow() + totalTime
+
+    /** [limit] clamped to the time left in this extraction; throws once that time is spent. */
+    fun timeLeft(limit: Duration): Duration {
+        val left = -deadline.elapsedNow()
+        if (!left.isPositive()) throw PlayerRequestBudgetExhaustedException()
+        return minOf(limit, left)
+    }
+
+    fun timeLeftOrNull(limit: Duration): Duration? = if ((-deadline.elapsedNow()).isPositive()) timeLeft(limit) else null
+
+    suspend fun <T> withinTime(block: suspend () -> T): T {
+        val result =
+            withTimeoutOrNull(timeLeft(Duration.INFINITE)) { Pair(block(), Unit) }
+                ?: throw PlayerRequestBudgetExhaustedException()
+        timeLeft(Duration.INFINITE)
+        return result.first
+    }
+
+    private var tokenScope: CoroutineScope? = null
+    private val inFlightTokens = mutableMapOf<PoTokenRequestKey, PoTokenPrefetch>()
+
+    suspend fun <T> withTokenScope(block: suspend () -> T): T {
+        if (tokenScope != null) return block()
+        return coroutineScope {
+            tokenScope = this
+            try {
+                block()
+            } finally {
+                inFlightTokens.values.forEach { it.result.cancel() }
+                inFlightTokens.clear()
+                tokenScope = null
+            }
+        }
+    }
+
+    fun prefetchToken(
+        key: PoTokenRequestKey,
+        mint: suspend () -> PoTokenResult?,
+    ): PoTokenPrefetch =
+        inFlightTokens.getOrPut(key) {
+            PoTokenPrefetch(
+                key,
+                checkNotNull(tokenScope).async {
+                    try {
+                        withTimeoutOrNull(timeLeft(18.seconds)) { mint() }
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (_: Exception) {
+                        null
+                    }
+                },
+            )
+        }
+
+    var ageRestricted: Boolean = false
+
+    fun withKnownAge(hints: ContentHints): ContentHints = if (ageRestricted) hints.copy(isAgeRestricted = true) else hints
+
     private val responses = mutableMapOf<PlayerRequestKey, PlayerResponse?>()
     private val healthReports = mutableSetOf<Pair<String, String>>()
     private val unavailableTokens = mutableSetOf<PoTokenRequestKey>()
+    private val mintedTokens = mutableMapOf<PoTokenRequestKey, PoTokenResult>()
+
+    /** Set once visitor bootstrap fails, so later tokenized clients in this extraction do not repeat it. */
+    var visitorUnavailable: Boolean = false
 
     fun isTokenUnavailable(key: PoTokenRequestKey): Boolean = key in unavailableTokens
+
+    /** Extraction-local: a minted token is reused by later clients with the same video/visitor/cookie binding. */
+    fun mintedToken(key: PoTokenRequestKey): PoTokenResult? = mintedTokens[key]
+
+    fun rememberToken(
+        key: PoTokenRequestKey,
+        token: PoTokenResult,
+    ) {
+        mintedTokens[key] = token
+    }
 
     fun markTokenUnavailable(key: PoTokenRequestKey) {
         unavailableTokens += key
@@ -1327,6 +1528,11 @@ internal class PlayerRequestBudget(
         responses[key] = response
     }
 
+    fun terminalFailureReason(): StreamResolveException.Reason? {
+        val reasons = responses.values.map { it?.playabilityStatus?.toFailure()?.terminalReason() }
+        return reasons.firstOrNull()?.takeIf { reason -> reasons.all { it == reason } }
+    }
+
     fun firstHealthReport(
         manifestId: String,
         outcome: String,
@@ -1334,10 +1540,12 @@ internal class PlayerRequestBudget(
 
     private val remainingCount = AtomicInt(initial.also { require(it > 0) { "Player request budget must be positive" } })
 
+    /** Requests still allowed; zero once the extraction's time is spent, so later passes stop early. */
     val remaining: Int
-        get() = remainingCount.load()
+        get() = if ((-deadline.elapsedNow()).isPositive()) remainingCount.load() else 0
 
     fun consume() {
+        timeLeft(Duration.INFINITE)
         while (true) {
             val current = remainingCount.load()
             if (current <= 0) throw PlayerRequestBudgetExhaustedException()
@@ -1348,7 +1556,7 @@ internal class PlayerRequestBudget(
     }
 }
 
-private class PlayerRequestBudgetExhaustedException : Exception()
+internal class PlayerRequestBudgetExhaustedException : Exception()
 
 internal data class PoTokenRequestKey(
     val videoId: String,
@@ -1362,3 +1570,5 @@ internal class PoTokenPrefetch(
     val key: PoTokenRequestKey,
     val result: Deferred<PoTokenResult?>,
 )
+
+private val DEFAULT_EXTRACTION_TIME_BUDGET = 30.seconds

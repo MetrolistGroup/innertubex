@@ -951,7 +951,7 @@ class PlayerClientDirectorTest {
             """.trimIndent()
         val TOKEN_PLAYER_RESPONSE =
             """
-            {"playabilityStatus":{"status":"OK"},"streamingData":{"serverAbrStreamingUrl":"https://r.googlevideo.com/videoplayback","adaptiveFormats":[{"itag":140,"mimeType":"audio/mp4","bitrate":128000}]},"playerConfig":{"mediaCommonConfig":{"mediaUstreamerRequestConfig":{"videoPlaybackUstreamerConfig":"AQID"}}}}
+            {"playabilityStatus":{"status":"OK"},"videoDetails":{"videoId":"video","lengthSeconds":"180"},"streamingData":{"serverAbrStreamingUrl":"https://r.googlevideo.com/videoplayback","adaptiveFormats":[{"itag":140,"mimeType":"audio/mp4","bitrate":128000,"lastModified":"1700000000000000"},{"itag":160,"mimeType":"video/mp4","bitrate":100000,"width":256,"height":144,"lastModified":"1700000000000000"}]},"playerConfig":{"mediaCommonConfig":{"mediaUstreamerRequestConfig":{"videoPlaybackUstreamerConfig":"AQID"}}}}
             """.trimIndent()
     }
 }

@@ -31,7 +31,12 @@ internal suspend fun HttpClient.getTextWithoutRedirects(
         HttpClient(engine) {
             expectSuccess = false
             followRedirects = false
-            install(HttpTimeout)
+            // A fresh client does not inherit the caller's timeouts; per-request timeout {} blocks override these.
+            install(HttpTimeout) {
+                requestTimeoutMillis = DEFAULT_REQUEST_TIMEOUT_MS
+                connectTimeoutMillis = DEFAULT_CONNECT_TIMEOUT_MS
+                socketTimeoutMillis = DEFAULT_SOCKET_TIMEOUT_MS
+            }
         }
     return try {
         directClient.prepareGet(url, configure).execute { response ->
@@ -46,3 +51,7 @@ internal suspend fun HttpClient.getTextWithoutRedirects(
         directClient.close()
     }
 }
+
+private const val DEFAULT_REQUEST_TIMEOUT_MS = 30_000L
+private const val DEFAULT_CONNECT_TIMEOUT_MS = 10_000L
+private const val DEFAULT_SOCKET_TIMEOUT_MS = 10_000L

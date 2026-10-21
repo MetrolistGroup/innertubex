@@ -80,7 +80,7 @@ public class YtConfigParserImpl(
             if (extractSignatureTimestamp(html) != null) return@hasConfig true
             if (storeStsPlayerUrl != playerUrl) {
                 storeStsPlayerUrl = playerUrl
-                storeSts = remotePlayerConfigStore?.getSignatureTimestamp(playerUrl)
+                storeSts = remotePlayerConfigStore?.getCachedSignatureTimestamp(playerUrl)
             }
             storeSts != null
         }
@@ -285,6 +285,6 @@ public class YtConfigParserImpl(
             )
         private val CLIENT_VERSION_REGEX = Regex("\"INNERTUBE_CLIENT_VERSION\"\\s*:\\s*\"([^\"]+)\"")
         private val ENCRYPTED_HOST_FLAGS_REGEX = Regex("\"encryptedHostFlags\"\\s*:\\s*\"([^\"]+)\"")
-        private val VISITOR_DATA_REGEX = Regex("\"visitorData\"\\s*:\\s*\"([^\"]+)\"")
+        private val VISITOR_DATA_REGEX = Regex("\"(?:VISITOR_DATA|visitorData)\"\\s*:\\s*\"([^\"]+)\"")
     }
 }

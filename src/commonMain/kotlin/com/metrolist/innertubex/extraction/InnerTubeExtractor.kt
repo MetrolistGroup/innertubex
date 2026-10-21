@@ -7,6 +7,7 @@ import com.metrolist.innertubex.d
 import com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy
 import com.metrolist.innertubex.extraction.strategy.ClientHealthMonitor
 import com.metrolist.innertubex.extraction.strategy.ContentAwareFallbackStrategy
+import com.metrolist.innertubex.extraction.strategy.InMemoryClientHealthMonitor
 import com.metrolist.innertubex.extraction.strategy.PlaybackClientCatalog
 import com.metrolist.innertubex.i
 import com.metrolist.innertubex.models.YouTubeLocale
@@ -14,6 +15,7 @@ import com.metrolist.innertubex.models.response.PlayerResponse
 import com.metrolist.innertubex.models.response.PlayerResponse.StreamingData
 import com.metrolist.innertubex.models.response.PlayerResponse.StreamingData.Format
 import com.metrolist.innertubex.sabr.ExperimentalSabrApi
+import com.metrolist.innertubex.sabr.isSabrAudioCandidate
 import com.metrolist.innertubex.sabr.requireAllowedSabrUrl
 import com.metrolist.innertubex.sabr.sabrRequestOrigin
 import com.metrolist.innertubex.sabr.toSabrBootstrap
@@ -23,12 +25,18 @@ import io.ktor.http.URLProtocol
 import io.ktor.http.Url
 import io.ktor.util.sha256
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.time.Clock
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
@@ -42,6 +50,8 @@ class InnerTubeExtractor internal constructor(
     private val logger: InnerTubeLogger = InnerTubeLogger.NONE,
     private val tvBearerProviderTimeoutMs: Long = TV_BEARER_PROVIDER_TIMEOUT_MS,
     private val now: () -> Instant = { Clock.System.now() },
+    private val extractionTimeBudgetMs: Long = 30_000L,
+    private val bootstrapWriteScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) : StreamExtractor {
     constructor(
         configParser: YtConfigParser,
@@ -51,7 +61,9 @@ class InnerTubeExtractor internal constructor(
         /** Defaults to a [ContentAwareFallbackStrategy] that scores clients with [clientHealthMonitor]. */
         fallbackStrategy: ClientFallbackStrategy? = null,
         tokenProvider: TokenProvider? = null,
-        clientHealthMonitor: ClientHealthMonitor = ClientHealthMonitor.NONE,
+        /** Defaults to process-local memory; pass [ClientHealthMonitor.NONE] for stateless selection. */
+        clientHealthMonitor: ClientHealthMonitor =
+            InMemoryClientHealthMonitor(sessionGeneration = { innerTube.sessionSnapshot().generation }),
         logger: InnerTubeLogger = InnerTubeLogger.NONE,
     ) : this(
         configParser = configParser,
@@ -112,6 +124,138 @@ class InnerTubeExtractor internal constructor(
         }
 
     private val playerConfigCache = mutableMapOf<Boolean, CachedPlayerConfig>()
+
+    private data class TerminalCacheKey(
+        val videoId: String,
+        val generation: Long,
+        val hints: ContentHints,
+        val audioQuality: AudioQuality,
+        val excludedClients: Set<String>,
+    ) {
+        override fun toString(): String = "TerminalCacheKey(redacted)"
+    }
+
+    private data class TerminalVerdict(
+        val reason: StreamResolveException.Reason,
+        val expiresAt: Instant,
+    )
+
+    private val terminalCache = linkedMapOf<TerminalCacheKey, TerminalVerdict>()
+    private val terminalCacheMutex = Mutex()
+
+    private suspend fun cachedTerminalVerdict(key: TerminalCacheKey): TerminalVerdict? =
+        terminalCacheMutex.withLock {
+            val currentTime = now()
+            terminalCache.entries.removeAll { it.key.generation != key.generation || it.value.expiresAt <= currentTime }
+            terminalCache.remove(key)?.also { terminalCache[key] = it }
+        }
+
+    private suspend fun cacheTerminalVerdict(
+        key: TerminalCacheKey,
+        diagnostics: ExtractionDiagnostics,
+        reason: StreamResolveException.Reason,
+    ) {
+        if (innerTube.sessionSnapshot().generation != key.generation || diagnostics.sawPlayableResponse ||
+            (reason == StreamResolveException.Reason.UNAVAILABLE && !diagnostics.unavailable) ||
+            diagnostics.requestFailures.isNotEmpty() || diagnostics.requestBudget.terminalFailureReason() != reason ||
+            diagnostics.attempts.any { !it.outcome.startsWith("selection:") && !it.outcome.startsWith("playability:") }
+        ) {
+            return
+        }
+        terminalCacheMutex.withLock {
+            terminalCache.remove(key)
+            terminalCache[key] = TerminalVerdict(reason, now() + 60.seconds)
+            if (terminalCache.size > 256) terminalCache.remove(terminalCache.keys.first())
+        }
+    }
+
+    // Guarded by playerConfigCacheMutex.
+    private var readPlayerBootstrap: (suspend () -> String?)? = null
+    private var writePlayerBootstrap: (suspend (String) -> Unit)? = null
+    private var playerBootstrapRestoreAttempted = false
+    private val bootstrapRestoreMutex = Mutex()
+    private var bootstrapStoreGeneration = 0L
+    private var bootstrapWriterRunning = false
+    private var pendingPlayerBootstrap: Pair<suspend (String) -> Unit, String>? = null
+    private var writtenPlayerBootstrap: Pair<suspend (String) -> Unit, String>? = null
+
+    /**
+     * Installs optional host storage for the public player bootstrap: player URL, signature timestamp and client
+     * version of the signed-out watch config. After a restart the first cipher-dependent extraction can then skip the
+     * watch-page request. Nothing session- or account-bound is stored, and a stale or rejected value simply refetches.
+     */
+    suspend fun setPlayerBootstrapCache(
+        read: suspend () -> String?,
+        write: suspend (String) -> Unit,
+    ) = playerConfigCacheMutex.withLock {
+        readPlayerBootstrap = read
+        writePlayerBootstrap = write
+        playerBootstrapRestoreAttempted = false
+        bootstrapStoreGeneration++
+        pendingPlayerBootstrap = null
+        writtenPlayerBootstrap = null
+    }
+
+    private suspend fun restorePlayerBootstrap(nowMs: Long): CachedPlayerConfig? {
+        return bootstrapRestoreMutex.withLock {
+            val (read, generation, identity) =
+                playerConfigCacheMutex.withLock {
+                    getCachedPlayerConfigLocked(false, nowMs)?.let { return it }
+                    if (playerBootstrapRestoreAttempted) return null
+                    val read = readPlayerBootstrap ?: return null
+                    // The watch page must still supply visitor data when the session has none.
+                    if (innerTube.sessionSnapshot().visitorData.isNullOrBlank()) return null
+                    playerBootstrapRestoreAttempted = true
+                    Triple(read, bootstrapStoreGeneration, configIdentity(useLoginCookies = false))
+                }
+            val stored =
+                try {
+                    withTimeoutOrNull(1.seconds) { read() }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    null
+                }
+            val snapshot = PlayerBootstrapSnapshot.decode(stored) ?: return null
+            val config = snapshot.toPlayerConfig(identity.locale, nowMs, PLAYER_CONFIG_CACHE_TTL_MS) ?: return null
+            return playerConfigCacheMutex.withLock {
+                if (generation != bootstrapStoreGeneration || identity != configIdentity(useLoginCookies = false)) return@withLock null
+                getCachedPlayerConfigLocked(false, nowMs)
+                    ?: CachedPlayerConfig(config, snapshot.savedAtMs, identity, usedLoginCookies = false)
+                        .also { playerConfigCache[false] = it }
+            }
+        }
+    }
+
+    private fun persistPlayerBootstrapLocked(
+        config: PlayerConfig,
+        identity: ConfigIdentity,
+    ) {
+        val write = writePlayerBootstrap ?: return
+        val encoded = PlayerBootstrapSnapshot.of(config, identity.locale, Clock.System.now().toEpochMilliseconds())?.encode() ?: return
+        pendingPlayerBootstrap = write to encoded
+        if (bootstrapWriterRunning) return
+        bootstrapWriterRunning = true
+        // One writer drains only the latest pending value, even when host storage stalls.
+        bootstrapWriteScope.launch {
+            while (true) {
+                val pending =
+                    playerConfigCacheMutex.withLock {
+                        val pending = pendingPlayerBootstrap?.takeUnless { it == writtenPlayerBootstrap }
+                        pendingPlayerBootstrap = null
+                        if (pending == null) bootstrapWriterRunning = false
+                        pending
+                    } ?: return@launch
+                try {
+                    pending.first(pending.second)
+                    playerConfigCacheMutex.withLock { writtenPlayerBootstrap = pending }
+                } catch (_: Exception) {
+                    // Best effort: the next successful fetch writes again.
+                }
+            }
+        }
+    }
+
     private val playerConfigCacheMutex = Mutex()
     private val playerConfigFetchMutexes = mapOf(false to Mutex(), true to Mutex())
 
@@ -167,17 +311,19 @@ class InnerTubeExtractor internal constructor(
         val candidateDiagnostics = ExtractionDiagnostics(maxPlayerRequests = 1)
         val candidate =
             try {
-                extractWithCachedConfig(
-                    videoId = videoId,
-                    hints = baselineHints,
-                    excludedClients = excludedClients,
-                    clientPlaybackNonce = clientPlaybackNonce,
-                    useLoginCookies = false,
-                    totalStartMs = Clock.System.now().toEpochMilliseconds(),
-                    audioQuality = audioQuality,
-                    diagnostics = candidateDiagnostics,
-                    tvBearerCredential = credential,
-                )
+                candidateDiagnostics.requestBudget.withinTime {
+                    extractWithCachedConfig(
+                        videoId = videoId,
+                        hints = baselineHints,
+                        excludedClients = excludedClients,
+                        clientPlaybackNonce = clientPlaybackNonce,
+                        useLoginCookies = false,
+                        totalStartMs = Clock.System.now().toEpochMilliseconds(),
+                        audioQuality = audioQuality,
+                        diagnostics = candidateDiagnostics,
+                        tvBearerCredential = credential,
+                    )
+                }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
@@ -276,7 +422,13 @@ class InnerTubeExtractor internal constructor(
                         }
                     }
                 val earlyTokenWarmup = warmToken(fetchedVisitorData)
-                val defaultConfigFetch = async { fetchPlayerConfig(PREWARM_VIDEO_ID, false, requestSession = session).config }
+                val defaultConfigFetch =
+                    async {
+                        (
+                            getCachedPlayerConfig(false, Clock.System.now().toEpochMilliseconds())
+                                ?: fetchPlayerConfig(PREWARM_VIDEO_ID, false, requestSession = session)
+                        ).config
+                    }
                 val authenticatedConfigFetch =
                     if (!session.sapisid.isNullOrBlank()) {
                         async {
@@ -324,37 +476,36 @@ class InnerTubeExtractor internal constructor(
         audioQuality: AudioQuality,
         clientPlaybackNonce: String,
     ): ExtractedStream? {
+        val terminalKey =
+            if (hints.playbackClientOverrideId == null) {
+                TerminalCacheKey(videoId, innerTube.sessionSnapshot().generation, hints, audioQuality, excludedClients.toSet())
+            } else {
+                null
+            }
+        terminalKey?.let { key ->
+            cachedTerminalVerdict(key)?.let { verdict ->
+                ensureSessionGeneration(key.generation)
+                throw StreamResolveException(
+                    reason = verdict.reason,
+                    message =
+                        if (verdict.reason ==
+                            StreamResolveException.Reason.AGE_RESTRICTED
+                        ) {
+                            "This track is age-restricted."
+                        } else {
+                            "This track is unavailable."
+                        },
+                )
+            }
+        }
         val totalStart = Clock.System.now().toEpochMilliseconds()
         val diagnostics =
             ExtractionDiagnostics(
                 maxPlayerRequests = if (hints.playbackClientOverrideId != null) 1 else MAX_PLAYER_REQUESTS_PER_EXTRACTION,
             )
         return try {
-            coroutineScope {
-                val session = diagnostics.session
-                val prefetchedPoToken =
-                    if (
-                        hints.isExplicit == true && hints.playbackClientOverrideId == null &&
-                        !session.visitorData.isNullOrBlank() && tokenProvider.capabilities.providers.isNotEmpty()
-                    ) {
-                        PoTokenPrefetch(
-                            PoTokenRequestKey(videoId, session.visitorData, session.cookie),
-                            async {
-                                withTimeoutOrNull(PO_TOKEN_PREFETCH_TIMEOUT) {
-                                    try {
-                                        tokenProvider.getPoToken(videoId, session.visitorData, session.cookie)
-                                    } catch (e: CancellationException) {
-                                        throw e
-                                    } catch (_: Exception) {
-                                        null
-                                    }
-                                }
-                            },
-                        )
-                    } else {
-                        null
-                    }
-                try {
+            diagnostics.requestBudget.withinTime {
+                diagnostics.requestBudget.withTokenScope {
                     extractWithDiagnostics(
                         videoId,
                         hints,
@@ -363,15 +514,20 @@ class InnerTubeExtractor internal constructor(
                         clientPlaybackNonce,
                         totalStart,
                         diagnostics,
-                        prefetchedPoToken,
                     ).also { diagnostics.ensureSessionCurrent() }
-                } finally {
-                    prefetchedPoToken?.result?.cancel()
                 }
             }
         } catch (e: CancellationException) {
             throw e
+        } catch (e: PlayerRequestBudgetExhaustedException) {
+            throw StreamResolveException(
+                reason = StreamResolveException.Reason.NO_PLAYABLE_STREAM,
+                message = "Extraction time budget exhausted.",
+                cause = e,
+                diagnostics = diagnostics.snapshot(),
+            )
         } catch (e: StreamResolveException) {
+            terminalKey?.let { cacheTerminalVerdict(it, diagnostics, e.reason) }
             if (e.diagnostics != null) throw e
             throw StreamResolveException(
                 reason = e.reason,
@@ -397,7 +553,6 @@ class InnerTubeExtractor internal constructor(
         clientPlaybackNonce: String,
         totalStart: Long,
         diagnostics: ExtractionDiagnostics,
-        prefetchedPoToken: PoTokenPrefetch? = null,
     ): ExtractedStream? {
         logger.d(
             TAG,
@@ -452,6 +607,7 @@ class InnerTubeExtractor internal constructor(
                 diagnostics = diagnostics,
             )
         if (configFreeEligible && !deferConfigFree) extractConfigFree()?.let { return it }
+        if (diagnostics.unavailable) throwExtractionFailure(hints, diagnostics)
 
         suspend fun extractWithWatchConfig(useLoginCookies: Boolean): ExtractedStream? =
             try {
@@ -464,7 +620,6 @@ class InnerTubeExtractor internal constructor(
                     totalStartMs = totalStart,
                     audioQuality = audioQuality,
                     diagnostics = diagnostics,
-                    prefetchedPoToken = prefetchedPoToken,
                 )
             } catch (error: CancellationException) {
                 throw error
@@ -492,17 +647,21 @@ class InnerTubeExtractor internal constructor(
                 )
         val stream = extractWithWatchConfig(useLoginCookies = cookieFirst)
         if (stream != null) return stream
+        if (diagnostics.unavailable) throwExtractionFailure(hints, diagnostics)
         if (deferConfigFree) extractConfigFree()?.let { return it }
+        if (diagnostics.unavailable) throwExtractionFailure(hints, diagnostics)
 
-        if (cookieFirst) {
+        if (cookieFirst && !diagnostics.triedPublicConfigBeforeLogin) {
             logger.w(TAG, "signed-out watch config fallback")
             val signedOutConfigStream = extractWithWatchConfig(useLoginCookies = false)
             if (signedOutConfigStream != null) return signedOutConfigStream
-        } else if (innerTube.hasSapCookieAuth()) {
+        } else if (!cookieFirst && innerTube.hasSapCookieAuth()) {
             logger.w(TAG, "authenticated watch page retry", details = mapOf("authenticated" to "true"))
             val authenticatedStream = extractWithWatchConfig(useLoginCookies = true)
             if (authenticatedStream != null) return authenticatedStream
         }
+
+        if (diagnostics.unavailable) throwExtractionFailure(hints, diagnostics)
 
         // Embedded player context fallback when the regular watch-page clients fail.
         // Uploaded songs intentionally do not use this path because embedded
@@ -521,8 +680,9 @@ class InnerTubeExtractor internal constructor(
             if (embeddedStream != null) return embeddedStream
         }
 
+        if (diagnostics.unavailable) throwExtractionFailure(hints, diagnostics)
         val classifiedFailure = classifyPlayabilityFailures(diagnostics.failures)
-        if (shouldTryUnknownKidsFallback(hints, classifiedFailure)) {
+        if (shouldTryUnknownKidsFallback(diagnostics.requestBudget.withKnownAge(hints), classifiedFailure)) {
             val kidsStream =
                 extractWithWebKidsFallback(
                     videoId = videoId,
@@ -594,6 +754,12 @@ class InnerTubeExtractor internal constructor(
         diagnostics: ExtractionDiagnostics,
     ): ExtractedStream? {
         diagnostics.ensureSessionCurrent()
+        if (diagnostics.requestBudget.remaining <= 0) return null
+        if (hints.playbackClientOverrideId == null &&
+            (hints.isAgeRestricted == true || diagnostics.requestBudget.ageRestricted)
+        ) {
+            return null
+        }
         val configStart = Clock.System.now().toEpochMilliseconds()
         val config =
             try {
@@ -622,7 +788,6 @@ class InnerTubeExtractor internal constructor(
         )
         val fallbackHints =
             hints.copy(
-                isAgeRestricted = true,
                 playbackClientOverrideId =
                     hints.playbackClientOverrideId?.takeIf { id ->
                         PlaybackClientCatalog.findManifest(id)?.request?.embedded == true
@@ -644,6 +809,7 @@ class InnerTubeExtractor internal constructor(
         hints: ContentHints,
         diagnostics: ExtractionDiagnostics,
     ): Nothing {
+        diagnostics.requestBudget.timeLeft(Duration.INFINITE)
         if (!diagnostics.sawPlayableResponse) {
             classifyPlayabilityFailures(diagnostics.failures)?.let { reason ->
                 throw StreamResolveException(
@@ -686,12 +852,17 @@ class InnerTubeExtractor internal constructor(
         totalStartMs: Long,
         audioQuality: AudioQuality = AudioQuality.AUTO,
         diagnostics: ExtractionDiagnostics,
-        prefetchedPoToken: PoTokenPrefetch? = null,
         tvBearerCredential: TvBearerCredential? = null,
     ): ExtractedStream? {
         diagnostics.ensureSessionCurrent()
         val nowMs = Clock.System.now().toEpochMilliseconds()
-        val cachedConfig = getCachedPlayerConfig(useLoginCookies, nowMs)
+        val cachedConfig =
+            getCachedPlayerConfig(useLoginCookies, nowMs)
+                ?: if (useLoginCookies && !diagnostics.session.visitorData.isNullOrBlank()) {
+                    getCachedPlayerConfig(false, nowMs)?.also { diagnostics.triedPublicConfigBeforeLogin = true }
+                } else {
+                    null
+                }
         if (cachedConfig != null) {
             diagnostics.usedAuthenticatedWatchPage =
                 diagnostics.usedAuthenticatedWatchPage || cachedConfig.usedLoginCookies
@@ -705,20 +876,30 @@ class InnerTubeExtractor internal constructor(
                         "ageMs" to cacheAgeMs.toString(),
                     ),
             )
+            val nonGatePassesBefore = diagnostics.nonGatePasses
+            val failuresBefore = diagnostics.failures.size
             val cachedStream =
-                extractWithConfig(
-                    videoId = videoId,
-                    hints = hints,
-                    excludedClients = excludedClients,
-                    clientPlaybackNonce = clientPlaybackNonce,
-                    playerConfig = cachedConfig.config,
-                    totalStartMs = totalStartMs,
-                    audioQuality = audioQuality,
-                    diagnostics = diagnostics,
-                    prefetchedPoToken = prefetchedPoToken,
-                    tvBearerCredential = tvBearerCredential,
-                )
+                try {
+                    extractWithConfig(
+                        videoId = videoId,
+                        hints = hints,
+                        excludedClients = excludedClients,
+                        clientPlaybackNonce = clientPlaybackNonce,
+                        playerConfig = cachedConfig.config,
+                        totalStartMs = totalStartMs,
+                        audioQuality = audioQuality,
+                        diagnostics = diagnostics,
+                        tvBearerCredential = tvBearerCredential,
+                    )
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    if (!useLoginCookies || cachedConfig.usedLoginCookies || error is PlayerRequestBudgetExhaustedException) throw error
+                    diagnostics.requestFailures += error
+                    null
+                }
             if (cachedStream != null) return cachedStream
+            if (diagnostics.failures.size > failuresBefore && diagnostics.nonGatePasses == nonGatePassesBefore) return null
             logger.w(TAG, "watch page cache unusable", details = mapOf("authenticated" to useLoginCookies.toString()))
         }
 
@@ -748,7 +929,6 @@ class InnerTubeExtractor internal constructor(
             totalStartMs = totalStartMs,
             audioQuality = audioQuality,
             diagnostics = diagnostics,
-            prefetchedPoToken = prefetchedPoToken,
             tvBearerCredential = tvBearerCredential,
         )
     }
@@ -775,6 +955,7 @@ class InnerTubeExtractor internal constructor(
                 if (configIdentity(useLoginCookies) != expectedIdentity) {
                     throw CancellationException("InnerTube session changed")
                 }
+                if (!useLoginCookies) persistPlayerBootstrapLocked(config, expectedIdentity)
                 cachePlayerConfig(useLoginCookies, config, expectedIdentity)
             }
         }
@@ -783,9 +964,8 @@ class InnerTubeExtractor internal constructor(
         useLoginCookies: Boolean,
         nowMs: Long,
     ): CachedPlayerConfig? =
-        playerConfigCacheMutex.withLock {
-            getCachedPlayerConfigLocked(useLoginCookies, nowMs)
-        }
+        playerConfigCacheMutex.withLock { getCachedPlayerConfigLocked(useLoginCookies, nowMs) }
+            ?: if (!useLoginCookies) restorePlayerBootstrap(nowMs) else null
 
     private fun getCachedPlayerConfigLocked(
         useLoginCookies: Boolean,
@@ -824,7 +1004,6 @@ class InnerTubeExtractor internal constructor(
         allowCipherProcessing: Boolean = true,
         audioQuality: AudioQuality = AudioQuality.AUTO,
         diagnostics: ExtractionDiagnostics,
-        prefetchedPoToken: PoTokenPrefetch? = null,
         tvBearerCredential: TvBearerCredential? = null,
     ): ExtractedStream? {
         diagnostics.ensureSessionCurrent()
@@ -851,10 +1030,11 @@ class InnerTubeExtractor internal constructor(
                 wantVideo = hints.wantVideo,
                 premiumHighQuality = hints.premium && audioQuality == AudioQuality.HIGH,
                 requestBudget = diagnostics.requestBudget,
-                prefetchedPoToken = prefetchedPoToken,
                 tvBearerCredential = tvBearerCredential,
             )
         diagnostics.ensureSessionCurrent()
+        if (!batch.onlyBootstrapIndependentFailures) diagnostics.nonGatePasses++
+        if (batch.onlyUnavailableFailures) diagnostics.unavailable = true
         diagnostics.failures += batch.failures
         diagnostics.requestFailures += batch.requestFailures
         diagnostics.attempts += batch.attempts
@@ -905,7 +1085,7 @@ class InnerTubeExtractor internal constructor(
                 }
                 val audioFormat =
                     selectBestAudioFormat(
-                        formats = allFormats.filter(PlayerResponse.StreamingData.Format::isAudio),
+                        formats = allFormats.filter { response.isSabrAudioCandidate(it) },
                         audioQuality = audioQuality,
                         requireUrl = false,
                     )
@@ -928,6 +1108,32 @@ class InnerTubeExtractor internal constructor(
                     continue
                 }
                 val rawSabrUrl = streamingData.serverAbrStreamingUrl
+                // Validate the bootstrap (duration, format identities, bounded config) before paying for any n transform.
+                val bootstrapResult =
+                    runCatching {
+                        response.toSabrBootstrap(
+                            clientId = result.clientId,
+                            clientVersion = result.clientVersion,
+                            audioFormat = audioFormat,
+                            poToken = result.streamingDataPoToken,
+                            requestUserAgent = result.userAgent,
+                            requestOrigin = sabrRequestOrigin(result.clientName),
+                            videoFormat = videoFormat,
+                        )
+                    }
+                val untransformedBootstrap = bootstrapResult.getOrNull()
+                if (untransformedBootstrap == null) {
+                    logger.w(
+                        TAG,
+                        "SABR bootstrap rejected",
+                        details =
+                            mapOf(
+                                "client" to result.clientName,
+                                "exceptionType" to (bootstrapResult.exceptionOrNull()?.let { it::class.simpleName } ?: "unknown"),
+                            ),
+                    )
+                    continue
+                }
                 if (rawSabrUrl?.hasNParameter() == true && !allowCipherProcessing) {
                     logger.d(TAG, "SABR transform deferred", details = mapOf("client" to result.clientName))
                     continue
@@ -955,39 +1161,14 @@ class InnerTubeExtractor internal constructor(
                     logger.w(TAG, "SABR endpoint rejected", details = mapOf("client" to result.clientName))
                     continue
                 }
+                // The transformed URL is validated again: checking only the original would not cover the rewrite.
                 val trackedSabrUrl =
                     processedSabrUrl?.let { candidate ->
                         runCatching {
                             requireAllowedSabrUrl(appendClientPlaybackNonce(candidate, clientPlaybackNonce))
                         }.getOrNull()
-                    }
-                if (processedSabrUrl != null && trackedSabrUrl == null) continue
-                val bootstrapResult =
-                    runCatching {
-                        response.toSabrBootstrap(
-                            clientId = result.clientId,
-                            clientVersion = result.clientVersion,
-                            audioFormat = audioFormat,
-                            poToken = result.streamingDataPoToken,
-                            requestUserAgent = result.userAgent,
-                            requestOrigin = sabrRequestOrigin(result.clientName),
-                            serverAbrStreamingUrlOverride = trackedSabrUrl,
-                            videoFormat = videoFormat,
-                        )
-                    }
-                val bootstrap = bootstrapResult.getOrNull()
-                if (bootstrap == null) {
-                    logger.w(
-                        TAG,
-                        "SABR bootstrap rejected",
-                        details =
-                            mapOf(
-                                "client" to result.clientName,
-                                "exceptionType" to (bootstrapResult.exceptionOrNull()?.let { it::class.simpleName } ?: "unknown"),
-                            ),
-                    )
-                    continue
-                }
+                    } ?: continue
+                val bootstrap = untransformedBootstrap.copy(serverAbrStreamingUrl = trackedSabrUrl)
                 val expiresAt =
                     streamingData.expiresInSeconds
                         ?.takeIf { it > 0 }
@@ -1152,6 +1333,7 @@ class InnerTubeExtractor internal constructor(
                             directUrl,
                             directHeaders,
                             requireBoundedRange,
+                            diagnostics.requestBudget,
                         )
                     if (requireBoundedRange && contentLength == null) {
                         logger.d(TAG, "bounded media skipped", details = mapOf("client" to result.clientName))
@@ -1164,6 +1346,7 @@ class InnerTubeExtractor internal constructor(
                                 checkNotNull(directVideoUrl),
                                 directHeaders,
                                 requireBoundedRange,
+                                diagnostics.requestBudget,
                             )
                         } else {
                             null
@@ -1358,6 +1541,7 @@ class InnerTubeExtractor internal constructor(
                     url,
                     directHeaders,
                     requireBoundedRange,
+                    diagnostics.requestBudget,
                 )
             if (requireBoundedRange && contentLength == null) {
                 logger.d(TAG, "bounded media skipped", details = mapOf("client" to result.clientName))
@@ -1370,6 +1554,7 @@ class InnerTubeExtractor internal constructor(
                         checkNotNull(videoUrl),
                         directHeaders,
                         requireBoundedRange,
+                        diagnostics.requestBudget,
                     )
                 } else {
                     null
@@ -1502,12 +1687,15 @@ class InnerTubeExtractor internal constructor(
             session = currentExtractionSession(session)
         }
 
-        val requestBudget = PlayerRequestBudget(maxPlayerRequests)
+        val requestBudget = PlayerRequestBudget(maxPlayerRequests, extractionTimeBudgetMs.milliseconds)
         val failures = mutableListOf<PlayabilityFailure>()
         val requestFailures = mutableListOf<Throwable>()
         val attempts = mutableListOf<StreamAttemptDiagnostic>()
+        var nonGatePasses = 0
+        var unavailable = false
         var sawPlayableResponse = false
         var usedAuthenticatedWatchPage = false
+        var triedPublicConfigBeforeLogin = false
 
         fun snapshot() =
             StreamDiagnostics(
@@ -1543,10 +1731,12 @@ class InnerTubeExtractor internal constructor(
         url: String,
         headers: Map<String, String>,
         requireBoundedRange: Boolean,
+        requestBudget: PlayerRequestBudget,
     ): Long? {
         contentLength?.takeIf { it > 0L }?.let { return it }
         if (!requireBoundedRange) return null
-        return withTimeoutOrNull(8.seconds) {
+        val timeout = requestBudget.timeLeftOrNull(8.seconds) ?: return null
+        return withTimeoutOrNull(timeout) {
             innerTube.mediaContentLength(url, headers)
         }
     }
