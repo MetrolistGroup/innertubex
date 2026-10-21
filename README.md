@@ -10,8 +10,8 @@ playlist, and player operations while adding:
 
 - SABR/UMP audio and video streaming with seekable segmented sources.
 - SABR video representation selection for host video playback.
-- Player cipher deobfuscation through Zemer, Faraday, EJS, and QuickJS.
-- Layered remote, parsed-script, and cached cipher fallbacks.
+- Kotlin-only player cipher deobfuscation through hosted [QuackJS](https://github.com/MetrolistGroup/quackjs).
+- Optional validated Faraday landmarks, hint-free discovery, and bounded compiled-player caches.
 - Isolated authenticated sessions with generation-safe cancellation.
 - Channel discovery, account switching support, and streaming music uploads.
 - Bounded remote bodies and protocol state with strict media URL validation.
@@ -22,7 +22,10 @@ playlist, and player operations while adding:
 ```kotlin
 repositories {
     maven("https://jitpack.io") {
-        content { includeGroup("com.github.MetrolistGroup.innertubex") }
+        content {
+            includeGroup("com.github.MetrolistGroup.innertubex")
+            includeGroup("com.github.MetrolistGroup.quackjs")
+        }
     }
 }
 
@@ -71,6 +74,17 @@ val stream = extractor.extract(
     audioQuality = AudioQuality.HIGH,
 )
 ```
+
+### Player cipher backend
+
+The common backend uses hosted `com.github.MetrolistGroup.quackjs:quackjs:0.1.0`,
+without JavaScript engines, JNI, or bundled solver scripts. `preloadPlayerCode(url)`
+downloads and compiles the player off the UI thread; compiled programs are reused
+across batches and single calls. Unsupported players fail closed: affected formats
+have no URL and single helpers return null, while unaffected direct URLs remain usable.
+
+`prewarmEjs()` and `setPreprocessedPlayerCache(read, write)` remain binary-compatible
+no-ops. The callbacks are never invoked, and existing persistent EJS data is left untouched.
 
 ### Optional authenticated TV discovery
 

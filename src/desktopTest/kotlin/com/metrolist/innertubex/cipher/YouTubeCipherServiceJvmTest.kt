@@ -4,18 +4,9 @@ import com.metrolist.innertubex.InnerTubeLogger
 import com.metrolist.innertubex.cipher.YouTubeCipherServiceTest.Companion.MEDIA_URL
 import com.metrolist.innertubex.cipher.YouTubeCipherServiceTest.Companion.PLAYER_CODE
 import com.metrolist.innertubex.cipher.YouTubeCipherServiceTest.Companion.PLAYER_URL
-import com.metrolist.innertubex.cipher.YouTubeCipherServiceTest.Companion.REMOTE_PLAYER_CODE
-import com.metrolist.innertubex.models.response.PlayerResponse
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.http.ContentType
-import io.ktor.http.HttpHeaders
-import io.ktor.http.HttpStatusCode
-import io.ktor.http.headersOf
-import io.ktor.serialization.kotlinx.json.json
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
@@ -24,81 +15,116 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withTimeout
-import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
-import kotlin.test.assertFalse
-import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
-import kotlin.time.Clock
+import kotlin.time.Duration.Companion.seconds
 
-// Tests that inspect private service state through JVM reflection.
+// JVM reflection checks bounded caches without exposing service internals in the public API.
 class YouTubeCipherServiceJvmTest {
     @Test
-    fun failedRemoteSolverRetriesOnlyAfterConfigChangeOrCooldown() =
+    fun failedCompilationRetriesAfterConfigChange() =
         runBlocking {
-            val bootstrap = EjsChallengeSolver(QuickJsEngine(), InnerTubeLogger.NONE)
-            val preprocessed =
-                try {
-                    assertNotNull(bootstrap.solve(PLAYER_URL, PLAYER_CODE, listOf("sig" to listOf("warm"))).preprocessedPlayer)
-                } finally {
-                    bootstrap.dispose()
-                }
-            val repository = configRepository()
+            val repository = YouTubeCipherServiceTest().configRepository()
             val client =
                 HttpClient(
                     MockEngine { request ->
                         if (request.url.encodedPath.endsWith("player_configs.json")) {
                             respond(repository.cachedJson.replace("20613", "20614"))
                         } else {
-                            respond(
-                                REMOTE_PLAYER_CODE.replace(
-                                    "this.input.indexOf(\"local\") === 0 ? this.input : this.input + \"_done\"",
-                                    "this.input",
-                                ),
-                            )
+                            respond("unsupported player")
                         }
                     },
                 )
-            val store = RemotePlayerConfigStore(client, repository)
             var failures = 0
             val service =
                 YouTubeCipherService(
                     client,
-                    store,
-                    InnerTubeLogger { event ->
-                        if (event.message.startsWith("Faraday zemer config failed")) failures++
+                    RemotePlayerConfigStore(client, repository),
+                    InnerTubeLogger {
+                        if (it.message.startsWith("Kotlin player unavailable")) failures++
                     },
                 )
             try {
-                service.setPreprocessedPlayerCache({ preprocessed }, { _, _ -> })
-
-                suspend fun solve(challenge: String) {
-                    assertEquals(
-                        "$MEDIA_URL?n=${challenge}_done",
-                        service.processFormats(PLAYER_URL, listOf(format("$MEDIA_URL?n=$challenge"))).single().url,
-                    )
-                }
-                repeat(3) { solve("local$it") }
-                assertEquals(1, failures)
-                assertTrue(service.refreshAfterStreamRejection())
-                solve("changed")
+                repeat(3) { assertNull(service.processNParameter(PLAYER_URL, "$MEDIA_URL?n=challenge")) }
                 assertEquals(2, failures)
-                val failuresByUrl = privateField<Map<String, Any>>(service, "zemerFailures")
-                val failed = failuresByUrl.values.single()
-                failed.javaClass
-                    .getDeclaredField("failedAtMs")
-                    .apply { isAccessible = true }
-                    .setLong(failed, 0L)
-                solve("expired")
-                assertEquals(3, failures)
-                solve("cooldown")
-                assertEquals(3, failures)
+                assertTrue(service.refreshAfterStreamRejection())
+                assertNull(service.processNParameter(PLAYER_URL, "$MEDIA_URL?n=challenge"))
+                assertEquals(4, failures)
+                val failedPrograms = privateField<Map<*, Any>>(service, "compileFailures")
+                assertEquals(3, failedPrograms.size)
+                for (failed in failedPrograms.values) {
+                    // ValueTimeMark's JVM backing field is a monotonic nanosecond reading.
+                    val field = failed.javaClass.getDeclaredField("failedAt").apply { isAccessible = true }
+                    field.setLong(failed, field.getLong(failed) - 61.seconds.inWholeNanoseconds)
+                }
+                assertNull(service.processNParameter(PLAYER_URL, "$MEDIA_URL?n=expired"))
+                assertEquals(6, failures)
+                assertNull(service.processNParameter(PLAYER_URL, "$MEDIA_URL?n=cooling"))
+                assertEquals(6, failures)
             } finally {
                 service.dispose()
                 client.close()
+            }
+        }
+
+    @Test
+    fun failingBatchTransformsExecuteOncePerDistinctChallenge() =
+        runBlocking {
+            for ((signatureFailure, nFailure) in listOf(
+                "throw 'unsupported';" to "throw 'unsupported';",
+                "return '';" to "o.set('n','');return;",
+                "return '';" to "return;",
+            )) {
+                val code =
+                    PLAYER_CODE
+                        .replace("return input.split", "if(input=='badSig'){$signatureFailure}return input.split")
+                        .replace("o.set('n',o.V.n + '_done');", "if(o.V.n=='badN'){$nFailure}o.set('n',o.V.n + '_done');")
+                val client = HttpClient(MockEngine { respond(code) })
+                val service = YouTubeCipherService(client)
+                try {
+                    service.preloadPlayerCode(PLAYER_URL)
+                    val program = privateField<Map<Any, Any>>(service, "programs").values.single()
+                    val parsed = privateField<Map<String, Any?>>(program, "parsed")
+                    var executions = 0
+                    // Each isolated runtime resolves its fixture's transform function once, even on failure.
+                    val counted =
+                        object : Map<String, Any?> by parsed {
+                            override fun get(key: String): Any? {
+                                if (key == "S" || key == "applyN") executions++
+                                return parsed[key]
+                            }
+                        }
+                    program.javaClass
+                        .getDeclaredField("parsed")
+                        .apply { isAccessible = true }
+                        .set(program, counted)
+                    val formats =
+                        List(50) {
+                            listOf(
+                                YouTubeCipherServiceTest().format(MEDIA_URL).copy(signatureCipher = "s=badSig&url=$MEDIA_URL"),
+                                YouTubeCipherServiceTest().format("$MEDIA_URL?n=badN"),
+                                YouTubeCipherServiceTest().format(MEDIA_URL).copy(signatureCipher = "s=abc&url=$MEDIA_URL?n=good"),
+                                YouTubeCipherServiceTest().format("$MEDIA_URL?n=good"),
+                            )
+                        }.flatten()
+                    repeat(2) {
+                        executions = 0
+                        val result = service.processFormats(PLAYER_URL, formats)
+                        for (group in result.chunked(4)) {
+                            assertNull(group[0].url)
+                            assertNull(group[1].url)
+                            assertEquals("$MEDIA_URL?n=good_done&signature=cba", group[2].url)
+                            assertEquals("$MEDIA_URL?n=good_done", group[3].url)
+                        }
+                        assertEquals(4, executions, "One execution per distinct signature/n per batch, including null results")
+                    }
+                } finally {
+                    service.dispose()
+                    client.close()
+                }
             }
         }
 
@@ -126,14 +152,12 @@ class YouTubeCipherServiceJvmTest {
                 mutex.lock()
                 try {
                     owner.cancel()
-                    // Cancelling the owner must not cancel the waiter, even while the cache lock is contended.
                     kotlinx.coroutines.delay(100)
                     assertTrue(waiter.isActive)
                 } finally {
                     mutex.unlock()
                 }
                 withTimeout(5_000) {
-                    // The waiter retries the download itself instead of inheriting the owner's cancellation.
                     assertEquals("retry code", waiter.await())
                     owner.join()
                     assertEquals("retry code", service.playerCode(PLAYER_URL))
@@ -147,35 +171,199 @@ class YouTubeCipherServiceJvmTest {
         }
 
     @Test
-    fun partialRemoteSolveReusesPreprocessedAndCompiledPlayer() =
+    fun compiledProgramsAreReusedAndLruBounded() =
         runBlocking {
-            val bootstrap = EjsChallengeSolver(QuickJsEngine(), InnerTubeLogger.NONE)
-            val preprocessed =
-                try {
-                    assertNotNull(bootstrap.solve(PLAYER_URL, PLAYER_CODE, listOf("sig" to listOf("warm"))).preprocessedPlayer)
-                } finally {
-                    bootstrap.dispose()
-                }
-            val client = HttpClient(MockEngine { respond(REMOTE_PLAYER_CODE) })
-            val store = RemotePlayerConfigStore(client, configRepository())
-            val service = YouTubeCipherService(client, store)
-            var reads = 0
+            val client = HttpClient(MockEngine { respond(PLAYER_CODE) })
+            val service = YouTubeCipherService(client)
             try {
-                service.setPreprocessedPlayerCache({
-                    reads++
-                    preprocessed
-                }, { _, _ -> })
-                repeat(3) { i ->
-                    val formats = listOf(format("$MEDIA_URL?n=remote"), format("$MEDIA_URL?n=local$i"))
-                    val result = service.processFormats(PLAYER_URL, formats)
-                    assertEquals("$MEDIA_URL?n=remote_done", result[0].url)
-                    assertEquals("$MEDIA_URL?n=local${i}_done", result[1].url)
+                assertEquals("$MEDIA_URL?n=one_done", service.processNParameter(PLAYER_URL, "$MEDIA_URL?n=one"))
+                val programs = privateField<Map<Any, Any>>(service, "programs")
+                val cached = programs.values.single()
+                assertEquals("$MEDIA_URL?n=two_done", service.processNParameter(PLAYER_URL, "$MEDIA_URL?n=two"))
+                assertSame(cached, programs.values.single())
+                repeat(6) {
+                    val url = "https://www.youtube.com/s/player/${10000000 + it}/player.js"
+                    assertEquals("$MEDIA_URL?n=value_done", service.processNParameter(url, "$MEDIA_URL?n=value"))
                 }
-                assertEquals(1, reads)
-                val engine = privateField<QuickJsEngine>(service, "engine")
-                assertEquals("1", engine.evaluate("__itxPlayers.size", maxResultLength = 8))
-                assertEquals(1, (client.engine as MockEngine).requestHistory.count { it.url.encodedPath.endsWith(".js") })
+                assertEquals(4, programs.size)
+                assertEquals(1, privateField<Map<*, *>>(service, "playerCodeCache").size)
+                service.dispose()
+                assertTrue(programs.isEmpty())
+                assertTrue(privateField<Map<*, *>>(service, "playerCodeCache").isEmpty())
             } finally {
+                service.dispose()
+                client.close()
+            }
+        }
+
+    @Test
+    fun compiledProgramsUseExactVariantAndHints() =
+        runBlocking {
+            val repository = YouTubeCipherServiceTest().configRepository()
+            val source = PLAYER_CODE.replace("return input.split('').reverse().join('');", "return a+'_'+input;")
+            val engine =
+                MockEngine { request ->
+                    if (request.url.encodedPath.endsWith("player_configs.json")) {
+                        respond(repository.cachedJson.replace("S(1,2,INPUT)", "S(3,4,INPUT)"))
+                    } else {
+                        respond(source)
+                    }
+                }
+            val client = HttpClient(engine)
+            val service = YouTubeCipherService(client, RemotePlayerConfigStore(client, repository))
+            try {
+                assertEquals("$MEDIA_URL?signature=1_abc", service.deobfuscateSignatureCipher(PLAYER_URL, "s=abc&url=$MEDIA_URL"))
+                val programs = privateField<Map<Any, Any>>(service, "programs")
+                val first = programs.values.single()
+                assertTrue(service.refreshAfterStreamRejection())
+                assertEquals("$MEDIA_URL?signature=3_abc", service.deobfuscateSignatureCipher(PLAYER_URL, "s=abc&url=$MEDIA_URL"))
+                assertEquals(2, programs.size)
+                assertTrue(programs.values.last() !== first)
+                assertEquals(1, engine.requestHistory.count { it.url.encodedPath.endsWith(".js") })
+            } finally {
+                service.dispose()
+                client.close()
+            }
+        }
+
+    @Test
+    fun failureCachesAreBoundedAndDisposeClearsCooldowns() =
+        runBlocking {
+            for (downloadFailure in listOf(false, true)) {
+                val client =
+                    HttpClient(
+                        MockEngine {
+                            respond(
+                                "unsupported",
+                                if (downloadFailure) io.ktor.http.HttpStatusCode.NotFound else io.ktor.http.HttpStatusCode.OK,
+                            )
+                        },
+                    )
+                val service = YouTubeCipherService(client)
+                try {
+                    repeat(6) {
+                        assertNull(service.processNParameter(PLAYER_URL.replace("12345678", "${10000000 + it}"), "$MEDIA_URL?n=value"))
+                    }
+                    val failures = privateField<Map<*, *>>(service, if (downloadFailure) "playerCodeFailures" else "compileFailures")
+                    assertEquals(4, failures.size)
+                    service.dispose()
+                    assertTrue(failures.isEmpty())
+                    assertTrue(privateField<Map<*, *>>(service, "playerCodeCache").isEmpty())
+                } finally {
+                    service.dispose()
+                    client.close()
+                }
+            }
+        }
+
+    @Test
+    fun disposalPreventsInflightPreloadFromRepopulatingCaches() =
+        runBlocking {
+            val started = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val client =
+                HttpClient(
+                    MockEngine {
+                        started.complete(Unit)
+                        release.await()
+                        respond(PLAYER_CODE)
+                    },
+                )
+            val service = YouTubeCipherService(client)
+            val preload = async { service.preloadPlayerCode(PLAYER_URL) }
+            try {
+                started.await()
+                service.dispose()
+                release.complete(Unit)
+                preload.await()
+                assertTrue(privateField<Map<*, *>>(service, "programs").isEmpty())
+                assertTrue(privateField<Map<*, *>>(service, "playerCodeCache").isEmpty())
+            } finally {
+                preload.cancelAndJoin()
+                service.dispose()
+                client.close()
+            }
+        }
+
+    @Test
+    fun oldDownloadCannotClearOrPoisonPostDisposeReservation() =
+        runBlocking {
+            for (oldFails in listOf(false, true)) {
+                val oldStarted = CompletableDeferred<Unit>()
+                val newStarted = CompletableDeferred<Unit>()
+                val releaseOld = CompletableDeferred<Unit>()
+                val releaseNew = CompletableDeferred<Unit>()
+                var requests = 0
+                val client =
+                    HttpClient(
+                        MockEngine {
+                            if (++requests == 1) {
+                                oldStarted.complete(Unit)
+                                releaseOld.await()
+                                if (oldFails) respond("missing", io.ktor.http.HttpStatusCode.NotFound) else respond(PLAYER_CODE)
+                            } else {
+                                newStarted.complete(Unit)
+                                releaseNew.await()
+                                respond(PLAYER_CODE.replace("_done", "_fresh"))
+                            }
+                        },
+                    )
+                val service = YouTubeCipherService(client)
+                val old = async { service.preloadPlayerCode(PLAYER_URL) }
+                var fresh: kotlinx.coroutines.Deferred<Unit>? = null
+                try {
+                    oldStarted.await()
+                    service.dispose()
+                    fresh = async { service.preloadPlayerCode(PLAYER_URL) }
+                    newStarted.await()
+                    releaseOld.complete(Unit)
+                    old.await()
+                    assertTrue(privateField<Map<*, *>>(service, "programs").isEmpty())
+                    assertTrue(privateField<Map<*, *>>(service, "playerCodeCache").isEmpty())
+                    assertTrue(privateField<Map<*, *>>(service, "playerCodeFailures").isEmpty())
+                    assertEquals(1, privateField<Map<*, *>>(service, "playerCodeDownloads").size)
+                    releaseNew.complete(Unit)
+                    fresh.await()
+                    assertEquals("$MEDIA_URL?n=value_fresh", service.processNParameter(PLAYER_URL, "$MEDIA_URL?n=value"))
+                    assertEquals(2, requests)
+                    assertTrue(privateField<Map<*, *>>(service, "playerCodeDownloads").isEmpty())
+                } finally {
+                    old.cancelAndJoin()
+                    fresh?.cancelAndJoin()
+                    service.dispose()
+                    client.close()
+                }
+            }
+        }
+
+    @Test
+    fun disposalWhileResolvingConfigCannotStartANewDownload() =
+        runBlocking {
+            val started = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val repository = YouTubeCipherServiceTest().configRepository()
+            val config = repository.cachedJson
+            repository.cachedJson = ""
+            val engine =
+                MockEngine {
+                    started.complete(Unit)
+                    release.await()
+                    respond(config)
+                }
+            val client = HttpClient(engine)
+            val service = YouTubeCipherService(client, RemotePlayerConfigStore(client, repository))
+            val preload = async { service.preloadPlayerCode(PLAYER_URL) }
+            try {
+                started.await()
+                service.dispose()
+                release.complete(Unit)
+                preload.await()
+                assertEquals(1, engine.requestHistory.size)
+                assertTrue(privateField<Map<*, *>>(service, "programs").isEmpty())
+                assertTrue(privateField<Map<*, *>>(service, "playerCodeCache").isEmpty())
+                assertTrue(privateField<Map<*, *>>(service, "playerCodeDownloads").isEmpty())
+            } finally {
+                preload.cancelAndJoin()
                 service.dispose()
                 client.close()
             }
@@ -190,8 +378,4 @@ class YouTubeCipherServiceJvmTest {
             .getDeclaredField(name)
             .apply { isAccessible = true }
             .get(instance) as T
-
-    private fun format(url: String) = YouTubeCipherServiceTest().format(url)
-
-    private fun configRepository(): PlayerConfigRepository = YouTubeCipherServiceTest().configRepository()
 }

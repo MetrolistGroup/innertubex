@@ -29,8 +29,8 @@ class RemotePlayerConfigParserTest {
 
         val config = result.configs.getValue("16ee6936")
         assertSame(config, result.configs.getValue("ca366632"))
-        assertEquals("mP(4,155,INPUT)", config.sigJsExpression)
-        assertEquals(RemotePlayerConfigParser.buildNJsExpression("Yx"), config.nJsExpression)
+        assertEquals("mP(4,155,INPUT)", config.signatureExpression)
+        assertEquals("Yx", config.nClass)
         assertEquals(20613, config.signatureTimestamp)
     }
 
