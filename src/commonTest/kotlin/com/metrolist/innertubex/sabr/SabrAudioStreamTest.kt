@@ -37,7 +37,8 @@ class SabrAudioStreamTest {
                 initializationResponsePrefix(1_025) +
                     (1..1_025)
                         .flatMap { sequence ->
-                            mediaResponseSegment(2, sequence, 0, byteArrayOf(1)).asIterable()
+                            // None covers the track start, so all of them wait for the opening sequence.
+                            mediaResponseSegment(2, sequence, sequence * 1_000L, byteArrayOf(1)).asIterable()
                         }.toByteArray()
             val engine =
                 MockEngine {
@@ -108,6 +109,64 @@ class SabrAudioStreamTest {
                 val chunks = SabrAudioStream(HttpClient(engine), bootstrap()).chunks().toList()
                 assertEquals(listOf(null, 5), chunks.map(SabrChunk::sequenceNumber))
             }
+        }
+
+    @Test
+    fun nonzeroOpeningSegmentIsEmittedBeforeTheResponseCompletes() =
+        runBlocking {
+            val releaseResponseTail = CompletableDeferred<Unit>()
+            val engine =
+                MockEngine {
+                    val channel = ByteChannel(autoFlush = true)
+                    launch {
+                        channel.writeFully(initializationResponsePrefix(5) + mediaResponseSegment(2, 5, 0L, byteArrayOf(5, 6, 7)))
+                        releaseResponseTail.await()
+                        channel.close()
+                    }
+                    respond(channel, headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"))
+                }
+            val chunks = withTimeout(2_000) { SabrAudioStream(HttpClient(engine), bootstrap()).chunks().take(2).toList() }
+            assertEquals(listOf(null, 5), chunks.map(SabrChunk::sequenceNumber))
+            releaseResponseTail.complete(Unit)
+            Unit
+        }
+
+    @Test
+    fun openingUsesTheLowestBufferedSequenceWithoutDroppingIt() =
+        runBlocking {
+            val engine =
+                MockEngine {
+                    respond(
+                        mediaResponseSegment(3, 5, 0L, byteArrayOf(8, 9)) +
+                            mediaResponseSegment(2, 4, 0L, byteArrayOf(5, 6, 7)) +
+                            initializationResponsePrefix(5),
+                        headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"),
+                    )
+                }
+            val chunks = SabrAudioStream(HttpClient(engine), bootstrap().copy(contentLengthBytes = null)).chunks().toList()
+            assertEquals(listOf(null, 4, 5), chunks.map(SabrChunk::sequenceNumber))
+        }
+
+    @Test
+    fun requiredProtectionStopsReadingAStalledResponse() =
+        runBlocking {
+            val engine =
+                MockEngine {
+                    val channel = ByteChannel(autoFlush = true)
+                    launch {
+                        channel.writeFully(
+                            initializationResponsePrefix(5) +
+                                umpPart(UmpPartType.STREAM_PROTECTION_STATUS, streamProtectionStatus(status = 3)),
+                        )
+                        // The body never finishes; the stream must not wait for it.
+                    }
+                    respond(channel, headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"))
+                }
+            val error =
+                withTimeout(2_000) {
+                    assertFailsWith<SabrProtocolException> { SabrAudioStream(HttpClient(engine), bootstrap()).chunks().toList() }
+                }
+            assertEquals(SabrFailureKind.ATTESTATION_REQUIRED, error.kind)
         }
 
     @Test

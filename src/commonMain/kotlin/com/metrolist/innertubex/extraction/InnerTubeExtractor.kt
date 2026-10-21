@@ -7,6 +7,7 @@ import com.metrolist.innertubex.d
 import com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy
 import com.metrolist.innertubex.extraction.strategy.ClientHealthMonitor
 import com.metrolist.innertubex.extraction.strategy.ContentAwareFallbackStrategy
+import com.metrolist.innertubex.extraction.strategy.InMemoryClientHealthMonitor
 import com.metrolist.innertubex.extraction.strategy.PlaybackClientCatalog
 import com.metrolist.innertubex.i
 import com.metrolist.innertubex.models.YouTubeLocale
@@ -23,11 +24,16 @@ import io.ktor.http.URLProtocol
 import io.ktor.http.Url
 import io.ktor.util.sha256
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.concurrent.Volatile
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
@@ -51,7 +57,8 @@ class InnerTubeExtractor internal constructor(
         /** Defaults to a [ContentAwareFallbackStrategy] that scores clients with [clientHealthMonitor]. */
         fallbackStrategy: ClientFallbackStrategy? = null,
         tokenProvider: TokenProvider? = null,
-        clientHealthMonitor: ClientHealthMonitor = ClientHealthMonitor.NONE,
+        /** Defaults to process-local memory; pass [ClientHealthMonitor.NONE] for stateless selection. */
+        clientHealthMonitor: ClientHealthMonitor = InMemoryClientHealthMonitor(),
         logger: InnerTubeLogger = InnerTubeLogger.NONE,
     ) : this(
         configParser = configParser,
@@ -112,6 +119,80 @@ class InnerTubeExtractor internal constructor(
         }
 
     private val playerConfigCache = mutableMapOf<Boolean, CachedPlayerConfig>()
+
+    // Guarded by playerConfigCacheMutex.
+    private var readPlayerBootstrap: (suspend () -> String?)? = null
+    private var writePlayerBootstrap: (suspend (String) -> Unit)? = null
+    private var playerBootstrapRestoreAttempted = false
+    private val bootstrapWriteScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val bootstrapWriteMutex = Mutex()
+
+    @Volatile
+    private var latestPlayerBootstrap: String? = null
+    private var writtenPlayerBootstrap: String? = null // Guarded by bootstrapWriteMutex.
+
+    /**
+     * Installs optional host storage for the public player bootstrap: player URL, signature timestamp and client
+     * version of the signed-out watch config. After a restart the first cipher-dependent extraction can then skip the
+     * watch-page request. Nothing session- or account-bound is stored, and a stale or rejected value simply refetches.
+     */
+    suspend fun setPlayerBootstrapCache(
+        read: suspend () -> String?,
+        write: suspend (String) -> Unit,
+    ) = playerConfigCacheMutex.withLock {
+        readPlayerBootstrap = read
+        writePlayerBootstrap = write
+        playerBootstrapRestoreAttempted = false
+    }
+
+    /** Seeds the signed-out cache entry from host storage once per installed store; caller holds the cache mutex. */
+    private suspend fun restorePlayerBootstrapLocked(nowMs: Long): CachedPlayerConfig? {
+        if (playerBootstrapRestoreAttempted) return null
+        val read = readPlayerBootstrap ?: return null
+        // The watch page also supplies visitor data; without one already in the session it still has to be fetched.
+        if (innerTube.sessionSnapshot().visitorData.isNullOrBlank()) return null
+        playerBootstrapRestoreAttempted = true
+        val stored =
+            try {
+                read()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+        val snapshot = PlayerBootstrapSnapshot.decode(stored) ?: return null
+        val identity = configIdentity(useLoginCookies = false)
+        val config = snapshot.toPlayerConfig(identity.locale, nowMs, PLAYER_CONFIG_CACHE_TTL_MS) ?: return null
+        logger.d(TAG, "player bootstrap restored", details = mapOf("ageMs" to (nowMs - snapshot.savedAtMs).toString()))
+        return CachedPlayerConfig(config, snapshot.savedAtMs, identity, usedLoginCookies = false)
+            .also { playerConfigCache[false] = it }
+    }
+
+    private fun persistPlayerBootstrapLocked(
+        config: PlayerConfig,
+        identity: ConfigIdentity,
+    ) {
+        val write = writePlayerBootstrap ?: return
+        val encoded = PlayerBootstrapSnapshot.of(config, identity.locale, Clock.System.now().toEpochMilliseconds())?.encode() ?: return
+        latestPlayerBootstrap = encoded
+        // Host storage I/O stays off the extraction path. Writes are serialized and always store the newest value,
+        // so a slow older write cannot land last and restore a superseded bootstrap.
+        bootstrapWriteScope.launch {
+            bootstrapWriteMutex.withLock {
+                val newest = latestPlayerBootstrap ?: return@withLock
+                if (newest == writtenPlayerBootstrap) return@withLock
+                try {
+                    write(newest)
+                    writtenPlayerBootstrap = newest
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    // Best effort: the next successful fetch writes again.
+                }
+            }
+        }
+    }
+
     private val playerConfigCacheMutex = Mutex()
     private val playerConfigFetchMutexes = mapOf(false to Mutex(), true to Mutex())
 
@@ -775,6 +856,7 @@ class InnerTubeExtractor internal constructor(
                 if (configIdentity(useLoginCookies) != expectedIdentity) {
                     throw CancellationException("InnerTube session changed")
                 }
+                if (!useLoginCookies) persistPlayerBootstrapLocked(config, expectedIdentity)
                 cachePlayerConfig(useLoginCookies, config, expectedIdentity)
             }
         }
@@ -784,7 +866,9 @@ class InnerTubeExtractor internal constructor(
         nowMs: Long,
     ): CachedPlayerConfig? =
         playerConfigCacheMutex.withLock {
+            // A restored bootstrap counts as cached, so an unusable one is refetched like any stale entry.
             getCachedPlayerConfigLocked(useLoginCookies, nowMs)
+                ?: if (!useLoginCookies) restorePlayerBootstrapLocked(nowMs) else null
         }
 
     private fun getCachedPlayerConfigLocked(
@@ -928,6 +1012,32 @@ class InnerTubeExtractor internal constructor(
                     continue
                 }
                 val rawSabrUrl = streamingData.serverAbrStreamingUrl
+                // Validate the bootstrap (duration, format identities, bounded config) before paying for any n transform.
+                val bootstrapResult =
+                    runCatching {
+                        response.toSabrBootstrap(
+                            clientId = result.clientId,
+                            clientVersion = result.clientVersion,
+                            audioFormat = audioFormat,
+                            poToken = result.streamingDataPoToken,
+                            requestUserAgent = result.userAgent,
+                            requestOrigin = sabrRequestOrigin(result.clientName),
+                            videoFormat = videoFormat,
+                        )
+                    }
+                val untransformedBootstrap = bootstrapResult.getOrNull()
+                if (untransformedBootstrap == null) {
+                    logger.w(
+                        TAG,
+                        "SABR bootstrap rejected",
+                        details =
+                            mapOf(
+                                "client" to result.clientName,
+                                "exceptionType" to (bootstrapResult.exceptionOrNull()?.let { it::class.simpleName } ?: "unknown"),
+                            ),
+                    )
+                    continue
+                }
                 if (rawSabrUrl?.hasNParameter() == true && !allowCipherProcessing) {
                     logger.d(TAG, "SABR transform deferred", details = mapOf("client" to result.clientName))
                     continue
@@ -955,39 +1065,14 @@ class InnerTubeExtractor internal constructor(
                     logger.w(TAG, "SABR endpoint rejected", details = mapOf("client" to result.clientName))
                     continue
                 }
+                // The transformed URL is validated again: checking only the original would not cover the rewrite.
                 val trackedSabrUrl =
                     processedSabrUrl?.let { candidate ->
                         runCatching {
                             requireAllowedSabrUrl(appendClientPlaybackNonce(candidate, clientPlaybackNonce))
                         }.getOrNull()
-                    }
-                if (processedSabrUrl != null && trackedSabrUrl == null) continue
-                val bootstrapResult =
-                    runCatching {
-                        response.toSabrBootstrap(
-                            clientId = result.clientId,
-                            clientVersion = result.clientVersion,
-                            audioFormat = audioFormat,
-                            poToken = result.streamingDataPoToken,
-                            requestUserAgent = result.userAgent,
-                            requestOrigin = sabrRequestOrigin(result.clientName),
-                            serverAbrStreamingUrlOverride = trackedSabrUrl,
-                            videoFormat = videoFormat,
-                        )
-                    }
-                val bootstrap = bootstrapResult.getOrNull()
-                if (bootstrap == null) {
-                    logger.w(
-                        TAG,
-                        "SABR bootstrap rejected",
-                        details =
-                            mapOf(
-                                "client" to result.clientName,
-                                "exceptionType" to (bootstrapResult.exceptionOrNull()?.let { it::class.simpleName } ?: "unknown"),
-                            ),
-                    )
-                    continue
-                }
+                    } ?: continue
+                val bootstrap = untransformedBootstrap.copy(serverAbrStreamingUrl = trackedSabrUrl)
                 val expiresAt =
                     streamingData.expiresInSeconds
                         ?.takeIf { it > 0 }
@@ -1152,6 +1237,7 @@ class InnerTubeExtractor internal constructor(
                             directUrl,
                             directHeaders,
                             requireBoundedRange,
+                            diagnostics.requestBudget,
                         )
                     if (requireBoundedRange && contentLength == null) {
                         logger.d(TAG, "bounded media skipped", details = mapOf("client" to result.clientName))
@@ -1164,6 +1250,7 @@ class InnerTubeExtractor internal constructor(
                                 checkNotNull(directVideoUrl),
                                 directHeaders,
                                 requireBoundedRange,
+                                diagnostics.requestBudget,
                             )
                         } else {
                             null
@@ -1358,6 +1445,7 @@ class InnerTubeExtractor internal constructor(
                     url,
                     directHeaders,
                     requireBoundedRange,
+                    diagnostics.requestBudget,
                 )
             if (requireBoundedRange && contentLength == null) {
                 logger.d(TAG, "bounded media skipped", details = mapOf("client" to result.clientName))
@@ -1370,6 +1458,7 @@ class InnerTubeExtractor internal constructor(
                         checkNotNull(videoUrl),
                         directHeaders,
                         requireBoundedRange,
+                        diagnostics.requestBudget,
                     )
                 } else {
                     null
@@ -1543,10 +1632,12 @@ class InnerTubeExtractor internal constructor(
         url: String,
         headers: Map<String, String>,
         requireBoundedRange: Boolean,
+        requestBudget: PlayerRequestBudget,
     ): Long? {
         contentLength?.takeIf { it > 0L }?.let { return it }
         if (!requireBoundedRange) return null
-        return withTimeoutOrNull(8.seconds) {
+        val timeout = requestBudget.timeLeftOrNull(8.seconds) ?: return null
+        return withTimeoutOrNull(timeout) {
             innerTube.mediaContentLength(url, headers)
         }
     }

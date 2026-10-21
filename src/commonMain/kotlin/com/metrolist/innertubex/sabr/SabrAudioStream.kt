@@ -290,6 +290,7 @@ private class SabrMediaStream(
                             val selectedHeaderContentLengths = mutableListOf<Long>()
                             var unselectedHeaderCount = 0
                             var responseProtectionStatus: Int? = null
+                            var terminalProtection = false
                             var responseProtectionMaxRetries: Int? = null
                             val pendingMediaBySequence = linkedMapOf<Int, SabrSegment>()
                             var firstNewSegmentHeader: SabrMediaHeader? = null
@@ -349,7 +350,19 @@ private class SabrMediaStream(
                             }
 
                             fun initialSeekSequence(): Int? {
-                                if (firstSequenceNumber != null || requestPlayerTimeMs <= 0L) return null
+                                if (firstSequenceNumber != null) return null
+                                if (requestPlayerTimeMs <= 0L) {
+                                    // Sequence 0 keeps its dedicated path; a nonzero opening segment that verifiably starts
+                                    // the track is emitted now instead of after the whole response arrives.
+                                    if (pendingMediaBySequence.containsKey(0)) return null
+                                    // Only the lowest buffered sequence may open the stream, so nothing below it is dropped.
+                                    val lowest =
+                                        pendingMediaBySequence.keys.minOrNull()?.let(pendingMediaBySequence::getValue) ?: return null
+                                    return lowest.header.sequenceNumber.takeIf {
+                                        lowest.header.startMs - requestPlayerTimeMs <= START_TIME_TOLERANCE_MS &&
+                                            lowest.checkedEndTimeMs() > requestPlayerTimeMs
+                                    }
+                                }
                                 return pendingMediaBySequence.values
                                     .firstOrNull { pending ->
                                         pending.header.startMs <= requestPlayerTimeMs &&
@@ -360,7 +373,8 @@ private class SabrMediaStream(
 
                             suspend fun emitAvailableMediaSegments() {
                                 val establishSeekSequence = initialSeekSequence()
-                                if (establishSeekSequence != null) seekStartEstablished = true
+                                // Only a real seek may drop earlier sequences; an opening segment still rejects unseen lower ones.
+                                if (establishSeekSequence != null && requestPlayerTimeMs > 0L) seekStartEstablished = true
                                 emitReadyMediaSegments(initialSeekSequence = establishSeekSequence)
                             }
 
@@ -491,6 +505,8 @@ private class SabrMediaStream(
                                     is SabrEvent.StreamProtectionStatus -> {
                                         responseProtectionStatus = event.status
                                         responseProtectionMaxRetries = event.maxRetries.takeIf { it >= 0 }
+                                        // REQUIRED always ends this stream; stop reading instead of waiting for the body to finish.
+                                        if (event.status >= PROTECTION_ATTESTATION_REQUIRED) terminalProtection = true
                                     }
 
                                     is SabrEvent.Error -> {
@@ -512,7 +528,7 @@ private class SabrMediaStream(
 
                             val readBuffer = ByteArray(64 * 1024)
                             try {
-                                while (true) {
+                                while (!terminalProtection) {
                                     // Only time spent waiting on the network counts; emitting can block on player readahead.
                                     val readStart = TimeSource.Monotonic.markNow()
                                     val count = channel.readAvailable(readBuffer, 0, readBuffer.size)
@@ -521,11 +537,18 @@ private class SabrMediaStream(
                                     if (count == 0) continue
                                     responseBytes += count
                                     lastResponseBytes = responseBytes
-                                    processor.feed(readBuffer, count).forEach { event -> processEvent(event) }
+                                    for (event in processor.feed(readBuffer, count)) {
+                                        processEvent(event)
+                                        if (terminalProtection) break
+                                    }
                                 }
-                                processor.finish()
-                                emitReadyMediaSegments(establishFromMinimum = true)
-                                if (pendingMediaBySequence.isNotEmpty()) {
+                                if (terminalProtection) {
+                                    channel.cancel(null)
+                                } else {
+                                    processor.finish()
+                                    emitReadyMediaSegments(establishFromMinimum = true)
+                                }
+                                if (!terminalProtection && pendingMediaBySequence.isNotEmpty()) {
                                     throw SabrProtocolException(
                                         "SABR segment sequence gap: expected ${checkNotNull(lastSequenceNumber) + 1}, " +
                                             "received ${pendingMediaBySequence.keys.minOrNull()}",
@@ -581,37 +604,40 @@ private class SabrMediaStream(
                                 if (omittedAllowancePending) omittedProtectionPendingCount++
                             }
 
-                            val diagnostics =
-                                SabrResponseDiagnostics(
-                                    requestNumber = currentRequestNumber,
-                                    requestPlayerTimeMs = requestPlayerTimeMs,
-                                    observedPlaybackPositionMs = observedPlaybackPositionMs,
-                                    bufferedRanges = bufferedRanges,
-                                    receivedSequences = selectedHeaderSequences,
-                                    receivedStartRanges = selectedHeaderStartRanges,
-                                    receivedContentLengths = selectedHeaderContentLengths,
-                                    initializationReceived = responseInitializationReceived,
-                                    playbackCookieSize = playbackCookie?.size ?: 0,
-                                    contextTypes = contexts.keys.toSet(),
-                                    activeContextTypes = activeContextTypes.toSet(),
-                                    targetAudioReadaheadMs = targetAudioReadaheadMs,
-                                    minAudioReadaheadMs = minAudioReadaheadMs,
-                                    maxTimeSinceLastRequestMs = maxTimeSinceLastRequestMs,
-                                    backoffTimeMs = backoffTimeMs,
-                                    responseBytes = responseBytes,
-                                    networkReadMs = networkReadMs,
-                                    httpStatus = response.status.value,
-                                    selectedMediaBytes = newSegmentsBytes,
-                                    cumulativeMediaBytes = cumulativeMediaBytes,
-                                    selectedSegmentCount = newSegmentCount,
-                                    cumulativeSegmentCount = cumulativeSegmentCount,
-                                    transientRetryCount = transientRetryCount,
-                                    noProgressRequestCount = requestsWithoutProgress,
-                                    protectionStatus = responseProtectionStatus,
-                                    protectionMaxRetries = responseProtectionMaxRetries,
-                                )
-                            onResponse?.invoke(diagnostics)
-                            logResponse(diagnostics)
+                            // Diagnostics are snapshots for observers; skip building them when nobody consumes them.
+                            if (onResponse != null || logger !== InnerTubeLogger.NONE) {
+                                val diagnostics =
+                                    SabrResponseDiagnostics(
+                                        requestNumber = currentRequestNumber,
+                                        requestPlayerTimeMs = requestPlayerTimeMs,
+                                        observedPlaybackPositionMs = observedPlaybackPositionMs,
+                                        bufferedRanges = bufferedRanges,
+                                        receivedSequences = selectedHeaderSequences,
+                                        receivedStartRanges = selectedHeaderStartRanges,
+                                        receivedContentLengths = selectedHeaderContentLengths,
+                                        initializationReceived = responseInitializationReceived,
+                                        playbackCookieSize = playbackCookie?.size ?: 0,
+                                        contextTypes = contexts.keys.toSet(),
+                                        activeContextTypes = activeContextTypes.toSet(),
+                                        targetAudioReadaheadMs = targetAudioReadaheadMs,
+                                        minAudioReadaheadMs = minAudioReadaheadMs,
+                                        maxTimeSinceLastRequestMs = maxTimeSinceLastRequestMs,
+                                        backoffTimeMs = backoffTimeMs,
+                                        responseBytes = responseBytes,
+                                        networkReadMs = networkReadMs,
+                                        httpStatus = response.status.value,
+                                        selectedMediaBytes = newSegmentsBytes,
+                                        cumulativeMediaBytes = cumulativeMediaBytes,
+                                        selectedSegmentCount = newSegmentCount,
+                                        cumulativeSegmentCount = cumulativeSegmentCount,
+                                        transientRetryCount = transientRetryCount,
+                                        noProgressRequestCount = requestsWithoutProgress,
+                                        protectionStatus = responseProtectionStatus,
+                                        protectionMaxRetries = responseProtectionMaxRetries,
+                                    )
+                                onResponse?.invoke(diagnostics)
+                                logResponse(diagnostics)
+                            }
 
                             // ponytail: allow at most five responses while an omitted allowance is pending per stream;
                             // refine only if observed protocol behavior warrants a larger budget.
@@ -740,6 +766,7 @@ private class SabrMediaStream(
     }
 
     private fun logResponse(diagnostics: SabrResponseDiagnostics) {
+        if (logger === InnerTubeLogger.NONE) return
         val notable =
             (diagnostics.protectionStatus ?: 0) >= PROTECTION_ATTESTATION_PENDING ||
                 diagnostics.selectedSegmentCount == 0 ||

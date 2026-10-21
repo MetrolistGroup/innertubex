@@ -66,6 +66,7 @@ class ContentAwareFallbackStrategy(
         }
 
         val candidates = mutableListOf<SelectedClient>()
+        val healthDemoted = mutableSetOf<String>()
         val visitorBackedLegacy =
             catalog.find("VISIONOS_0_1")?.manifest?.takeIf {
                 visitorDataAvailable && it.selectionMode == ClientSelectionMode.PROBE_ONLY
@@ -86,7 +87,8 @@ class ContentAwareFallbackStrategy(
                 return@forEach
             }
 
-            val (score, reasons) = score(manifest, request)
+            val (score, reasons, health) = score(manifest, request)
+            if (health <= HEALTH_DEMOTION_THRESHOLD) healthDemoted += manifest.id
             candidates += SelectedClient(manifest.client, manifest, score, reasons)
         }
 
@@ -96,8 +98,13 @@ class ContentAwareFallbackStrategy(
                     when (request.transportPreference) {
                         PlaybackTransportPreference.AUTO -> {
                             when {
+                                // Repeatedly failing clients go behind every healthy transport instead of only losing points.
+                                it.manifest?.id in healthDemoted -> 3
+
                                 it.client.useSabr -> 2
+
                                 request.hints.isKidsContent == true && it.client in kidsClients -> 0
+
                                 else -> 1
                             }
                         }
@@ -258,7 +265,7 @@ class ContentAwareFallbackStrategy(
     private fun score(
         manifest: PlaybackClientManifest,
         request: ClientSelectionRequest,
-    ): Pair<Int, List<String>> {
+    ): Triple<Int, List<String>, Int> {
         var score = manifest.priority
         val reasons = mutableListOf("base=${manifest.priority}")
 
@@ -352,6 +359,9 @@ class ContentAwareFallbackStrategy(
                 ClientHealthScope.from(request.hints, request.authenticated),
             )
         if (healthAdjustment != 0) adjust(healthAdjustment, "runtime-health")
-        return score to reasons
+        return Triple(score, reasons, healthAdjustment)
     }
 }
+
+/** About three consecutive failures, or any cooldown, in the default and host trackers. */
+private const val HEALTH_DEMOTION_THRESHOLD = -50

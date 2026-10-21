@@ -6,6 +6,8 @@ import com.metrolist.innertubex.models.response.GetTranscriptResponse
 import io.ktor.client.statement.HttpResponse
 import io.ktor.http.Url
 import io.ktor.http.isSuccess
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
@@ -30,7 +32,12 @@ public suspend fun InnerTube.transcriptCues(
 ): List<TranscriptCue> {
     require(SAFE_VIDEO_ID.matches(videoId)) { "Invalid video ID" }
     val response = getTranscript(client, videoId)
-    val transcript = RESPONSE_JSON.decodeFromString<GetTranscriptResponse>(response.bodyAsTextLimited(MAX_TRANSCRIPT_BYTES))
+    // Decoding and mapping a long transcript is CPU work; keep it off the caller's (possibly main) dispatcher.
+    return withContext(Dispatchers.Default) { parseTranscriptCues(response.bodyAsTextLimited(MAX_TRANSCRIPT_BYTES)) }
+}
+
+private fun parseTranscriptCues(body: String): List<TranscriptCue> {
+    val transcript = RESPONSE_JSON.decodeFromString<GetTranscriptResponse>(body)
     val groups =
         transcript.actions
             ?.firstOrNull()

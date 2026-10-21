@@ -1,6 +1,7 @@
 package com.metrolist.innertubex.cipher
 
 import com.metrolist.innertubex.InnerTubeLogger
+import com.metrolist.innertubex.ResponseTooLargeException
 import com.metrolist.innertubex.d
 import com.metrolist.innertubex.extraction.ExtractionCipherService
 import com.metrolist.innertubex.models.response.PlayerResponse.StreamingData.Format
@@ -14,13 +15,21 @@ import io.ktor.http.URLDecodeException
 import io.ktor.http.Url
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlin.time.Clock
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 /**
  * Service for deobfuscating YouTube player cipher challenges.
@@ -47,6 +56,8 @@ class YouTubeCipherService(
         private const val OKHTTP_USER_AGENT = "okhttp/5.4.0"
         private const val MAX_PLAYER_CACHE_ENTRIES = 4
         private const val ZEMER_FAILURE_RETRY_MS = 60_000L
+        private const val SOLVER_IDLE_RELEASE_MS = 120_000L
+        private val PLAYER_CODE_FAILURE_COOLDOWN = 15.seconds
         private const val MAX_PLAYER_SCRIPT_BYTES = 8 * 1024 * 1024
         private const val MAX_MEDIA_URL_LENGTH = 16 * 1024
         private const val MAX_SOLVER_OUTPUT_LENGTH = 256 * 1024
@@ -65,8 +76,16 @@ class YouTubeCipherService(
     private val zemerFailures = LinkedHashMap<String, FailedZemerSolver>()
     private val playerCodeCache = LinkedHashMap<String, String>()
     private val playerCodeDownloads = mutableMapOf<String, CompletableDeferred<String>>()
+    private val playerCodeFailures = LinkedHashMap<String, TimeSource.Monotonic.ValueTimeMark>()
     private val cacheMutex = Mutex()
     private val operationMutex = Mutex()
+    private val idleScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    // Guarded by operationMutex.
+    private var idleRelease: Job? = null
+
+    // Bumped by dispose(), so a preload that started earlier cannot recreate runtimes afterwards. Guarded by operationMutex.
+    private var disposeGeneration = 0L
 
     private data class PlayerCodeResult(
         val code: String,
@@ -131,29 +150,82 @@ class YouTubeCipherService(
 
     override suspend fun preloadPlayerCode(playerUrl: String) = preloadCanonicalPlayerCode(canonicalPlayerUrl(playerUrl))
 
-    private suspend fun preloadCanonicalPlayerCode(playerUrl: String) =
-        operationMutex.withLock {
-            val startMs = Clock.System.now().toEpochMilliseconds()
-            try {
-                // Remote configs solve from the raw player code; EJS only needs it when no preprocessed player is cached.
-                if (remotePlayerConfigStore?.getConfig(playerUrl) != null) {
-                    getOrDownloadPlayerCode(playerUrl)
-                } else {
-                    ejs.solve(playerUrl, { getOrDownloadPlayerCode(playerUrl).code }, listOf("sig" to listOf("prewarm")))
+    private suspend fun preloadCanonicalPlayerCode(playerUrl: String) {
+        val startMs = Clock.System.now().toEpochMilliseconds()
+        val generation = operationMutex.withLock { disposeGeneration }
+        try {
+            // Network work runs outside operationMutex so a speculative preload never blocks foreground solves.
+            if (prefetchZemerInputs(playerUrl)) {
+                // Build the executable solver now so first playback skips full-player evaluation.
+                withContext(Dispatchers.Default) {
+                    withSolverOperation { if (generation == disposeGeneration) warmZemerSolver(playerUrl) }
                 }
-                logger.d(
-                    TAG,
-                    "player JS preload done elapsed=${Clock.System.now().toEpochMilliseconds() - startMs}ms player=${playerUrl.logId()}",
-                )
+            } else {
+                val playerCode = if (ejs.needsFullPlayer(playerUrl)) getOrDownloadPlayerCode(playerUrl).code else null
+                withContext(Dispatchers.Default) {
+                    withSolverOperation {
+                        // Never download under the lock: without code in hand the warmup only uses cached preprocessing.
+                        if (generation == disposeGeneration) ejs.warmPlayer(playerUrl) { playerCode }
+                    }
+                }
+            }
+            logger.d(
+                TAG,
+                "player JS preload done elapsed=${Clock.System.now().toEpochMilliseconds() - startMs}ms player=${playerUrl.logId()}",
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.d(
+                TAG,
+                "player JS preload failed elapsed=${Clock.System.now().toEpochMilliseconds() - startMs}ms player=${playerUrl.logId()} type=${e.logType()}",
+            )
+        }
+    }
+
+    /**
+     * Resolves the remote config and, when no live Zemer solver exists, the raw player code. Runs outside
+     * [operationMutex]; the locked solve then hits these caches. Returns whether a remote config exists.
+     */
+    private suspend fun prefetchZemerInputs(playerUrl: String): Boolean {
+        val configStore = remotePlayerConfigStore ?: return false
+        val config = resolveZemerConfig(configStore, playerUrl) ?: return false
+        val faradayPlayerUrl = faradayCipherPlayerUrl(playerUrl) ?: return true
+        val live = cacheMutex.withLock { zemerSolverHitLocked(faradayPlayerUrl, config) }
+        if (live == null) {
+            try {
+                getOrDownloadPlayerCode(faradayPlayerUrl)
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Exception) {
-                logger.d(
-                    TAG,
-                    "player JS preload failed elapsed=${Clock.System.now().toEpochMilliseconds() - startMs}ms player=${playerUrl.logId()} type=${e.logType()}",
-                )
+            } catch (_: Exception) {
+                // The locked solve reports the failure and falls back.
             }
         }
+        return true
+    }
+
+    private suspend fun resolveZemerConfig(
+        configStore: RemotePlayerConfigStore,
+        playerUrl: String,
+    ): RemotePlayerConfigParser.HardcodedPlayerConfig? {
+        configStore.getConfig(playerUrl)?.let { return it }
+        // forceRefresh reserves a cooldown, so a second call from the locked solve does not refetch.
+        configStore.forceRefresh(missingHash = RemotePlayerConfigParser.extractPlayerHash(playerUrl))
+        return configStore.getConfig(playerUrl)
+    }
+
+    private suspend fun warmZemerSolver(playerUrl: String) {
+        val configStore = remotePlayerConfigStore ?: return
+        val config = configStore.getConfig(playerUrl) ?: return
+        val faradayPlayerUrl = faradayCipherPlayerUrl(playerUrl) ?: return
+        try {
+            zemerSolverFor(faradayPlayerUrl, config, configStore.configEpoch)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // getOrCreateZemerSolver records the failure cooldown.
+        }
+    }
 
     /**
      * Process streaming data formats and deobfuscate cipher URLs.
@@ -187,8 +259,9 @@ class YouTubeCipherService(
         val cipherFormats = formats.count { !it.signatureCipher.isNullOrBlank() || !it.cipher.isNullOrBlank() }
         val nFormats = directNValues.count { it != null }
         if (cipherFormats == 0 && nFormats == 0) return formats
+        prefetchZemerInputs(playerUrl)
         return withContext(Dispatchers.Default) {
-            operationMutex.withLock {
+            withSolverOperation {
                 val totalStartMs = Clock.System.now().toEpochMilliseconds()
 
                 val cached = cacheMutex.withLock { solverCacheHitLocked(playerUrl) }
@@ -582,7 +655,7 @@ class YouTubeCipherService(
         cipher: String,
     ): String? =
         withContext(Dispatchers.Default) {
-            operationMutex.withLock operation@{
+            withSolverOperation operation@{
                 try {
                     val params = parseCipherParams(cipher) ?: return@operation null
                     val url = params["url"] ?: return@operation null
@@ -647,7 +720,7 @@ class YouTubeCipherService(
         url: String,
     ): String? =
         withContext(Dispatchers.Default) {
-            operationMutex.withLock operation@{
+            withSolverOperation operation@{
                 try {
                     val nMatch = url.findNParameter() ?: return@operation null
                     val nValue = nMatch.groupValues[1]
@@ -698,20 +771,12 @@ class YouTubeCipherService(
     ): RemoteSolveResult {
         if (sigValues.isEmpty() && nValues.isEmpty()) return RemoteSolveResult(emptyMap(), emptyMap())
         val configStore = remotePlayerConfigStore ?: return RemoteSolveResult(emptyMap(), emptyMap())
-        var config = configStore.getConfig(playerUrl)
-        if (config == null) {
-            configStore.forceRefresh(
-                missingHash = RemotePlayerConfigParser.extractPlayerHash(playerUrl),
-            )
-            config = configStore.getConfig(playerUrl)
-        }
-        val activeConfig = config ?: return RemoteSolveResult(emptyMap(), emptyMap())
+        val activeConfig = resolveZemerConfig(configStore, playerUrl) ?: return RemoteSolveResult(emptyMap(), emptyMap())
         val faradayPlayerUrl = faradayCipherPlayerUrl(playerUrl) ?: return RemoteSolveResult(emptyMap(), emptyMap())
 
         return try {
-            val playerCode = getOrDownloadPlayerCode(faradayPlayerUrl).code
             val solver =
-                getOrCreateZemerSolver(faradayPlayerUrl, playerCode, activeConfig, configStore.configEpoch)
+                zemerSolverFor(faradayPlayerUrl, activeConfig, configStore.configEpoch)
                     ?: return RemoteSolveResult(emptyMap(), emptyMap())
             RemoteSolveResult(
                 sigByChallenge =
@@ -745,6 +810,42 @@ class YouTubeCipherService(
         return RemoteSolveResult(result.sigByChallenge, result.nByChallenge)
     }
 
+    /** Checks the live solver and failure cooldown before touching the raw player, which may need a download. */
+    private suspend fun zemerSolverFor(
+        playerUrl: String,
+        config: RemotePlayerConfigParser.HardcodedPlayerConfig,
+        configEpoch: Long,
+    ): ZemerCipherSolver? {
+        cacheMutex.withLock {
+            zemerSolverHitLocked(playerUrl, config)?.let { return it }
+            if (zemerFailureCoolingLocked(playerUrl, config, configEpoch)) return null
+        }
+        return getOrCreateZemerSolver(playerUrl, getOrDownloadPlayerCode(playerUrl).code, config, configEpoch)
+    }
+
+    private fun zemerSolverHitLocked(
+        playerUrl: String,
+        config: RemotePlayerConfigParser.HardcodedPlayerConfig,
+    ): ZemerCipherSolver? {
+        val cached = zemerCache[playerUrl] ?: return null
+        // An unrelated table change bumps the epoch; a solver built from this player's identical config is still valid.
+        if (cached.config != config) return null
+        zemerCache.remove(playerUrl)
+        zemerCache[playerUrl] = cached
+        return cached.solver
+    }
+
+    private fun zemerFailureCoolingLocked(
+        playerUrl: String,
+        config: RemotePlayerConfigParser.HardcodedPlayerConfig,
+        configEpoch: Long,
+    ): Boolean {
+        val failed = zemerFailures[playerUrl] ?: return false
+        return failed.configEpoch == configEpoch &&
+            failed.config == config &&
+            Clock.System.now().toEpochMilliseconds() - failed.failedAtMs < ZEMER_FAILURE_RETRY_MS
+    }
+
     private suspend fun getOrCreateZemerSolver(
         playerUrl: String,
         playerCode: String,
@@ -755,13 +856,7 @@ class YouTubeCipherService(
         var replaced: CachedZemerSolver? = null
         val solver =
             cacheMutex.withLock {
-                zemerCache[playerUrl]?.let { cached ->
-                    if (cached.config == config && cached.configEpoch == configEpoch) {
-                        zemerCache.remove(playerUrl)
-                        zemerCache[playerUrl] = cached
-                        return@withLock cached.solver
-                    }
-                }
+                zemerSolverHitLocked(playerUrl, config)?.let { return@withLock it }
                 zemerFailures.entries.removeAll { it.value.configEpoch != configEpoch }
                 zemerFailures[playerUrl]?.let { failed ->
                     if (failed.config == config && Clock.System.now().toEpochMilliseconds() - failed.failedAtMs < ZEMER_FAILURE_RETRY_MS) {
@@ -824,50 +919,75 @@ class YouTubeCipherService(
     }
 
     private suspend fun getOrDownloadPlayerCode(playerUrl: String): PlayerCodeResult {
-        var cachedCode: String? = null
-        var download: CompletableDeferred<String>? = null
-        var ownsDownload = false
-        cacheMutex.withLock {
-            cachedCode = playerCodeCache.remove(playerUrl)?.also { playerCodeCache[playerUrl] = it }
-            if (cachedCode == null) {
-                download = playerCodeDownloads[playerUrl]
-                if (download == null) {
-                    download = CompletableDeferred()
-                    playerCodeDownloads[playerUrl] = download
-                    ownsDownload = true
-                }
-            }
-        }
-
-        cachedCode?.let { return PlayerCodeResult(it, "preloaded") }
-
-        val activeDownload = download ?: return PlayerCodeResult(downloadPlayerScript(playerUrl), "downloaded")
-        if (!ownsDownload) {
-            return PlayerCodeResult(activeDownload.await(), "in-flight")
-        }
-
-        try {
-            val playerCode = downloadPlayerScript(playerUrl)
+        while (true) {
+            var cachedCode: String? = null
+            var download: CompletableDeferred<String>? = null
+            var ownsDownload = false
             cacheMutex.withLock {
-                playerCodeCache[playerUrl] = playerCode
-                trimPlayerCodeCacheLocked()
-                if (playerCodeDownloads[playerUrl] === activeDownload) {
-                    playerCodeDownloads.remove(playerUrl)
+                cachedCode = playerCodeCache.remove(playerUrl)?.also { playerCodeCache[playerUrl] = it }
+                if (cachedCode == null) {
+                    // A just-failed download is not repeated by the next path (prefetch, Zemer, EJS, parser) right away.
+                    playerCodeFailures[playerUrl]
+                        ?.takeIf { it.elapsedNow() < PLAYER_CODE_FAILURE_COOLDOWN }
+                        ?.let { throw IllegalStateException("Player script download recently failed") }
+                    download = playerCodeDownloads[playerUrl]
+                    if (download == null) {
+                        download = CompletableDeferred()
+                        playerCodeDownloads[playerUrl] = download
+                        ownsDownload = true
+                    }
                 }
             }
-            activeDownload.complete(playerCode)
-            return PlayerCodeResult(playerCode, "downloaded")
-        } catch (e: Exception) {
-            withContext(NonCancellable) {
-                activeDownload.completeExceptionally(e)
+
+            cachedCode?.let { return PlayerCodeResult(it, "preloaded") }
+
+            val activeDownload = download ?: return PlayerCodeResult(downloadPlayerScript(playerUrl), "downloaded")
+            if (!ownsDownload) {
+                try {
+                    return PlayerCodeResult(activeDownload.await(), "in-flight")
+                } catch (e: CancellationException) {
+                    // The owner (often a speculative preload) was cancelled, not this caller: download it ourselves.
+                    currentCoroutineContext().ensureActive()
+                    cacheMutex.withLock {
+                        if (playerCodeDownloads[playerUrl] === activeDownload) playerCodeDownloads.remove(playerUrl)
+                    }
+                    continue
+                }
+            }
+
+            try {
+                val playerCode = downloadPlayerScript(playerUrl)
                 cacheMutex.withLock {
+                    playerCodeCache[playerUrl] = playerCode
+                    trimPlayerCodeCacheLocked()
+                    playerCodeFailures.remove(playerUrl)
                     if (playerCodeDownloads[playerUrl] === activeDownload) {
                         playerCodeDownloads.remove(playerUrl)
                     }
                 }
+                activeDownload.complete(playerCode)
+                return PlayerCodeResult(playerCode, "downloaded")
+            } catch (e: Exception) {
+                withContext(NonCancellable) {
+                    // Wake waiters first so they never wait on a contended cache lock; a retrying waiter
+                    // unregisters this download itself if it gets there before the owner.
+                    activeDownload.completeExceptionally(e)
+                    cacheMutex.withLock {
+                        if (playerCodeDownloads[playerUrl] === activeDownload) {
+                            playerCodeDownloads.remove(playerUrl)
+                        }
+                        if (e !is CancellationException) recordPlayerCodeFailureLocked(playerUrl)
+                    }
+                }
+                throw e
             }
-            throw e
         }
+    }
+
+    private fun recordPlayerCodeFailureLocked(playerUrl: String) {
+        playerCodeFailures.remove(playerUrl)
+        playerCodeFailures[playerUrl] = TimeSource.Monotonic.markNow()
+        while (playerCodeFailures.size > MAX_PLAYER_CACHE_ENTRIES) playerCodeFailures.remove(playerCodeFailures.keys.first())
     }
 
     /**
@@ -898,7 +1018,7 @@ class YouTubeCipherService(
                 throw e
             } catch (e: Exception) {
                 lastFailure = e
-                if ((e is PlayerScriptHttpException && !e.retryable) || attempt == 2) throw e
+                if ((e is PlayerScriptHttpException && !e.retryable) || e is ResponseTooLargeException || attempt == 2) throw e
             }
             delay(250L shl attempt)
         }
@@ -1093,10 +1213,46 @@ class YouTubeCipherService(
     private fun Map<String, String>.hasValidSignatureParameter(): Boolean = get("sp")?.let(QUERY_PARAMETER_NAME_REGEX::matches) != false
 
     /**
+     * Runs a solve while holding [operationMutex]. Parser and Zemer runtimes each own a native heap and thread, so
+     * once no solve has run for a while they are released, as EJS already does for its runtime.
+     */
+    private suspend inline fun <T> withSolverOperation(block: () -> T): T =
+        operationMutex.withLock {
+            idleRelease?.cancel()
+            try {
+                block()
+            } finally {
+                idleRelease =
+                    idleScope.launch {
+                        delay(SOLVER_IDLE_RELEASE_MS)
+                        operationMutex.withLock {
+                            currentCoroutineContext().ensureActive()
+                            releaseSolverRuntimes()
+                        }
+                    }
+            }
+        }
+
+    private suspend fun releaseSolverRuntimes() {
+        val (cachedSolvers, cachedZemerSolvers) =
+            cacheMutex.withLock {
+                (cache.values.toList() to zemerCache.values.toList()).also {
+                    cache.clear()
+                    zemerCache.clear()
+                }
+            }
+        cachedSolvers.forEach { it.engine.dispose() }
+        cachedZemerSolvers.forEach { it.solver.dispose() }
+    }
+
+    /**
      * Clean up resources.
      */
     suspend fun dispose() =
         operationMutex.withLock {
+            idleRelease?.cancel()
+            idleRelease = null
+            disposeGeneration++
             val (cachedSolvers, cachedZemerSolvers) =
                 cacheMutex.withLock {
                     val solvers = cache.values.toList()

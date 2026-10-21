@@ -122,7 +122,8 @@ class InnerTubeSessionTest {
                     HttpClient(
                         MockEngine {
                             attempts++
-                            if (attempts == 1) CompletableDeferred<Unit>().await()
+                            // Stall the service worker past its own deadline, then the homepage past the overall one.
+                            if (attempts <= 2) CompletableDeferred<Unit>().await()
                             respond(serviceWorkerResponse("recovered"), HttpStatusCode.OK)
                         },
                     ),
@@ -132,7 +133,7 @@ class InnerTubeSessionTest {
                     assertFailsWith<kotlinx.coroutines.TimeoutCancellationException> { innerTube.fetchFreshVisitorData() }
                     assertEquals("recovered", innerTube.fetchFreshVisitorData())
                 }
-                assertEquals(2, attempts)
+                assertEquals(3, attempts)
             } finally {
                 innerTube.close()
                 innerTube.httpClient.close()

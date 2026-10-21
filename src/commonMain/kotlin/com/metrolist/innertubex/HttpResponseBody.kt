@@ -23,11 +23,13 @@ internal suspend fun HttpResponse.bodyAsTextLimited(
     val declaredLength = contentLength()
     if (declaredLength != null && declaredLength > maxBytes) {
         channel.cancel(null)
-        throw IllegalStateException("Response exceeded the $maxBytes byte limit")
+        throw ResponseTooLargeException(maxBytes)
     }
 
     val readBuffer = ByteArray(minOf(DEFAULT_READ_BUFFER_SIZE, maxBytes))
-    var bytes = ByteArray(minOf(declaredLength?.toInt() ?: DEFAULT_READ_BUFFER_SIZE, maxBytes))
+    // An early-exit read usually stops well before a declared full-page length, so grow into it instead.
+    val initialCapacity = declaredLength?.toInt()?.let { if (stopWhen != null) minOf(it, FIRST_STOP_CHECK_BYTES * 2) else it }
+    var bytes = ByteArray(minOf(initialCapacity ?: DEFAULT_READ_BUFFER_SIZE, maxBytes))
     var size = 0
     var nextCheck = FIRST_STOP_CHECK_BYTES
     try {
@@ -36,7 +38,7 @@ internal suspend fun HttpResponse.bodyAsTextLimited(
             if (count == -1) break
             if (count == 0) continue
             if (size > maxBytes - count) {
-                throw IllegalStateException("Response exceeded the $maxBytes byte limit")
+                throw ResponseTooLargeException(maxBytes)
             }
             if (size + count > bytes.size) {
                 bytes = bytes.copyOf(minOf(maxBytes, maxOf(size + count, bytes.size * 2)))
@@ -58,6 +60,11 @@ internal suspend fun HttpResponse.bodyAsTextLimited(
     }
     return bytes.decodeToString(endIndex = size)
 }
+
+/** A bounded body exceeded its limit; deterministic, so callers should not retry it. */
+internal class ResponseTooLargeException(
+    maxBytes: Int,
+) : IllegalStateException("Response exceeded the $maxBytes byte limit")
 
 private const val DEFAULT_READ_BUFFER_SIZE = 8 * 1024
 private const val FIRST_STOP_CHECK_BYTES = 32 * 1024

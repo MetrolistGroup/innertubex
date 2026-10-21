@@ -47,6 +47,7 @@ internal class EjsChallengeSolver(
         private const val TAG = "EjsChallengeSolver"
         private const val MAX_PREPROCESSED_PLAYERS = 1
         private const val MAX_SOLVED_CHALLENGES = 256
+        private const val WARMUP_CHALLENGE = "prewarm"
         private const val MAX_CACHED_CHALLENGE_LENGTH = 4096
 
         // Each compiled player keeps its whole closure alive inside the QuickJS heap.
@@ -235,43 +236,85 @@ internal class EjsChallengeSolver(
         loadFullPlayerJs: suspend () -> String?,
         requestOrder: List<Pair<String, List<String>>>,
     ): SolveResult {
-        if (requestOrder.isEmpty() || requestOrder.all { it.second.isEmpty() }) {
-            return SolveResult(emptyMap(), emptyMap(), null)
-        }
-        if (requestOrder.sumOf { it.second.size } > MAX_CHALLENGES ||
-            requestOrder.sumOf { (_, challenges) -> challenges.sumOf { it.length.toLong() } } >
-            MAX_CHALLENGE_PAYLOAD_LENGTH ||
-            requestOrder.any { (_, challenges) -> challenges.any { it.length > MAX_CHALLENGE_LENGTH } }
-        ) {
-            return SolveResult(emptyMap(), emptyMap(), null)
-        }
+        if (!isSolvableRequest(requestOrder)) return SolveResult(emptyMap(), emptyMap(), null)
 
         return withActivity {
             val cached = cachedChallenges(playerUrl, requestOrder)
             if (cached.solvesAll(requestOrder)) {
                 cached
             } else {
-                val missing =
-                    requestOrder.map { (kind, challenges) ->
-                        val solved = if (kind == "sig") cached.sigByChallenge else cached.nByChallenge
-                        kind to challenges.filterNot { it in solved }
-                    }
-                val fresh = solveUncached(playerUrl, loadFullPlayerJs, missing)
+                val fresh = solveUncached(playerUrl, loadFullPlayerJs, missingFrom(requestOrder, cached))
                 fresh
                     .copy(
                         sigByChallenge = cached.sigByChallenge + fresh.sigByChallenge,
                         nByChallenge = cached.nByChallenge + fresh.nByChallenge,
-                    ).also { result ->
-                        for ((kind, values) in listOf("sig" to result.sigByChallenge, "n" to result.nByChallenge)) {
-                            for ((challenge, value) in values) {
-                                if (playerUrl.length + challenge.length + value.length > MAX_CACHED_CHALLENGE_LENGTH) continue
-                                val key = ChallengeKey(playerUrl, kind, challenge)
-                                solvedChallenges.remove(key)
-                                solvedChallenges[key] = value
-                                while (solvedChallenges.size > MAX_SOLVED_CHALLENGES) solvedChallenges.remove(solvedChallenges.keys.first())
-                            }
-                        }
-                    }
+                    ).also { rememberSolved(playerUrl, it) }
+            }
+        }
+    }
+
+    /** True when solving for [playerUrl] would need the raw player script (nothing compiled or preprocessed in memory). */
+    suspend fun needsFullPlayer(playerUrl: String): Boolean =
+        operationMutex.withLock {
+            if (playerUrl in compiledPlayers || playerUrl in preprocessedByPlayerUrl) return@withLock false
+            if (!hasPersistentCache) return@withLock true
+            // Checking host storage here (it loads into memory on a hit) keeps a miss's download out of the solve lock.
+            ensureBundleHash()
+            loadPreprocessedPlayer(playerUrl, bundleHash?.let { preprocessedPlayerCacheKey(playerUrl, it) }) == null
+        }
+
+    /**
+     * Bootstraps the runtime and compiles [playerUrl] ahead of playback. Unlike a solve, this bypasses the answer
+     * cache, which can outlive the runtime and would otherwise turn a warmup into a no-op.
+     */
+    suspend fun warmPlayer(
+        playerUrl: String,
+        loadFullPlayerJs: suspend () -> String?,
+    ) {
+        withActivity {
+            if (bootstrapped && playerUrl in compiledPlayers) return@withActivity
+            val warmup = listOf("sig" to listOf(WARMUP_CHALLENGE))
+            val result = solveUncached(playerUrl, loadFullPlayerJs, warmup)
+            // The full-player path returns preprocessing without keeping compiled functions; compile it now so the
+            // first real challenge does not.
+            val preprocessed = result.preprocessedPlayer ?: preprocessedByPlayerUrl[playerUrl] ?: return@withActivity
+            if (playerUrl in compiledPlayers) return@withActivity
+            try {
+                solveOnce(playerUrl, preprocessed, warmup, preprocessed = true)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Warmup is best effort; the next real solve takes the normal path.
+            }
+        }
+    }
+
+    private fun isSolvableRequest(requestOrder: List<Pair<String, List<String>>>): Boolean =
+        requestOrder.any { it.second.isNotEmpty() } &&
+            requestOrder.sumOf { it.second.size } <= MAX_CHALLENGES &&
+            requestOrder.sumOf { (_, challenges) -> challenges.sumOf { it.length.toLong() } } <= MAX_CHALLENGE_PAYLOAD_LENGTH &&
+            requestOrder.none { (_, challenges) -> challenges.any { it.length > MAX_CHALLENGE_LENGTH } }
+
+    private fun missingFrom(
+        requestOrder: List<Pair<String, List<String>>>,
+        solved: SolveResult,
+    ): List<Pair<String, List<String>>> =
+        requestOrder.map { (kind, challenges) ->
+            val known = if (kind == "sig") solved.sigByChallenge else solved.nByChallenge
+            kind to challenges.filterNot { it in known }
+        }
+
+    private fun rememberSolved(
+        playerUrl: String,
+        result: SolveResult,
+    ) {
+        for ((kind, values) in listOf("sig" to result.sigByChallenge, "n" to result.nByChallenge)) {
+            for ((challenge, value) in values) {
+                if (playerUrl.length + challenge.length + value.length > MAX_CACHED_CHALLENGE_LENGTH) continue
+                val key = ChallengeKey(playerUrl, kind, challenge)
+                solvedChallenges.remove(key)
+                solvedChallenges[key] = value
+                while (solvedChallenges.size > MAX_SOLVED_CHALLENGES) solvedChallenges.remove(solvedChallenges.keys.first())
             }
         }
     }

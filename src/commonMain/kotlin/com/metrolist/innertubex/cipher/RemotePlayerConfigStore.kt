@@ -9,7 +9,12 @@ import io.ktor.client.request.header
 import io.ktor.http.HttpHeaders
 import io.ktor.http.Url
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -57,6 +62,10 @@ class RemotePlayerConfigStore private constructor(
 
     private val mutex = Mutex()
     private val refreshMutex = Mutex()
+    private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    @Volatile
+    private var backgroundRefresh: Job? = null
     private val legacyTimestampCache = LinkedHashMap<String, CachedLegacyTimestamp>()
 
     @Volatile
@@ -295,8 +304,31 @@ class RemotePlayerConfigStore private constructor(
         if (!repository.enabled) return null
         val hash = RemotePlayerConfigParser.extractPlayerHash(playerUrl) ?: return null
         val sourceUrl = configuredUrl() ?: return null
+        if (!hasFreshCache(sourceUrl, nowMs())) {
+            // Serve a known player from the stale table and revalidate in the background, keeping the refresh
+            // round-trip off the playback path. Unknown hashes still wait for the refresh.
+            mutex.withLock { ensureLoadedFromCache(sourceUrl) }
+            configs.takeIf { configSourceUrl == sourceUrl }?.get(hash)?.let { known ->
+                refreshInBackground()
+                return known
+            }
+        }
         refreshIfStale()
         return configs.takeIf { configSourceUrl == sourceUrl }?.get(hash)
+    }
+
+    private fun refreshInBackground() {
+        if (backgroundRefresh?.isActive == true) return
+        backgroundRefresh =
+            backgroundScope.launch {
+                try {
+                    refreshIfStale()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    // refresh() already records the attempt; the next lookup retries after its cooldown.
+                }
+            }
     }
 
     private suspend fun isKnownHash(
