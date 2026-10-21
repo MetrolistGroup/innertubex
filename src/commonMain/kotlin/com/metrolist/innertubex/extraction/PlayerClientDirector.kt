@@ -240,6 +240,7 @@ internal class PlayerClientDirector(
         var forceTokenizedTvHtml5 = false
         var onlyAccountGateFailures = true
         var onlyUnavailableFailures = true
+        var onlyBootstrapIndependentFailures = true
         val pendingClients = clients.toMutableList()
         while (pendingClients.isNotEmpty()) {
             val sabrIndex =
@@ -308,6 +309,9 @@ internal class PlayerClientDirector(
             onlyAccountGateFailures = onlyAccountGateFailures && attemptResult.failure?.status.isAccountGateStatus() &&
                 attemptResult.requestFailure == null
             onlyUnavailableFailures = onlyUnavailableFailures && attemptResult.failure?.status == "ERROR" &&
+                attemptResult.requestFailure == null
+            onlyBootstrapIndependentFailures = onlyBootstrapIndependentFailures &&
+                (attemptResult.failure?.status.isAccountGateStatus() || attemptResult.failure?.status == "ERROR") &&
                 attemptResult.requestFailure == null
             val healthScope = ClientHealthScope.from(effectiveRequestBudget.withKnownAge(hints), authenticated)
             selectedClient.manifest
@@ -520,6 +524,7 @@ internal class PlayerClientDirector(
             attempts,
             onlyAccountGateFailures = onlyAccountGateFailures && failures.isNotEmpty(),
             onlyUnavailableFailures = onlyUnavailableFailures && failures.isNotEmpty(),
+            onlyBootstrapIndependentFailures = onlyBootstrapIndependentFailures && failures.isNotEmpty(),
         )
     }
 
@@ -640,11 +645,7 @@ internal class PlayerClientDirector(
         } else {
             ClientAttemptResult(
                 attempt = null,
-                failure =
-                    PlayabilityFailure(
-                        status = response.playabilityStatus.status,
-                        reason = response.playabilityStatus.reason,
-                    ),
+                failure = response.playabilityStatus.toFailure(),
             )
         }
     }
@@ -765,12 +766,7 @@ internal class PlayerClientDirector(
             )
                 ?: return ClientAttemptResult(null, null)
         val initialPlayable = isPlayable(initialResponse, client)
-        val initialStatus = initialResponse.playabilityStatus.status
-        val initialFailure =
-            PlayabilityFailure(
-                status = initialStatus,
-                reason = initialResponse.playabilityStatus.reason,
-            )
+        val initialFailure = initialResponse.playabilityStatus.toFailure()
         if (initialPlayable) {
             if (!tokenPlan.tokenRequired || allowUntokenizedWebPoClient) {
                 if (tokenPlan.canMint && allowUntokenizedWebPoClient) {
@@ -932,7 +928,6 @@ internal class PlayerClientDirector(
                 requestBudget = requestBudget,
             )
                 ?: return ClientAttemptResult(null, fallbackFailure)
-        val tokenizedStatus = tokenizedResponse.playabilityStatus.status
         return if (isPlayable(tokenizedResponse, client)) {
             ClientAttemptResult(
                 ClientAttempt(
@@ -946,11 +941,7 @@ internal class PlayerClientDirector(
             logger.d(TAG, "tokenized response unavailable", details = mapOf("client" to client.clientName))
             ClientAttemptResult(
                 attempt = null,
-                failure =
-                    PlayabilityFailure(
-                        status = tokenizedStatus,
-                        reason = tokenizedResponse.playabilityStatus.reason,
-                    ),
+                failure = tokenizedResponse.playabilityStatus.toFailure(),
             )
         }
     }
@@ -1003,9 +994,7 @@ internal class PlayerClientDirector(
                 if (timeout < playerRequestTimeoutMs.milliseconds) throw PlayerRequestBudgetExhaustedException()
                 throw PlayerRequestTimeoutException(client.clientName, playerRequestTimeoutMs, error)
             }
-        if (response?.playabilityStatus?.status == "AGE_CHECK_REQUIRED" ||
-            response?.playabilityStatus?.status == "AGE_VERIFICATION_REQUIRED"
-        ) {
+        if (isConfirmedAgeGate(response?.playabilityStatus?.status, response?.playabilityStatus?.desktopLegacyAgeGateReason)) {
             requestBudget.ageRestricted = true
         }
         key?.let { requestBudget.remember(it, response) }
@@ -1542,6 +1531,11 @@ internal class PlayerRequestBudget(
         response: PlayerResponse?,
     ) {
         responses[key] = response
+    }
+
+    fun terminalFailureReason(): StreamResolveException.Reason? {
+        val reasons = responses.values.map { it?.playabilityStatus?.toFailure()?.terminalReason() }
+        return reasons.firstOrNull()?.takeIf { reason -> reasons.all { it == reason } }
     }
 
     fun firstHealthReport(

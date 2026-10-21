@@ -1,12 +1,31 @@
 package com.metrolist.innertubex.extraction
 
 import com.metrolist.innertubex.extraction.strategy.ClientFailureKind
+import com.metrolist.innertubex.models.response.PlayerResponse
 
 internal data class PlayabilityFailure(
     val status: String?,
     val reason: String?,
-    val category: ClientFailureKind = classifyPlayabilityFailure(status, reason),
+    val desktopLegacyAgeGateReason: Int? = null,
+    val category: ClientFailureKind = classifyPlayabilityFailure(status, desktopLegacyAgeGateReason),
 )
+
+internal fun PlayerResponse.PlayabilityStatus.toFailure(): PlayabilityFailure =
+    PlayabilityFailure(status, reason, desktopLegacyAgeGateReason)
+
+internal fun isConfirmedAgeGate(
+    status: String?,
+    desktopLegacyAgeGateReason: Int?,
+): Boolean =
+    status == "AGE_CHECK_REQUIRED" || status == "AGE_VERIFICATION_REQUIRED" ||
+        (status == "LOGIN_REQUIRED" && (desktopLegacyAgeGateReason ?: 0) > 0)
+
+internal fun PlayabilityFailure.terminalReason(): StreamResolveException.Reason? =
+    when {
+        status == "ERROR" -> StreamResolveException.Reason.UNAVAILABLE
+        isAgeRestricted() -> StreamResolveException.Reason.AGE_RESTRICTED
+        else -> null
+    }
 
 internal data class PlayerResponseBatch(
     val playableResponses: List<ClientResult>,
@@ -15,6 +34,7 @@ internal data class PlayerResponseBatch(
     val attempts: List<StreamAttemptDiagnostic>,
     val onlyAccountGateFailures: Boolean = false,
     val onlyUnavailableFailures: Boolean = false,
+    val onlyBootstrapIndependentFailures: Boolean = false,
 )
 
 internal fun String?.isAccountGateStatus(): Boolean =
@@ -34,30 +54,32 @@ internal fun classifyPlayabilityFailures(failures: List<PlayabilityFailure>): St
 private fun PlayabilityFailure.isAgeRestricted(): Boolean {
     val normalizedStatus = status.orEmpty().uppercase()
     val normalizedReason = reason.orEmpty().lowercase()
-    return normalizedStatus in setOf("AGE_CHECK_REQUIRED", "AGE_VERIFICATION_REQUIRED", "CONTENT_CHECK_REQUIRED") ||
+    return isConfirmedAgeGate(normalizedStatus, desktopLegacyAgeGateReason) || normalizedStatus == "CONTENT_CHECK_REQUIRED" ||
         listOf("confirm your age", "age-restricted", "age restricted", "age verification")
             .any(normalizedReason::contains)
 }
 
 private fun classifyPlayabilityFailure(
     status: String?,
-    reason: String?,
+    desktopLegacyAgeGateReason: Int?,
 ): ClientFailureKind {
     val normalizedStatus = status.orEmpty().uppercase()
     return when {
-        normalizedStatus in
-            setOf(
-                "AGE_CHECK_REQUIRED",
-                "AGE_VERIFICATION_REQUIRED",
-                "CONTENT_CHECK_REQUIRED",
-            )
-        -> ClientFailureKind.PLAYABILITY
+        isConfirmedAgeGate(normalizedStatus, desktopLegacyAgeGateReason) || normalizedStatus == "CONTENT_CHECK_REQUIRED" -> {
+            ClientFailureKind.PLAYABILITY
+        }
 
-        normalizedStatus in setOf("UNPLAYABLE", "VIDEO_UNAVAILABLE", "LIVE_STREAM_OFFLINE") -> ClientFailureKind.PLAYABILITY
+        normalizedStatus in setOf("UNPLAYABLE", "VIDEO_UNAVAILABLE", "LIVE_STREAM_OFFLINE") -> {
+            ClientFailureKind.PLAYABILITY
+        }
 
-        normalizedStatus == "LOGIN_REQUIRED" -> ClientFailureKind.TOKEN
+        normalizedStatus == "LOGIN_REQUIRED" -> {
+            ClientFailureKind.TOKEN
+        }
 
-        else -> ClientFailureKind.PLAYABILITY
+        else -> {
+            ClientFailureKind.PLAYABILITY
+        }
     }
 }
 

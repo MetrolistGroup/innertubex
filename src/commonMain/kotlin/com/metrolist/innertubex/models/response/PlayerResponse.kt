@@ -19,7 +19,10 @@ data class PlayerResponse(
     data class PlayabilityStatus(
         val status: String,
         val reason: String? = null,
-    )
+    ) {
+        // Keep this wire-only signal out of the public constructor and copy contract.
+        internal var desktopLegacyAgeGateReason: Int? = null
+    }
 
     @Serializable
     data class StreamingData(

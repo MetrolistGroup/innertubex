@@ -2054,7 +2054,7 @@ private const val PLAYER_FORMAT_FIELDS =
 
 /** Every field [PlayerResponse] decodes, and nothing else. Keep in sync with that model. */
 internal const val PLAYER_RESPONSE_FIELD_MASK =
-    "playabilityStatus(status,reason)," +
+    "playabilityStatus(status,reason,desktopLegacyAgeGateReason)," +
         "streamingData(formats($PLAYER_FORMAT_FIELDS),adaptiveFormats($PLAYER_FORMAT_FIELDS)," +
         "expiresInSeconds,hlsManifestUrl,dashManifestUrl,serverAbrStreamingUrl)," +
         "videoDetails(videoId,title,author,channelId,lengthSeconds,musicVideoType,viewCount,thumbnail,isLiveContent)," +
