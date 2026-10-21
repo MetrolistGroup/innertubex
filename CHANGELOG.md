@@ -6,6 +6,27 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-21
+
+### Changed
+
+- Player deciphering uses hosted QuackJS 0.1.0, with no QuickJS runtime, JNI cipher
+  loader or bundled EJS scripts. Unsupported players fail closed.
+- Compiled Kotlin players are reused across preload, batch and single operations.
+  Existing EJS prewarm/cache hooks remain binary-compatible no-ops; stored user data
+  is left untouched.
+- Integrates the extraction startup-latency and memory improvements from #28,
+  including bounded request budgets, remote-config refreshes and direct/SABR routing.
+
+### Fixed
+
+- Disposed player downloads cannot refill caches or invalidate newer downloads.
+- Unsupported token providers no longer start unused overlapping token mints.
+- Expired optional deadlines return null without a second-clock-read race.
+- Video-specific unavailability does not penalize unrelated videos' client health.
+- Nonzero SABR opening segments are reordered within a bounded startup window,
+  preserving early streaming, cancellation and sequence-gap checks.
+
 ## [0.10.0] - 2026-10-15
 
 ### Fixed
