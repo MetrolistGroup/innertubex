@@ -12,6 +12,6 @@ internal data class NextBody(
     val index: Int? = null,
     val params: String? = null,
     val continuation: String? = null,
-    val contentCheckOk: Boolean = true,
-    val racyCheckOk: Boolean = true,
+    val contentCheckOk: Boolean,
+    val racyCheckOk: Boolean,
 )

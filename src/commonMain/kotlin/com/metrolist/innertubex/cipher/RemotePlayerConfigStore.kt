@@ -297,6 +297,24 @@ class RemotePlayerConfigStore private constructor(
             }
         }
 
+    internal suspend fun getCachedSignatureTimestamp(playerUrl: String): Int? {
+        if (!repository.enabled) return null
+        val hash = RemotePlayerConfigParser.extractPlayerHash(playerUrl) ?: return null
+        return mutex.withLock {
+            configuredUrl()?.let { sourceUrl ->
+                ensureLoadedFromCache(sourceUrl)
+                configs
+                    .takeIf { configSourceUrl == sourceUrl }
+                    ?.get(hash)
+                    ?.signatureTimestamp
+                    ?.let { return@withLock it }
+            }
+            legacyConfigUrl(hash)?.let { url ->
+                legacyTimestampCache[url]?.takeIf { nowMs() - it.fetchedAtMs < REFRESH_TTL_MS }?.value
+            }
+        }
+    }
+
     suspend fun getSignatureTimestamp(playerUrl: String): Int? =
         getConfig(playerUrl)?.signatureTimestamp ?: getLegacySignatureTimestamp(playerUrl)
 

@@ -389,9 +389,9 @@ class InnerTube(
 
     private fun resolveSapisidValue(cookie: String?): String? {
         val cookieMap = cookie?.let(::parseCookieString).orEmpty()
-        return cookieMap["SAPISID"]
-            ?: cookieMap["__Secure-3PAPISID"]
-            ?: cookieMap["__Secure-1PAPISID"]
+        return cookieMap["SAPISID"]?.takeIf { it.isNotBlank() }
+            ?: cookieMap["__Secure-3PAPISID"]?.takeIf { it.isNotBlank() }
+            ?: cookieMap["__Secure-1PAPISID"]?.takeIf { it.isNotBlank() }
     }
 
     private fun sapisidAuthHeader(
@@ -781,9 +781,19 @@ class InnerTube(
                 } catch (e: InnerTubeHttpException) {
                     if (!masked || e.status != HttpStatusCode.BadRequest) throw e
                     // A schema change could invalidate the mask; never let that break playback.
-                    playerFieldMaskEnabled = false
-                    logger.w(TAG, "player field mask rejected, disabled for this process")
-                    extractionPlayerText(client, videoId, signatureTimestamp, poToken, requestSession, encryptedHostFlags, maxBytes, false)
+                    extractionPlayerText(
+                        client,
+                        videoId,
+                        signatureTimestamp,
+                        poToken,
+                        requestSession,
+                        encryptedHostFlags,
+                        maxBytes,
+                        false,
+                    ).also {
+                        playerFieldMaskEnabled = false
+                        logger.w(TAG, "player field mask rejected, disabled for this instance")
+                    }
                 }
             }
         }
@@ -966,7 +976,7 @@ class InnerTube(
                 }
             try {
                 val response =
-                    directClient.postBounded(TV_BEARER_PLAYER_ENDPOINT) {
+                    directClient.postBounded(TV_BEARER_PLAYER_ENDPOINT, keepErrorBody = false) {
                         contentType(ContentType.Application.Json)
                         headers {
                             append("X-Goog-Api-Format-Version", "1")
@@ -1032,6 +1042,8 @@ class InnerTube(
                         index = index,
                         params = params,
                         continuation = continuation,
+                        contentCheckOk = true,
+                        racyCheckOk = true,
                     ),
                 )
             }

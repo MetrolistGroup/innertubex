@@ -21,17 +21,20 @@ internal suspend fun HttpResponse.bodyAsTextLimited(
     require(maxBytes > 0) { "Maximum response size must be positive" }
     val channel = bodyAsChannel()
     val declaredLength = contentLength()
-    if (declaredLength != null && declaredLength > maxBytes) {
+    if (stopWhen == null && declaredLength != null && declaredLength > maxBytes) {
         channel.cancel(null)
         throw ResponseTooLargeException(maxBytes)
     }
 
     val readBuffer = ByteArray(minOf(DEFAULT_READ_BUFFER_SIZE, maxBytes))
     // An early-exit read usually stops well before a declared full-page length, so grow into it instead.
-    val initialCapacity = declaredLength?.toInt()?.let { if (stopWhen != null) minOf(it, FIRST_STOP_CHECK_BYTES * 2) else it }
-    var bytes = ByteArray(minOf(initialCapacity ?: DEFAULT_READ_BUFFER_SIZE, maxBytes))
+    val initialCapacity =
+        (declaredLength ?: DEFAULT_READ_BUFFER_SIZE.toLong())
+            .coerceIn(0L, minOf(maxBytes.toLong(), if (stopWhen != null) FIRST_STOP_CHECK_BYTES * 2L else maxBytes.toLong()))
+            .toInt()
+    var bytes = ByteArray(initialCapacity)
     var size = 0
-    var nextCheck = FIRST_STOP_CHECK_BYTES
+    var nextCheck = FIRST_STOP_CHECK_BYTES.toLong()
     try {
         while (true) {
             val count = channel.readAvailable(readBuffer, 0, readBuffer.size)
@@ -41,12 +44,12 @@ internal suspend fun HttpResponse.bodyAsTextLimited(
                 throw ResponseTooLargeException(maxBytes)
             }
             if (size + count > bytes.size) {
-                bytes = bytes.copyOf(minOf(maxBytes, maxOf(size + count, bytes.size * 2)))
+                bytes = bytes.copyOf(minOf(maxBytes.toLong(), maxOf(size.toLong() + count, bytes.size * 2L)).toInt())
             }
             readBuffer.copyInto(bytes, destinationOffset = size, endIndex = count)
             size += count
             if (stopWhen != null && size >= nextCheck) {
-                nextCheck = size * 2
+                nextCheck = size * 2L
                 val prefix = bytes.decodeToString(endIndex = size)
                 if (stopWhen(prefix)) {
                     channel.cancel(null)
