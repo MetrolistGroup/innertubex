@@ -25,6 +25,11 @@ token, namespace registration, or GPG key is required.
    change. Do not edit the baseline manually. If no public API change is
    intended, any baseline diff must be investigated rather than accepted.
 3. Run `./gradlew ktlintFormat allTests ktlintCheck apiCheck assemble publishToMavenLocal`.
+   Before changing the QuackJS pin, verify a current Web player with QuackJS's
+   full-player oracle, then run the opt-in harness against `WEB_REMIX` and
+   `WEB_REMIX_SABR` (for example `--id TwCeBl6tDoQ --client WEB_REMIX,WEB_REMIX_SABR --seconds 5`).
+   Record the player hash and sanitized result; fixture parity alone does not
+   establish live extraction or media delivery. Live checks remain manual.
 4. Simulate the tagged JitPack publication locally:
 
    ```bash

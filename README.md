@@ -77,7 +77,7 @@ val stream = extractor.extract(
 
 ### Player cipher backend
 
-The common backend uses hosted `com.github.MetrolistGroup.quackjs:quackjs:0.1.0`,
+The common backend uses hosted `com.github.MetrolistGroup.quackjs:quackjs:0.1.1`,
 without JavaScript engines, JNI, or bundled solver scripts. `preloadPlayerCode(url)`
 downloads and compiles the player off the UI thread; compiled programs are reused
 across batches and single calls. Unsupported players fail closed: affected formats
@@ -138,6 +138,20 @@ sanitized local reports. Run `--help` for options. Live checks are never part
 of `allTests`.
 
 ## Development
+
+To test changes in the sibling `../quackjs` checkout without changing the hosted
+dependency, pass `-PuseLocalQuackJS`. This also works when Metrolist includes
+InnerTubeX with `-PuseLocalInnerTubeX -PuseLocalQuackJS`.
+
+Watch configs that advertise `player_es6` first try the standard `player_ias`
+build for the same player hash, including when remote hints are unavailable.
+A failed preferred build still falls back to the exact supplied variant.
+
+Unsupported player compilations retain their bounded cooldown, but subsequent
+attempts report the cached diagnostic reason. Compile diagnostics are bounded and
+URLs are redacted. A playable response with unusable audio is reported as
+`NO_PLAYABLE_STREAM`, including explicit tracks; an explicit metadata hint alone
+does not establish a content restriction.
 
 ```bash
 ./gradlew ktlintFormat

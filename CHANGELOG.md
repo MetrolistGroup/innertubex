@@ -6,6 +6,19 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-22
+
+### Fixed
+
+- Players that use `Math.pow` and other Math builtins (for example `55de7e60`)
+  compile again by depending on QuackJS 0.1.1, restoring `WEB_REMIX` and
+  `WEB_REMIX_SABR` deciphering.
+- The cipher service selects the same-hash IAS player variant when the advertised
+  ES6 script cannot be parsed, keeping the exact script as a fallback.
+- Cipher compile warnings include the bounded, URL-redacted failure reason, and
+  cached compile failures are still reported during the cooldown.
+- Deciphering failures are no longer classified as explicit-content restrictions.
+
 ## [0.11.0] - 2026-10-21
 
 ### Changed

@@ -49,7 +49,7 @@ kotlin {
             api(libs.ktor.client.core)
             api(libs.kotlinx.serialization.json)
             api(libs.kotlinx.coroutines.core)
-            implementation("com.github.MetrolistGroup.quackjs:quackjs:0.1.0")
+            implementation("com.github.MetrolistGroup.quackjs:quackjs:0.1.1")
         }
         commonTest.dependencies {
             implementation(kotlin("test"))
