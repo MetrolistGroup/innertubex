@@ -48,11 +48,17 @@ class YouTubeCipherServiceJvmTest {
                     },
                 )
             try {
-                repeat(3) { assertNull(service.processNParameter(PLAYER_URL, "$MEDIA_URL?n=challenge")) }
-                assertEquals(2, failures)
+                assertNull(service.processNParameter(PLAYER_URL, "$MEDIA_URL?n=challenge"))
+                val cachedFailures = privateField<Map<Any, Any>>(service, "compileFailures").toMap()
+                repeat(2) {
+                    assertNull(service.processNParameter(PLAYER_URL, "$MEDIA_URL?n=challenge"))
+                    val currentFailures = privateField<Map<Any, Any>>(service, "compileFailures")
+                    cachedFailures.forEach { (key, failure) -> assertSame(failure, currentFailures[key]) }
+                }
+                assertEquals(6, failures)
                 assertTrue(service.refreshAfterStreamRejection())
                 assertNull(service.processNParameter(PLAYER_URL, "$MEDIA_URL?n=challenge"))
-                assertEquals(4, failures)
+                assertEquals(8, failures)
                 val failedPrograms = privateField<Map<*, Any>>(service, "compileFailures")
                 assertEquals(3, failedPrograms.size)
                 for (failed in failedPrograms.values) {
@@ -61,9 +67,9 @@ class YouTubeCipherServiceJvmTest {
                     field.setLong(failed, field.getLong(failed) - 61.seconds.inWholeNanoseconds)
                 }
                 assertNull(service.processNParameter(PLAYER_URL, "$MEDIA_URL?n=expired"))
-                assertEquals(6, failures)
+                assertEquals(10, failures)
                 assertNull(service.processNParameter(PLAYER_URL, "$MEDIA_URL?n=cooling"))
-                assertEquals(6, failures)
+                assertEquals(12, failures)
             } finally {
                 service.dispose()
                 client.close()

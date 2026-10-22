@@ -579,7 +579,7 @@ class InnerTubeExtractor internal constructor(
                     diagnostics = diagnostics,
                 )
             if (embeddedStream != null) return embeddedStream
-            throwExtractionFailure(hints, diagnostics)
+            throwExtractionFailure(diagnostics)
         }
 
         val authenticatedPremiumHighQuality =
@@ -607,7 +607,7 @@ class InnerTubeExtractor internal constructor(
                 diagnostics = diagnostics,
             )
         if (configFreeEligible && !deferConfigFree) extractConfigFree()?.let { return it }
-        if (diagnostics.unavailable) throwExtractionFailure(hints, diagnostics)
+        if (diagnostics.unavailable) throwExtractionFailure(diagnostics)
 
         suspend fun extractWithWatchConfig(useLoginCookies: Boolean): ExtractedStream? =
             try {
@@ -647,9 +647,9 @@ class InnerTubeExtractor internal constructor(
                 )
         val stream = extractWithWatchConfig(useLoginCookies = cookieFirst)
         if (stream != null) return stream
-        if (diagnostics.unavailable) throwExtractionFailure(hints, diagnostics)
+        if (diagnostics.unavailable) throwExtractionFailure(diagnostics)
         if (deferConfigFree) extractConfigFree()?.let { return it }
-        if (diagnostics.unavailable) throwExtractionFailure(hints, diagnostics)
+        if (diagnostics.unavailable) throwExtractionFailure(diagnostics)
 
         if (cookieFirst && !diagnostics.triedPublicConfigBeforeLogin) {
             logger.w(TAG, "signed-out watch config fallback")
@@ -661,7 +661,7 @@ class InnerTubeExtractor internal constructor(
             if (authenticatedStream != null) return authenticatedStream
         }
 
-        if (diagnostics.unavailable) throwExtractionFailure(hints, diagnostics)
+        if (diagnostics.unavailable) throwExtractionFailure(diagnostics)
 
         // Embedded player context fallback when the regular watch-page clients fail.
         // Uploaded songs intentionally do not use this path because embedded
@@ -680,7 +680,7 @@ class InnerTubeExtractor internal constructor(
             if (embeddedStream != null) return embeddedStream
         }
 
-        if (diagnostics.unavailable) throwExtractionFailure(hints, diagnostics)
+        if (diagnostics.unavailable) throwExtractionFailure(diagnostics)
         val classifiedFailure = classifyPlayabilityFailures(diagnostics.failures)
         if (shouldTryUnknownKidsFallback(diagnostics.requestBudget.withKnownAge(hints), classifiedFailure)) {
             val kidsStream =
@@ -696,7 +696,7 @@ class InnerTubeExtractor internal constructor(
             if (kidsStream != null) return kidsStream
         }
 
-        throwExtractionFailure(hints, diagnostics)
+        throwExtractionFailure(diagnostics)
     }
 
     private fun shouldTryUnknownKidsFallback(
@@ -805,10 +805,7 @@ class InnerTubeExtractor internal constructor(
         )
     }
 
-    private fun throwExtractionFailure(
-        hints: ContentHints,
-        diagnostics: ExtractionDiagnostics,
-    ): Nothing {
+    private fun throwExtractionFailure(diagnostics: ExtractionDiagnostics): Nothing {
         diagnostics.requestBudget.timeLeft(Duration.INFINITE)
         if (!diagnostics.sawPlayableResponse) {
             classifyPlayabilityFailures(diagnostics.failures)?.let { reason ->
@@ -832,12 +829,7 @@ class InnerTubeExtractor internal constructor(
             }
         }
         throw StreamResolveException(
-            reason =
-                if (hints.isExplicit == true) {
-                    StreamResolveException.Reason.EXPLICIT_UNSUPPORTED
-                } else {
-                    StreamResolveException.Reason.NO_PLAYABLE_STREAM
-                },
+            reason = StreamResolveException.Reason.NO_PLAYABLE_STREAM,
             message = "No playable stream found for this track.",
             diagnostics = diagnostics.snapshot(),
         )

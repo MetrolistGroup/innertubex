@@ -54,6 +54,7 @@ class YouTubeCipherService(
         private const val MAX_SOLVER_OUTPUT_LENGTH = 65_536
         private val N_PARAMETER_REGEX = Regex("[&?]n=([^&#]+)")
         private val QUERY_PARAMETER_NAME_REGEX = Regex("[A-Za-z][A-Za-z0-9._~-]*")
+        private val LOG_URL_REGEX = Regex("""https?://\S+""", RegexOption.IGNORE_CASE)
     }
 
     private data class ProgramKey(
@@ -64,6 +65,7 @@ class YouTubeCipherService(
     private data class FailedProgram(
         val configEpoch: Long,
         val failedAt: TimeSource.Monotonic.ValueTimeMark,
+        val error: UnsupportedPlayerException,
     )
 
     private val programs = LinkedHashMap<ProgramKey, PlayerProgram>()
@@ -219,11 +221,21 @@ class YouTubeCipherService(
         playerUrl: String,
         error: Exception,
     ) {
+        val reason =
+            if (error is UnsupportedPlayerException) {
+                error.message
+                    ?.replace(LOG_URL_REGEX, "<redacted>")
+                    ?.replace('\n', ' ')
+                    ?.replace('\r', ' ')
+                    ?.take(240)
+            } else {
+                null
+            }
         logger.w(
             TAG,
             "Kotlin player unavailable player=${RemotePlayerConfigParser.extractPlayerHash(
                 playerUrl,
-            ) ?: "unknown"} type=${error::class.simpleName}",
+            ) ?: "unknown"} type=${error::class.simpleName}${reason?.let { " reason=$it" }.orEmpty()}",
         )
     }
 
@@ -240,7 +252,9 @@ class YouTubeCipherService(
             }
         val hints = config?.let { PlayerHints(it.signatureExpression, it.nClass, it.signatureTimestamp) }
         val epoch = store?.configEpoch ?: 0L
-        val preferredUrl = (if (hints != null) faradayCipherPlayerUrl(playerUrl) else null) ?: canonicalPlayerUrl(playerUrl)
+        val preferredUrl =
+            (if (hints != null || "/player_es6.vflset/" in playerUrl) faradayCipherPlayerUrl(playerUrl) else null)
+                ?: canonicalPlayerUrl(playerUrl)
         try {
             programAt(ProgramKey(preferredUrl, hints), epoch, generation)?.let { return it }
         } catch (e: CancellationException) {
@@ -264,7 +278,7 @@ class YouTubeCipherService(
                 programs[key] = it
                 return it
             }
-            if (compilationCoolingLocked(key, epoch)) return null
+            cachedCompilationFailureLocked(key, epoch)?.let { throw it }
         }
         // Never hold the CPU-operation lock during network IO: speculative preload must not block playback.
         val code = getOrDownloadPlayerCode(key.playerUrl, generation)
@@ -277,7 +291,7 @@ class YouTubeCipherService(
                         programs[key] = it
                         return@withContext it
                     }
-                    if (compilationCoolingLocked(key, epoch)) return@withContext null
+                    cachedCompilationFailureLocked(key, epoch)?.let { throw it }
                 }
                 val program =
                     try {
@@ -291,7 +305,7 @@ class YouTubeCipherService(
                         currentCoroutineContext().ensureActive()
                         cacheMutex.withLock {
                             compileFailures.remove(key)
-                            compileFailures[key] = FailedProgram(epoch, TimeSource.Monotonic.markNow())
+                            compileFailures[key] = FailedProgram(epoch, TimeSource.Monotonic.markNow(), e)
                             while (compileFailures.size > MAX_PLAYER_CACHE_ENTRIES) compileFailures.remove(compileFailures.keys.first())
                         }
                         throw e
@@ -308,10 +322,11 @@ class YouTubeCipherService(
         }
     }
 
-    private fun compilationCoolingLocked(
+    private fun cachedCompilationFailureLocked(
         key: ProgramKey,
         epoch: Long,
-    ): Boolean = compileFailures[key]?.let { it.configEpoch == epoch && it.failedAt.elapsedNow() < COMPILE_FAILURE_COOLDOWN } == true
+    ): UnsupportedPlayerException? =
+        compileFailures[key]?.takeIf { it.configEpoch == epoch && it.failedAt.elapsedNow() < COMPILE_FAILURE_COOLDOWN }?.error
 
     private suspend fun getOrDownloadPlayerCode(
         playerUrl: String,

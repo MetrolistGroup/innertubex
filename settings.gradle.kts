@@ -24,4 +24,11 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "innertubex"
+if (providers.gradleProperty("useLocalQuackJS").isPresent) {
+    includeBuild("../quackjs") {
+        dependencySubstitution {
+            substitute(module("com.github.MetrolistGroup.quackjs:quackjs")).using(project(":"))
+        }
+    }
+}
 include(":harness")

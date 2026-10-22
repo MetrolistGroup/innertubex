@@ -1,5 +1,7 @@
 package com.metrolist.innertubex.cipher
 
+import com.metrolist.innertubex.InnerTubeLogEvent
+import com.metrolist.innertubex.InnerTubeLogger
 import com.metrolist.innertubex.models.response.PlayerResponse
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
@@ -22,6 +24,33 @@ import kotlin.test.assertTrue
 import kotlin.time.Clock
 
 class YouTubeCipherServiceTest {
+    @Test
+    fun unsupportedCompilationRemainsDiagnosableDuringCooldownWithoutLeakingUrls() =
+        runBlocking {
+            for (operation in listOf("Math.missing(2)", "Math['https://r1.googlevideo.com/videoplayback?sig=private'](2)")) {
+                val events = mutableListOf<InnerTubeLogEvent>()
+                val engine = MockEngine { respond(PLAYER_CODE.replace("o.V.n + '_done'", operation)) }
+                val client = HttpClient(engine)
+                val service = YouTubeCipherService(client, logger = InnerTubeLogger { events += it })
+                try {
+                    repeat(3) {
+                        assertNull(service.processNParameter(PLAYER_URL, "$MEDIA_URL?n=challenge"))
+                        val failure = events.last { it.message.startsWith("Kotlin player unavailable") }
+                        val reason = failure.message.substringAfter(" reason=", missingDelimiterValue = "")
+                        assertTrue(reason.isNotEmpty())
+                        assertTrue(reason.contains(if (operation.contains("private")) "<redacted>" else "Math.missing"), reason)
+                        assertFalse(reason.contains("private") || reason.contains("googlevideo.com"), reason)
+                        assertTrue(reason.length <= 240)
+                    }
+                    assertEquals(3, events.count { it.message.startsWith("Kotlin player unavailable") })
+                    assertEquals(1, engine.requestHistory.size)
+                } finally {
+                    service.dispose()
+                    client.close()
+                }
+            }
+        }
+
     @Test
     fun hintedAndDiscoveredProgramsSolveBatchesAndSingleChallenges() =
         runBlocking {
@@ -63,6 +92,28 @@ class YouTubeCipherServiceTest {
             try {
                 assertEquals("$MEDIA_URL?signature=cba", service.deobfuscateSignatureCipher(PLAYER_URL, "s=abc&url=$MEDIA_URL"))
                 assertEquals("$MEDIA_URL?n=value_done", service.processNParameter(PLAYER_URL, "$MEDIA_URL?n=value"))
+            } finally {
+                service.dispose()
+                client.close()
+            }
+        }
+
+    @Test
+    fun hintFreeEs6WatchConfigUsesTheStandardIasVariant() =
+        runBlocking {
+            val supplied = "https://www.youtube.com/s/player/12345678/player_es6.vflset/pl_PL/base.js"
+            val preferred = "https://www.youtube.com/s/player/12345678/player_ias.vflset/en_GB/base.js"
+            val engine =
+                MockEngine { request ->
+                    assertEquals(preferred, request.url.toString())
+                    respond(PLAYER_CODE)
+                }
+            val client = HttpClient(engine)
+            val service = YouTubeCipherService(client)
+            try {
+                assertEquals("$MEDIA_URL?n=value_done", service.processNParameter(supplied, "$MEDIA_URL?n=value"))
+                assertEquals("$MEDIA_URL?signature=cba", service.deobfuscateSignatureCipher(supplied, "s=abc&url=$MEDIA_URL"))
+                assertEquals(1, engine.requestHistory.size)
             } finally {
                 service.dispose()
                 client.close()
@@ -116,7 +167,7 @@ class YouTubeCipherServiceTest {
                                 assertEquals("cba", Url(result.url!!).parameters["signature"])
                                 assertEquals("value_done", Url(result.url).parameters["n"])
                             }
-                            val expected = if (hinted || suffix.startsWith("player_ias")) listOf(preferred, supplied) else listOf(supplied)
+                            val expected = listOf(preferred, supplied)
                             assertEquals(expected, engine.requestHistory.map { it.url.toString() })
                         } finally {
                             service.dispose()

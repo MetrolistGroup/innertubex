@@ -45,6 +45,31 @@ import kotlin.time.Duration.Companion.seconds
 
 class ExtractionRound2Test {
     @Test
+    fun undecipherablePlayableResponsesAreNotMisclassifiedAsExplicitRestrictions() =
+        runBlocking {
+            for (explicit in listOf(false, true)) {
+                val client = client { DIRECT.replace("videoplayback?id=", "videoplayback?n=challenge&id=") }
+                val cipher =
+                    object : ExtractionCipherService by NoCipher {
+                        override suspend fun processFormats(
+                            playerUrl: String,
+                            formats: List<PlayerResponse.StreamingData.Format>,
+                        ) = formats.map { it.copy(url = null, cipher = null, signatureCipher = null) }
+                    }
+                try {
+                    val failure =
+                        assertFailsWith<StreamResolveException> {
+                            extractor(InnerTube(client), Parser(), FixedStrategy("VISIONOS"), cipher = cipher)
+                                .extract("video", ContentHints(isExplicit = explicit, playbackClientOverrideId = "VISIONOS"))
+                        }
+                    assertEquals(StreamResolveException.Reason.NO_PLAYABLE_STREAM, failure.reason)
+                } finally {
+                    client.close()
+                }
+            }
+        }
+
+    @Test
     fun gatedAudioKeepsDirectFirstWithAndWithoutPremium() {
         fun candidates(
             premium: Boolean,
