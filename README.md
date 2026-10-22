@@ -77,7 +77,7 @@ val stream = extractor.extract(
 
 ### Player cipher backend
 
-The common backend uses hosted `com.github.MetrolistGroup.quackjs:quackjs:0.1.1`,
+The common backend uses hosted `com.github.MetrolistGroup.quackjs:quackjs:0.1.2`,
 without JavaScript engines, JNI, or bundled solver scripts. `preloadPlayerCode(url)`
 downloads and compiles the player off the UI thread; compiled programs are reused
 across batches and single calls. Unsupported players fail closed: affected formats

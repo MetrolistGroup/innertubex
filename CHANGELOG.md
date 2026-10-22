@@ -6,6 +6,13 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-10-22
+
+### Changed
+
+- Builds with Kotlin 2.4.21, kotlinx-serialization 1.12.0 and Gradle 9.8.2, and
+  depends on QuackJS 0.1.2.
+
 ## [0.11.1] - 2026-10-22
 
 ### Fixed
