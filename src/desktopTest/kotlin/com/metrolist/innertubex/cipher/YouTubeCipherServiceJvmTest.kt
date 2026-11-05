@@ -79,6 +79,9 @@ class YouTubeCipherServiceJvmTest {
     @Test
     fun failingBatchTransformsExecuteOncePerDistinctChallenge() =
         runBlocking {
+            // Over QuackJS's 200-unit plan limit, so every execution goes through the counted interpreter.
+            val badN = "b".repeat(201)
+            val goodN = "g".repeat(201)
             for ((signatureFailure, nFailure) in listOf(
                 "throw 'unsupported';" to "throw 'unsupported';",
                 "return '';" to "o.set('n','');return;",
@@ -87,7 +90,7 @@ class YouTubeCipherServiceJvmTest {
                 val code =
                     PLAYER_CODE
                         .replace("return input.split", "if(input=='badSig'){$signatureFailure}return input.split")
-                        .replace("o.set('n',o.V.n + '_done');", "if(o.V.n=='badN'){$nFailure}o.set('n',o.V.n + '_done');")
+                        .replace("o.set('n',o.V.n + '_done');", "if(o.V.n=='$badN'){$nFailure}o.set('n',o.V.n + '_done');")
                 val client = HttpClient(MockEngine { respond(code) })
                 val service = YouTubeCipherService(client)
                 try {
@@ -111,9 +114,9 @@ class YouTubeCipherServiceJvmTest {
                         List(50) {
                             listOf(
                                 YouTubeCipherServiceTest().format(MEDIA_URL).copy(signatureCipher = "s=badSig&url=$MEDIA_URL"),
-                                YouTubeCipherServiceTest().format("$MEDIA_URL?n=badN"),
-                                YouTubeCipherServiceTest().format(MEDIA_URL).copy(signatureCipher = "s=abc&url=$MEDIA_URL?n=good"),
-                                YouTubeCipherServiceTest().format("$MEDIA_URL?n=good"),
+                                YouTubeCipherServiceTest().format("$MEDIA_URL?n=$badN"),
+                                YouTubeCipherServiceTest().format(MEDIA_URL).copy(signatureCipher = "s=abc&url=$MEDIA_URL?n=$goodN"),
+                                YouTubeCipherServiceTest().format("$MEDIA_URL?n=$goodN"),
                             )
                         }.flatten()
                     repeat(2) {
@@ -122,8 +125,8 @@ class YouTubeCipherServiceJvmTest {
                         for (group in result.chunked(4)) {
                             assertNull(group[0].url)
                             assertNull(group[1].url)
-                            assertEquals("$MEDIA_URL?n=good_done&signature=cba", group[2].url)
-                            assertEquals("$MEDIA_URL?n=good_done", group[3].url)
+                            assertEquals("$MEDIA_URL?n=${goodN}_done&signature=cba", group[2].url)
+                            assertEquals("$MEDIA_URL?n=${goodN}_done", group[3].url)
                         }
                         assertEquals(4, executions, "One execution per distinct signature/n per batch, including null results")
                     }
