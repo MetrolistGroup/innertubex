@@ -6,6 +6,15 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-11-05
+
+### Changed
+
+- Depends on QuackJS 0.1.3, which is about 65x faster on warm `n` transforms,
+  1.5x faster on player compilation and first call, and retains about half the
+  heap per compiled player on the JVM. The cipher API and failure behavior are
+  unchanged.
+
 ## [0.11.2] - 2026-10-22
 
 ### Changed
