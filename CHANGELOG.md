@@ -6,6 +6,63 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.11.5] - 2026-11-06
+
+### Added
+
+- `SabrAudioStream` accepts an optional suspend token supplier. Tokenless audio
+  starts immediately and attaches the result on later requests. It waits up to
+  30 seconds when attestation is pending or before reaching 80 seconds of media. Existing tokenized streams and
+  calls without a supplier retain their behavior. `SabrBootstrap.tokenVisitorData`
+  retains the player visitor for the supplier's token binding.
+- `TVHTML5_SAMSUNG`, a manually selected tokenless TV client for direct audio.
+  YouTube forbids its media until pre-roll ads would end, so extraction waits
+  up to 35 seconds.
+
+### Changed
+
+- `ClientFallbackStrategy.selectClients` now attaches catalog manifests when an
+  implementation overrides only `resolveClients`. Catalog age filters, cipher
+  preparation, token policies, health keys and `manifestId__po` or
+  `manifestId__nopo` profile IDs now apply to those implementations. Legacy
+  profile aliases still work for exclusions.
+- `SabrAudioStream` and `SabrBootstrap` constructors and `SabrBootstrap.copy`,
+  including `copy$default`, changed JVM binary signatures. Consumers compiled
+  against an earlier release must recompile.
+
+### Fixed
+
+- Web Embedded is probe-only after anonymous normal and made-for-kids probes
+  returned `NO_PLAYABLE_STREAM`. It leaves automatic selection and remains
+  only as the last-resort embedded fallback.
+- Android VR 1.65.10 is marked broken after normal audio returned HTTP 403
+  on the second media range. It remains probe-only.
+
+## [0.11.4] - 2026-11-06
+
+### Changed
+
+- Depends on QuackJS 0.1.4, which compiles players about 11% faster with 22%
+  less allocation and rejects constructs it cannot run faithfully.
+- Native video skips the watch-page fetch when visitor data is available and
+  the response needs no cipher work.
+- Cold cipher preparation overlaps token and player requests, and prewarming
+  also warms the public player.
+- Player script downloads have a 15-second stage budget, leaving time for
+  variant and client fallbacks.
+
+### Fixed
+
+- SABR requests keep their retries and typed errors when the host client sets
+  `expectSuccess`, and transport errors no longer expose signed URLs.
+- Authenticated requests reject redirects, and isolated clients have finite
+  timeouts.
+- Cookie-authenticated responses now reject DRM formats.
+- Remote config recovers from unusable cached bodies, and n parameter matching
+  honors query boundaries.
+- Client health ignores removed videos, caller timeouts, and failures from a
+  previous account.
+
 ## [0.11.3] - 2026-11-05
 
 ### Changed

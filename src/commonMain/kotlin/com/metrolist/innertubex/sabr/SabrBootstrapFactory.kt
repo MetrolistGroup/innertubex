@@ -64,7 +64,7 @@ fun PlayerResponse.toSabrBootstrap(
     require(selectedVideoFormatId == null || selectedVideoFormatId.lastModified > 0) {
         "Selected SABR video format has no last-modified identity"
     }
-    val videoId = requireNotNull(videoDetails?.videoId) { "Player response has no video ID" }
+    val videoId = requireNotNull(videoDetails?.videoId?.takeIf(String::isNotBlank)) { "Player response has no video ID" }
     val videoVariants =
         if (videoFormat == null) {
             emptyList()
@@ -142,7 +142,7 @@ internal fun PlayerResponse.hasSabrBootstrapPrerequisites(): Boolean {
             ?.mediaUstreamerRequestConfig
             ?.videoPlaybackUstreamerConfig
             .isNullOrBlank() &&
-        videoDetails?.videoId != null &&
+        !videoDetails?.videoId.isNullOrBlank() &&
         streaming.sabrDiscardVideoFormat() != null &&
         audio.isNotEmpty()
 }

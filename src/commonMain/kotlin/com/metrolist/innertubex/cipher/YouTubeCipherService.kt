@@ -8,6 +8,7 @@ import com.metrolist.innertubex.utils.decodeQueryComponent
 import com.metrolist.innertubex.utils.encodeQueryComponent
 import com.metrolist.innertubex.w
 import io.ktor.client.HttpClient
+import io.ktor.client.plugins.timeout
 import io.ktor.client.request.header
 import io.ktor.http.HttpHeaders
 import io.ktor.http.URLDecodeException
@@ -22,6 +23,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import meow.nyx.quackjs.PlayerHints
 import meow.nyx.quackjs.PlayerProgram
 import meow.nyx.quackjs.UnsupportedPlayerException
@@ -48,11 +50,12 @@ class YouTubeCipherService(
         private const val MAX_PLAYER_CACHE_ENTRIES = 4
         private val COMPILE_FAILURE_COOLDOWN = 60.seconds
         private val PLAYER_CODE_FAILURE_COOLDOWN = 15.seconds
+        private const val PLAYER_STALL_TIMEOUT_MS = 5_000L
         private const val MAX_PLAYER_SCRIPT_BYTES = 8 * 1024 * 1024
         private const val MAX_MEDIA_URL_LENGTH = 16 * 1024
         private const val MAX_CHALLENGE_LENGTH = 16 * 1024
         private const val MAX_SOLVER_OUTPUT_LENGTH = 65_536
-        private val N_PARAMETER_REGEX = Regex("[&?]n=([^&#]+)")
+        private val N_PARAMETER_REGEX = Regex("[&?](?:n|%6[eE])=([^&#]+)")
         private val QUERY_PARAMETER_NAME_REGEX = Regex("[A-Za-z][A-Za-z0-9._~-]*")
         private val LOG_URL_REGEX = Regex("""https?://\S+""", RegexOption.IGNORE_CASE)
     }
@@ -100,7 +103,18 @@ class YouTubeCipherService(
     }
 
     /** Shares the bounded, single-flight player download with timestamp extraction. */
-    internal suspend fun playerCode(playerUrl: String): String = getOrDownloadPlayerCode(canonicalPlayerUrl(playerUrl))
+    internal suspend fun playerCode(playerUrl: String): String {
+        validatedPlayerScriptUrl(playerUrl)
+        val preferredUrl = canonicalPlayerUrl(playerUrl)
+        return try {
+            getOrDownloadPlayerCode(preferredUrl)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (preferredUrl == playerUrl || e is ResponseTooLargeException) throw e
+            getOrDownloadPlayerCode(playerUrl)
+        }
+    }
 
     override suspend fun preloadPlayerCode(playerUrl: String) {
         availableProgram(playerUrl)
@@ -135,7 +149,7 @@ class YouTubeCipherService(
                         return@map format.copy(url = null)
                     }
                     // Presence, rather than getOrPut, also memoizes blank, unchanged and thrown failures.
-                    if (!signatures.containsKey(signature)) signatures[signature] = transform(program, signature, n = false)
+                    if (!signatures.containsKey(signature)) signatures[signature] = transform(playerUrl, program, signature, n = false)
                     val newUrl =
                         signatures[signature]?.let { appendQueryParameterToApprovedUrl(url, params["sp"] ?: "signature", it) }
                             ?: return@map format.copy(url = null)
@@ -145,7 +159,7 @@ class YouTubeCipherService(
                 val url = resolved.url ?: return@map resolved
                 val match = url.nMatch() ?: return@map resolved
                 val challenge = decodeChallenge(match.groupValues[1]) ?: return@map resolved.copy(url = null)
-                if (!nValues.containsKey(challenge)) nValues[challenge] = transform(program, challenge, n = true)
+                if (!nValues.containsKey(challenge)) nValues[challenge] = transform(playerUrl, program, challenge, n = true)
                 resolved.copy(url = nValues[challenge]?.let { replaceQueryParameterInApprovedUrl(url, match, it) })
             }
         }
@@ -162,7 +176,12 @@ class YouTubeCipherService(
         if (!params.hasValidSignatureParameter()) return null
         val program = availableProgram(playerUrl)
         return withContext(Dispatchers.Default) {
-            transform(program, signature, n = false)?.let { appendQueryParameterToApprovedUrl(url, params["sp"] ?: "signature", it) }
+            transform(
+                playerUrl,
+                program,
+                signature,
+                n = false,
+            )?.let { appendQueryParameterToApprovedUrl(url, params["sp"] ?: "signature", it) }
         }
     }
 
@@ -175,11 +194,12 @@ class YouTubeCipherService(
         val challenge = decodeChallenge(match.groupValues[1]) ?: return null
         val program = availableProgram(playerUrl)
         return withContext(Dispatchers.Default) {
-            transform(program, challenge, n = true)?.let { replaceQueryParameterInApprovedUrl(url, match, it) }
+            transform(playerUrl, program, challenge, n = true)?.let { replaceQueryParameterInApprovedUrl(url, match, it) }
         }
     }
 
     private suspend fun transform(
+        playerUrl: String,
         program: PlayerProgram?,
         input: String,
         n: Boolean,
@@ -195,7 +215,10 @@ class YouTubeCipherService(
             }
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            val category = if (e is UnsupportedPlayerException) "UnsupportedPlayerException" else "ExecutionException"
+            val hash = RemotePlayerConfigParser.extractPlayerHash(playerUrl) ?: "unknown"
+            logger.w(TAG, "Kotlin player transform failed player=$hash transform=${if (n) "n" else "signature"} type=$category")
             null
         }
     }
@@ -405,34 +428,45 @@ class YouTubeCipherService(
         }
     }
 
+    // Scripts are several MB, so slow links need room; half of the 30 s extraction budget stays for fallbacks.
+    internal var playerDownloadBudgetMs = 15_000L
+    internal var playerAttemptTimeoutMs = 12_000L
+
     private suspend fun downloadPlayerScript(playerUrl: String): String {
         val validatedUrl = validatedPlayerScriptUrl(playerUrl)
-        var lastFailure: Throwable? = null
-        repeat(3) { attempt ->
-            try {
-                val response =
-                    httpClient.getTextWithoutRedirects(validatedUrl, MAX_PLAYER_SCRIPT_BYTES) {
-                        header(HttpHeaders.UserAgent, OKHTTP_USER_AGENT)
-                        header(HttpHeaders.Accept, "*/*")
-                        header("Referer", "https://www.youtube.com/")
-                    }
-                response.body?.let { return it }
-                val failure =
-                    PlayerScriptHttpException(
-                        status = response.status.value,
-                        retryable = response.status.value in setOf(408, 425, 429, 500, 502, 503, 504),
-                    )
-                lastFailure = failure
-                if (!failure.retryable || attempt == 2) throw failure
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                lastFailure = e
-                if ((e is PlayerScriptHttpException && !e.retryable) || e is ResponseTooLargeException || attempt == 2) throw e
+        return withTimeoutOrNull(playerDownloadBudgetMs) {
+            var lastFailure: Throwable? = null
+            repeat(3) { attempt ->
+                try {
+                    val response =
+                        httpClient.getTextWithoutRedirects(validatedUrl, MAX_PLAYER_SCRIPT_BYTES) {
+                            header(HttpHeaders.UserAgent, OKHTTP_USER_AGENT)
+                            header(HttpHeaders.Accept, "*/*")
+                            header("Referer", "https://www.youtube.com/")
+                            timeout {
+                                requestTimeoutMillis = playerAttemptTimeoutMs
+                                connectTimeoutMillis = PLAYER_STALL_TIMEOUT_MS
+                                socketTimeoutMillis = PLAYER_STALL_TIMEOUT_MS
+                            }
+                        }
+                    response.body?.let { return@withTimeoutOrNull it }
+                    val failure =
+                        PlayerScriptHttpException(
+                            status = response.status.value,
+                            retryable = response.status.value in setOf(408, 425, 429, 500, 502, 503, 504),
+                        )
+                    lastFailure = failure
+                    if (!failure.retryable || attempt == 2) throw failure
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    lastFailure = e
+                    if ((e is PlayerScriptHttpException && !e.retryable) || e is ResponseTooLargeException || attempt == 2) throw e
+                }
+                delay(250L shl attempt)
             }
-            delay(250L shl attempt)
-        }
-        throw lastFailure ?: IllegalStateException("Player script request failed")
+            throw lastFailure ?: IllegalStateException("Player script request failed")
+        } ?: throw IllegalStateException("Player script download budget exhausted")
     }
 
     private fun parseCipherParams(cipher: String): Map<String, String>? {
@@ -503,7 +537,11 @@ class YouTubeCipherService(
 
     private fun String.findNParameterInQuery(): MatchResult? {
         val fragmentStart = indexOf('#').takeIf { it >= 0 } ?: length
-        return N_PARAMETER_REGEX.find(this)?.takeIf { it.range.first < fragmentStart }
+        val queryStart = indexOf('?')
+        if (queryStart < 0 || queryStart >= fragmentStart) return null
+        return N_PARAMETER_REGEX.findAll(this, queryStart).firstOrNull {
+            it.range.first < fragmentStart && (it.range.first == queryStart || this[it.range.first] == '&')
+        }
     }
 
     private fun String.isApprovedMediaUrl(): Boolean {

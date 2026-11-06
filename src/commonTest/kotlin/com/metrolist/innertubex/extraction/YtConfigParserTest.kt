@@ -18,8 +18,75 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
+import kotlin.time.measureTime
 
 class YtConfigParserTest {
+    @Test
+    fun loosePlayerUrlScanHasMeasuredBoundedCost() {
+        val parser = parser()
+        val page = "/s/player/" + "/".repeat(8_192)
+        val legacy = Regex("""(?<![A-Za-z0-9:/])(/s/player/[^"'\\]+/[^"'\\]*\.js[^"'\\]*)""")
+        val legacyTime = List(3) { measureTime { assertNull(legacy.find(page)) } }.sorted()[1]
+        val currentTime = List(3) { measureTime { assertNull(parser.extractPlayerUrl(page)) } }.sorted()[1]
+        println("Loose player URL scan, 8192 slashes: legacy=$legacyTime current=$currentTime")
+        assertTrue(currentTime < legacyTime / 4, "Malformed player paths must avoid overlapping repetitions")
+        assertEquals(
+            "https://www.youtube.com/s/player/abc/player_ias.vflset/en_US/base.js",
+            parser.extractPlayerUrl(" /s/player/abc/player_ias.vflset/en_US/base.js"),
+        )
+    }
+
+    @Test
+    fun decodesEscapedConfigStrings() =
+        runBlocking {
+            val html =
+                """{"jsUrl":"/s/player/abc123/base.js","STS":20668,"visitorData":"visitor\u003d", """ +
+                    """"INNERTUBE_CLIENT_VERSION":"2\u002e0","encryptedHostFlags":"a\/b\"c"}"""
+            val client = HttpClient(MockEngine { respond(html) })
+            val innerTube = InnerTube(client)
+            try {
+                val config = YtConfigParserImpl(client, innerTube).fetchEmbeddedConfig("video")
+                assertEquals("visitor=", config.visitorData)
+                assertEquals("2.0", config.clientVersion)
+                assertEquals("a/b\"c", config.encryptedHostFlags)
+            } finally {
+                innerTube.close()
+                client.close()
+            }
+        }
+
+    @Test
+    fun rejectsIncompleteInvalidAndOversizedConfigStrings() {
+        val parser = parser()
+        assertNull(parser.extractClientVersion("""{"INNERTUBE_CLIENT_VERSION":"unfinished\"}"""))
+        assertNull(parser.extractEncryptedHostFlags("""{"encryptedHostFlags":"invalid\q"}"""))
+        val large = "x".repeat(64 * 1024)
+        assertNull(parser.extractEncryptedHostFlags("""{"encryptedHostFlags":"$large"}"""))
+    }
+
+    @Test
+    fun timestampSurvivesHtmlApostrophesAndRegexQuotes() {
+        val parser = parser()
+        assertEquals(20668, parser.extractSignatureTimestamp("<p>Don't stop</p><script>var c={STS:20668};</script>"))
+        assertEquals(20668, parser.extractSignatureTimestamp("""var quote=/["']/; var c={STS:20668};"""))
+        assertEquals(20668, parser.extractSignatureTimestamp("""var decoy=/signatureTimestamp:12345["']/; var c={STS:20668};"""))
+        assertEquals(
+            20668,
+            parser.extractSignatureTimestamp("<p>Don't stop</p><script>/* STS:12345 */ 'sts:12345'</script><script>{STS:20668}"),
+        )
+    }
+
+    @Test
+    fun timestampIgnoresStringsAndComments() {
+        val parser = parser()
+        assertEquals(20668, parser.extractSignatureTimestamp("""{"STS":20668,"title":"signatureTimestamp:12345"}"""))
+        assertEquals(20668, parser.extractSignatureTimestamp("""{"title":"signatureTimestamp:12345","STS":20668}"""))
+        assertEquals(20668, parser.extractSignatureTimestamp("/* signatureTimestamp:12345 */ {sts:20668}"))
+        assertEquals(20668, parser.extractSignatureTimestamp("// signatureTimestamp:12345\n{sts:20668}"))
+        assertNull(parser.extractSignatureTimestamp("""{"title":"signatureTimestamp:12345"}"""))
+    }
+
     @Test
     fun extractsConfigFieldsAndRejectsUnsafePlayerUrls() {
         val parser = parser()

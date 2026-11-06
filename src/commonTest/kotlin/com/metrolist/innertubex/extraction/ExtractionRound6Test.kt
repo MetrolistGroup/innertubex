@@ -57,7 +57,7 @@ class ExtractionRound6Test {
             try {
                 val stream = assertNotNull(fixture.extractor().extract("video", ContentHints()))
                 assertEquals("WEB_REMIX_SABR__nopo", stream.profileId)
-                assertEquals(listOf("VISIONOS", "VISIONOS", "WEB_EMBEDDED_PLAYER", "WEB_REMIX"), fixture.players)
+                assertEquals(listOf("VISIONOS", "VISIONOS", "WEB_REMIX"), fixture.players)
                 assertEquals(1, fixture.watches)
                 assertEquals(1, fixture.authenticatedRemix)
                 assertEquals(0, fixture.embeds)
@@ -94,7 +94,7 @@ class ExtractionRound6Test {
                 val hints = ContentHints(wantVideo = true).withStreamCapabilities(allowSabr = false)
                 val stream = assertNotNull(fixture.extractor().extract("video", hints))
                 assertEquals("WEB_EMBEDDED_PLAYER__nopo", stream.profileId)
-                assertEquals(listOf("WEB_EMBEDDED_PLAYER", "WEB_EMBEDDED_PLAYER"), fixture.players)
+                assertEquals(listOf("WEB_EMBEDDED_PLAYER"), fixture.players)
                 assertEquals(1, fixture.embeds)
                 assertEquals(2, fixture.watches)
             } finally {

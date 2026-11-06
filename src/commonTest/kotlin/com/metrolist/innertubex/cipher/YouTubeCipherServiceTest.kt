@@ -10,6 +10,7 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.Url
 import io.ktor.http.headersOf
+import io.ktor.utils.io.ByteChannel
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
@@ -450,6 +451,115 @@ class YouTubeCipherServiceTest {
         val fragmentUrl = "$MEDIA_URL?x=1#fragment&n=old"
         assertNull(service.replaceQueryParameter(fragmentUrl, Regex("[&?]n=([^&#]+)").find(fragmentUrl)!!, "new"))
     }
+
+    @Test
+    fun slowPreferredDownloadLeavesTimeForSuppliedVariant() =
+        runBlocking {
+            val supplied = "https://www.youtube.com/s/player/12345678/player_ias.vflset/pl_PL/base.js"
+            val preferred = supplied.replace("pl_PL", "en_GB")
+            for (bodyStarted in listOf(false, true)) {
+                val engine =
+                    MockEngine { request ->
+                        if (request.url.toString() != preferred) {
+                            respond(PLAYER_CODE)
+                        } else if (bodyStarted) {
+                            respond(ByteChannel(autoFlush = true))
+                        } else {
+                            awaitCancellation()
+                        }
+                    }
+                val client = HttpClient(engine)
+                val service =
+                    YouTubeCipherService(client).apply {
+                        playerDownloadBudgetMs = 1_500L
+                        playerAttemptTimeoutMs = 500L
+                    }
+                try {
+                    withTimeout(10_000L) {
+                        assertEquals("$MEDIA_URL?n=value_done", service.processNParameter(supplied, "$MEDIA_URL?n=value"))
+                    }
+                    assertEquals(
+                        supplied,
+                        engine.requestHistory
+                            .last()
+                            .url
+                            .toString(),
+                    )
+                } finally {
+                    service.dispose()
+                    client.close()
+                }
+            }
+        }
+
+    @Test
+    fun timestampDownloadFallsBackToExactSuppliedVariant() =
+        runBlocking {
+            val supplied = "https://www.youtube.com/s/player/12345678/player_ias.vflset/pl_PL/base.js"
+            val preferred = supplied.replace("pl_PL", "en_GB")
+            val engine =
+                MockEngine { request ->
+                    if (request.url.toString() == preferred) respond("", HttpStatusCode.NotFound) else respond(PLAYER_CODE)
+                }
+            val client = HttpClient(engine)
+            val service = YouTubeCipherService(client)
+            try {
+                assertEquals(PLAYER_CODE, service.playerCode(supplied))
+                assertEquals(PLAYER_CODE, service.playerCode(supplied))
+                assertEquals(listOf(preferred, supplied), engine.requestHistory.map { it.url.toString() })
+            } finally {
+                service.dispose()
+                client.close()
+            }
+        }
+
+    @Test
+    fun nMatchingPreservesQuestionMarksInsideOtherValues() =
+        runBlocking {
+            val client = HttpClient(MockEngine { respond(PLAYER_CODE) })
+            val service = YouTubeCipherService(client)
+            try {
+                for (key in listOf("n", "%6e")) {
+                    val url = "$MEDIA_URL?other=x?n=decoy&$key=actual#fragment?n=ignored"
+                    val expected = "$MEDIA_URL?other=x?n=decoy&$key=actual_done#fragment?n=ignored"
+                    assertEquals(expected, service.processNParameter(PLAYER_URL, url))
+                    assertEquals(expected, service.processFormats(PLAYER_URL, listOf(format(url))).single().url)
+                }
+                val decoyOnly = "$MEDIA_URL?other=x?n=decoy#fragment&n=ignored"
+                assertNull(service.processNParameter(PLAYER_URL, decoyOnly))
+                assertEquals(decoyOnly, service.processFormats(PLAYER_URL, listOf(format(decoyOnly))).single().url)
+            } finally {
+                service.dispose()
+                client.close()
+            }
+        }
+
+    @Test
+    fun challengeSpecificFailuresHaveSafeDiagnostics() =
+        runBlocking {
+            val events = mutableListOf<InnerTubeLogEvent>()
+            val code =
+                PLAYER_CODE
+                    .replace("return input.split", "if(input=='badSig'){throw input;}return input.split")
+                    .replace("o.set('n',o.V.n", "if(o.V.n=='badN'){throw o.V.n;}o.set('n',o.V.n")
+            val client = HttpClient(MockEngine { respond(code) })
+            val service = YouTubeCipherService(client, logger = InnerTubeLogger { events += it })
+            try {
+                assertNull(service.deobfuscateSignatureCipher(PLAYER_URL, "s=badSig&url=$MEDIA_URL"))
+                val failure = events.single { it.message.startsWith("Kotlin player transform failed") }
+                assertTrue(failure.message.contains("player=12345678"))
+                assertTrue(failure.message.contains("transform=signature"))
+                assertTrue(failure.message.contains("type=UnsupportedPlayerException"))
+                assertNull(service.processNParameter(PLAYER_URL, "$MEDIA_URL?n=badN"))
+                val nFailure = events.last()
+                assertTrue(nFailure.message.contains("transform=n"))
+                assertTrue(nFailure.message.contains("type=UnsupportedPlayerException"))
+                assertFalse(events.any { it.message.contains("badSig") || it.message.contains("badN") || it.message.contains(MEDIA_URL) })
+            } finally {
+                service.dispose()
+                client.close()
+            }
+        }
 
     internal fun format(url: String) = PlayerResponse.StreamingData.Format(itag = 140, url = url, mimeType = "audio/mp4")
 

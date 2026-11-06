@@ -15,6 +15,7 @@ internal object SabrProtoCodec {
         activeContextTypes: Set<Int> = emptySet(),
         mediaType: SabrMediaType = SabrMediaType.AUDIO,
         writer: ProtoWriter = ProtoWriter(),
+        poToken: ByteArray? = bootstrap.poToken,
     ): ByteArray {
         val videoFormat =
             if (mediaType == SabrMediaType.VIDEO) {
@@ -61,7 +62,7 @@ internal object SabrProtoCodec {
                         int32(16, bootstrap.clientName)
                         string(17, bootstrap.clientVersion)
                     }
-                    bootstrap.poToken?.let { bytes(2, it) }
+                    poToken?.let { bytes(2, it) }
                     playbackCookie?.let { bytes(3, it) }
                     contexts.filter { it.type in activeContextTypes }.forEach { context ->
                         message(5) {
@@ -90,7 +91,7 @@ internal object SabrProtoCodec {
         var startMs = 0L
         var durationMs = 0L
         var contentLength = 0L
-        var timeRange: Pair<Long, Long>? = null
+        var timeRange: Triple<Long, Long, Long>? = null
         while (reader.hasRemaining) {
             val tag = reader.tag()
             when (tag.field) {
@@ -151,7 +152,7 @@ internal object SabrProtoCodec {
 
                 13 -> {
                     tag.requireWireType(2)
-                    formatId = decodeFormatId(reader.bytes())
+                    formatId = decodeFormatId(reader.bytes(), formatId)
                 }
 
                 14 -> {
@@ -161,7 +162,7 @@ internal object SabrProtoCodec {
 
                 15 -> {
                     tag.requireWireType(2)
-                    timeRange = decodeTimeRange(reader.bytes())
+                    timeRange = decodeTimeRange(reader.bytes(), timeRange)
                 }
 
                 else -> {
@@ -174,8 +175,12 @@ internal object SabrProtoCodec {
         if (startRange < 0 || contentLength < 0 || startMs < 0 || durationMs < 0) {
             throw SabrProtocolException("SABR media header contains an overflowing unsigned value")
         }
-        if (startMs == 0L) startMs = timeRange?.first ?: 0L
-        if (durationMs == 0L) durationMs = timeRange?.second ?: 0L
+        timeRange?.let { (startTicks, durationTicks, timescale) ->
+            if (timescale > 0) {
+                if (startMs == 0L) startMs = ticksToMs(startTicks, timescale)
+                if (durationMs == 0L) durationMs = ticksToMs(durationTicks, timescale)
+            }
+        }
         return SabrMediaHeader(
             headerId = headerId,
             videoId = videoId,
@@ -206,7 +211,7 @@ internal object SabrProtoCodec {
             when (tag.field) {
                 2 -> {
                     tag.requireWireType(2)
-                    formatId = decodeFormatId(reader.bytes())
+                    formatId = decodeFormatId(reader.bytes(), formatId ?: SabrFormatId(0))
                 }
 
                 3 -> {
@@ -311,15 +316,17 @@ internal object SabrProtoCodec {
         to: Int = data.size,
     ): String? {
         val reader = ProtoReader(data, from, to)
+        var url: String? = null
         while (reader.hasRemaining) {
             val tag = reader.tag()
             if (tag.field == 1) {
                 tag.requireWireType(2)
-                return reader.string()
+                url = reader.string()
+            } else {
+                reader.skip(tag)
             }
-            reader.skip(tag)
         }
-        return null
+        return url
     }
 
     fun decodeError(
@@ -463,11 +470,14 @@ internal object SabrProtoCodec {
         return SabrEvent.ContextSendingPolicy(start, stop, discard)
     }
 
-    private fun decodeTimeRange(data: ByteArray): Pair<Long, Long>? {
+    private fun decodeTimeRange(
+        data: ByteArray,
+        previous: Triple<Long, Long, Long>?,
+    ): Triple<Long, Long, Long> {
         val reader = ProtoReader(data)
-        var startTicks = 0L
-        var durationTicks = 0L
-        var timescale = 0L
+        var startTicks = previous?.first ?: 0L
+        var durationTicks = previous?.second ?: 0L
+        var timescale = previous?.third ?: 0L
         while (reader.hasRemaining) {
             val tag = reader.tag()
             when (tag.field) {
@@ -491,8 +501,7 @@ internal object SabrProtoCodec {
                 }
             }
         }
-        if (startTicks < 0 || durationTicks < 0 || timescale !in 1..Int.MAX_VALUE.toLong()) return null
-        return ticksToMs(startTicks, timescale) to ticksToMs(durationTicks, timescale)
+        return Triple(startTicks, durationTicks, timescale)
     }
 
     private fun ticksToMs(
@@ -541,11 +550,14 @@ internal object SabrProtoCodec {
         }
     }
 
-    private fun decodeFormatId(data: ByteArray): SabrFormatId {
+    private fun decodeFormatId(
+        data: ByteArray,
+        previous: SabrFormatId,
+    ): SabrFormatId {
         val reader = ProtoReader(data)
-        var itag = 0
-        var lastModified = 0L
-        var xtags: String? = null
+        var itag = previous.itag
+        var lastModified = previous.lastModified
+        var xtags = previous.xtags
         while (reader.hasRemaining) {
             val tag = reader.tag()
             when (tag.field) {

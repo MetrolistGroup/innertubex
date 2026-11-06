@@ -40,10 +40,24 @@ class AudioFormatSelectorTest {
 
         AudioQuality.entries.filter { it != AudioQuality.MP4 }.forEach {
             assertEquals("https://original", selectBestAudioFormat(listOf(dub, original), it)?.url)
+            assertEquals(
+                "https://original",
+                selectBestAudioFormat(listOf(dub.copy(audioTrack = null), original.copy(audioTrack = null)), it)?.url,
+            )
         }
         val defaultOnly = original.copy(xtags = null, audioTrack = Format.AudioTrack(id = "en-US.4", audioIsDefault = true))
         assertEquals("https://original", selectBestAudioFormat(listOf(dub, defaultOnly))?.url)
         assertEquals("https://dub", selectBestAudioFormat(listOf(dub))?.url)
+    }
+
+    @Test
+    fun containerPreferencesIgnoreMimeCapitalization() {
+        val mp4 = Format(itag = 140, mimeType = "Audio/MP4; codecs=\"mp4a.40.2\"", bitrate = 128_000, url = "https://aac")
+        val webm = Format(itag = 251, mimeType = "Audio/WebM", bitrate = 128_000, url = "https://opus")
+        assertEquals(mp4, selectBestAudioFormat(listOf(webm, mp4), AudioQuality.MP4))
+        assertEquals(mp4, selectBestAudioFormat(listOf(webm.copy(bitrate = 1), mp4), AudioQuality.LOW))
+        assertEquals(webm, selectBestAudioFormat(listOf(mp4, webm), AudioQuality.AUTO))
+        assertEquals(webm, selectBestAudioFormat(listOf(mp4, webm), AudioQuality.HIGH))
     }
 
     @Test

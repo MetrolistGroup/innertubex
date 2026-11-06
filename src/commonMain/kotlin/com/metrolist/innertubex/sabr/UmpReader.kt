@@ -26,19 +26,22 @@ internal class UmpReader(
         length: Int,
     ): List<UmpPart> {
         val parts = mutableListOf<UmpPart>()
-        feed(chunk, offset, length) { type, data, from, to -> parts += UmpPart(type, data.copyOfRange(from, to)) }
+        feed(chunk, offset, length) { type, data, from, to ->
+            parts += UmpPart(type, data.copyOfRange(from, to))
+            true
+        }
         return parts
     }
 
     /**
      * Calls [onPart] with each complete part's payload as `data[from, to)`, without copying it.
-     * The range is only valid during the callback.
+     * The range is only valid during the callback. Return false to stop before the next part.
      */
     internal fun feed(
         chunk: ByteArray,
         offset: Int,
         length: Int,
-        onPart: (type: Int, data: ByteArray, from: Int, to: Int) -> Unit,
+        onPart: (type: Int, data: ByteArray, from: Int, to: Int) -> Boolean,
     ) {
         require(offset >= 0 && length >= 0 && offset <= chunk.size - length) { "Invalid UMP input range" }
         if (pendingSize.toLong() + length > MAX_PENDING_BYTES) {
@@ -60,8 +63,9 @@ internal class UmpReader(
             }
             val partEnd = size.nextOffset.toLong() + size.value
             if (partEnd > end) break
-            onPart(type.value, buffer, size.nextOffset, partEnd.toInt())
+            val keepReading = onPart(type.value, buffer, size.nextOffset, partEnd.toInt())
             parseOffset = partEnd.toInt()
+            if (!keepReading) break
         }
 
         start = parseOffset

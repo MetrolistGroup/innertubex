@@ -174,6 +174,7 @@ internal data class ClientResult(
     val clientVersion: String = "",
     val useSabr: Boolean = false,
     val bearerAuthenticated: Boolean = false,
+    val visitorData: String? = null,
 ) {
     override fun toString(): String =
         "ClientResult(" +

@@ -6,10 +6,78 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class SabrCoreTest {
+    @Test
+    fun repeatedEmbeddedMessagesMergeSuppliedFields() {
+        val header =
+            ProtoWriter()
+                .apply {
+                    int32(1, 1)
+                    message(13) { int32(1, 140) }
+                    message(13) {
+                        int64(2, 100)
+                        string(3, "x")
+                    }
+                    message(15) { int64(1, 48_000) }
+                    message(15) { int64(2, 96_000) }
+                    message(15) { int32(3, 48_000) }
+                }.toByteArray()
+        val decoded = SabrProtoCodec.decodeMediaHeader(header)
+        assertEquals(SabrFormatId(140, 100, "x"), decoded.formatId)
+        assertEquals(1_000L, decoded.startMs)
+        assertEquals(2_000L, decoded.durationMs)
+        val resetStart = header + ProtoWriter().apply { message(15) { int64(1, 0) } }.toByteArray()
+        assertEquals(0L, SabrProtoCodec.decodeMediaHeader(resetStart).startMs)
+        assertEquals(2_000L, SabrProtoCodec.decodeMediaHeader(resetStart).durationMs)
+        val initialization =
+            ProtoWriter()
+                .apply {
+                    message(2) {
+                        int32(1, 140)
+                        int64(2, 100)
+                    }
+                    message(2) {
+                        int64(2, 0)
+                        string(3, "")
+                    }
+                }.toByteArray()
+        assertEquals(SabrFormatId(140, 0, ""), SabrProtoCodec.decodeFormatInitialization(initialization)?.formatId)
+    }
+
+    @Test
+    fun redirectUsesLastUrlOccurrence() {
+        val data =
+            ProtoWriter()
+                .apply {
+                    string(1, "https://a.googlevideo.com/videoplayback")
+                    string(1, "https://b.googlevideo.com/videoplayback")
+                }.toByteArray()
+        assertEquals("https://b.googlevideo.com/videoplayback", SabrProtoCodec.decodeRedirect(data))
+    }
+
+    @Test
+    fun terminalProtectionIgnoresMalformedTailAtEveryReadBoundary() {
+        val bytes = byteArrayOf(0x3a, 2, 8, 3, 0x15, 0)
+        for (split in 0..bytes.size) {
+            val processor = SabrUmpProcessor()
+            val events = processor.feed(bytes.copyOfRange(0, split)) + processor.feed(bytes.copyOfRange(split, bytes.size))
+            assertEquals(listOf(SabrEvent.StreamProtectionStatus(3, -1)), events)
+        }
+    }
+
+    @Test
+    fun bootstrapRejectsBlankVideoIdentity() {
+        for (id in listOf("", " ")) {
+            val response = bootstrapPlayerResponse().copy(videoDetails = PlayerResponse.VideoDetails(videoId = id, lengthSeconds = "60"))
+            assertFalse(response.hasSabrBootstrapPrerequisites())
+            assertFailsWith<IllegalArgumentException> { response.toSabrBootstrap(3, "1", bootstrapAudioFormat()) }
+        }
+    }
+
     @Test
     fun reusedWritersPreserveNestedLengthsAndPreviouslyEncodedRequests() {
         val writer = ProtoWriter()
