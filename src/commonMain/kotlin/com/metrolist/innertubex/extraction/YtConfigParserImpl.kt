@@ -17,6 +17,7 @@ import io.ktor.http.Url
 import io.ktor.http.isSuccess
 import io.ktor.http.takeFrom
 import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.json.Json
 
 public class YtConfigParserImpl(
     private val httpClient: HttpClient,
@@ -196,22 +197,91 @@ public class YtConfigParserImpl(
 
     internal fun extractPlayerId(script: String): String? = PLAYER_ID_REGEX.find(script.replace("\\/", "/"))?.groupValues?.get(1)
 
-    internal fun extractSignatureTimestamp(html: String): Int? =
-        STS_PATTERNS
-            .asSequence()
-            .mapNotNull {
-                it
-                    .find(html)
-                    ?.groupValues
-                    ?.get(1)
-                    ?.toIntOrNull()
-            }.firstOrNull()
+    internal fun extractSignatureTimestamp(html: String): Int? {
+        var position = 0
+        while (position < html.length) {
+            val start = position
+            val char = html[position++]
+            val key: String
+            when {
+                char == '/' && html.getOrNull(position) == '/' -> {
+                    position = html.indexOf('\n', position + 1).takeIf { it >= 0 } ?: html.length
+                    continue
+                }
 
-    internal fun extractClientVersion(html: String): String? = CLIENT_VERSION_REGEX.find(html)?.groupValues?.get(1)
+                char == '/' && html.getOrNull(position) == '*' -> {
+                    position = html.indexOf("*/", position + 1).takeIf { it >= 0 }?.plus(2) ?: html.length
+                    continue
+                }
 
-    internal fun extractEncryptedHostFlags(html: String): String? = ENCRYPTED_HOST_FLAGS_REGEX.find(html)?.groupValues?.get(1)
+                char == '"' || char == '\'' || char == '`' -> {
+                    while (position < html.length && html[position] != char) {
+                        if (html[position] == '\\') position++
+                        position++
+                    }
+                    if (position >= html.length) break
+                    key = html.substring(start + 1, position)
+                    position++
+                }
 
-    private fun extractVisitorData(html: String): String? = VISITOR_DATA_REGEX.find(html)?.groupValues?.get(1)
+                char.isLetter() || char == '_' || char == '$' -> {
+                    while (position < html.length &&
+                        (html[position].isLetterOrDigit() || html[position] == '_' || html[position] == '$')
+                    ) {
+                        position++
+                    }
+                    key = html.substring(start, position)
+                }
+
+                else -> {
+                    continue
+                }
+            }
+            if (key !in TIMESTAMP_KEYS) continue
+            while (position < html.length && html[position].isWhitespace()) position++
+            if (html.getOrNull(position) != ':') continue
+            position++
+            while (position < html.length && html[position].isWhitespace()) position++
+            val numberStart = position
+            while (position < html.length && html[position] in '0'..'9') position++
+            if (position - numberStart == 5 && html.getOrNull(position)?.let { it.isLetterOrDigit() || it == '.' || it == '_' } != true) {
+                return html.substring(numberStart, position).toIntOrNull()
+            }
+        }
+        return null
+    }
+
+    internal fun extractClientVersion(html: String): String? = extractConfigString(html, CLIENT_VERSION_REGEX)
+
+    internal fun extractEncryptedHostFlags(html: String): String? = extractConfigString(html, ENCRYPTED_HOST_FLAGS_REGEX)
+
+    private fun extractVisitorData(html: String): String? = extractConfigString(html, VISITOR_DATA_REGEX)
+
+    private fun extractConfigString(
+        html: String,
+        key: Regex,
+    ): String? {
+        for (match in key.findAll(html)) {
+            val start = match.range.last + 1
+            if (html.getOrNull(start) != '"') continue
+            var position = start + 1
+            val limit = minOf(html.length, start + MAX_CONFIG_STRING_LENGTH)
+            while (position < limit) {
+                when (html[position++]) {
+                    '\\' -> {
+                        position++
+                    }
+
+                    '"' -> {
+                        val value = runCatching { CONFIG_JSON.decodeFromString<String>(html.substring(start, position)) }.getOrNull()
+                        if (!value.isNullOrEmpty()) return value
+                        break
+                    }
+                }
+            }
+        }
+        return null
+    }
 
     private fun validatePlayerUrl(value: String): String? =
         runCatching { Url(value) }
@@ -276,15 +346,15 @@ public class YtConfigParserImpl(
                 Regex("\"PLAYER_JS_URL\":\"([^\"]+)\""),
                 Regex("\"jsUrl\":\"([^\"]+)\""),
             )
-        private val LOOSE_PLAYER_URL_PATTERN = Regex("(?<![A-Za-z0-9:/])(/s/player/[^\"'\\\\]+/[^\"'\\\\]*\\.js[^\"'\\\\]*)")
+        private val LOOSE_PLAYER_URL_PATTERN = Regex("""(?<![A-Za-z0-9:/])(/s/player/[A-Za-z0-9_-]+/[^"'\\]*\.js[^"'\\]*)""")
         private val PLAYER_ID_REGEX = Regex("/s/player/([a-zA-Z0-9_-]+)/")
-        private val STS_PATTERNS =
-            listOf(
-                Regex("(?:signatureTimestamp|sts)\"?\\s*:\\s*([0-9]{5})"),
-                Regex("\"STS\":\\s*([0-9]{5})"),
-            )
-        private val CLIENT_VERSION_REGEX = Regex("\"INNERTUBE_CLIENT_VERSION\"\\s*:\\s*\"([^\"]+)\"")
-        private val ENCRYPTED_HOST_FLAGS_REGEX = Regex("\"encryptedHostFlags\"\\s*:\\s*\"([^\"]+)\"")
-        private val VISITOR_DATA_REGEX = Regex("\"(?:VISITOR_DATA|visitorData)\"\\s*:\\s*\"([^\"]+)\"")
+        private val TIMESTAMP_KEYS = setOf("signatureTimestamp", "sts", "STS")
+        private const val MAX_CONFIG_STRING_LENGTH = 64 * 1024
+
+        @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+        private val CONFIG_JSON = Json { exceptionsWithDebugInfo = false }
+        private val CLIENT_VERSION_REGEX = Regex(""""INNERTUBE_CLIENT_VERSION"\s*:\s*""")
+        private val ENCRYPTED_HOST_FLAGS_REGEX = Regex(""""encryptedHostFlags"\s*:\s*""")
+        private val VISITOR_DATA_REGEX = Regex(""""(?:VISITOR_DATA|visitorData)"\s*:\s*""")
     }
 }

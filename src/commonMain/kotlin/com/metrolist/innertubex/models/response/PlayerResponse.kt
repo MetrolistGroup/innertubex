@@ -72,11 +72,23 @@ data class PlayerResponse(
     }
 
     @Serializable
-    data class PlayerConfig(
+    class PlayerConfig(
         val mediaCommonConfig: MediaCommonConfig? = null,
     ) {
         var audioConfig: AudioConfig? = null
             private set
+
+        operator fun component1(): MediaCommonConfig? = mediaCommonConfig
+
+        fun copy(mediaCommonConfig: MediaCommonConfig? = this.mediaCommonConfig): PlayerConfig =
+            PlayerConfig(mediaCommonConfig).also { it.audioConfig = audioConfig }
+
+        override fun equals(other: Any?): Boolean =
+            other is PlayerConfig && mediaCommonConfig == other.mediaCommonConfig && audioConfig == other.audioConfig
+
+        override fun hashCode(): Int = 31 * (mediaCommonConfig?.hashCode() ?: 0) + (audioConfig?.hashCode() ?: 0)
+
+        override fun toString(): String = "PlayerConfig(mediaCommonConfig=$mediaCommonConfig, audioConfig=$audioConfig)"
 
         @Serializable
         data class AudioConfig(

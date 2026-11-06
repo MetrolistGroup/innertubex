@@ -1,5 +1,7 @@
 @file:Suppress("UnstableApiUsage")
 
+import com.vanniktech.maven.publish.KotlinMultiplatform
+import com.vanniktech.maven.publish.SourcesJar
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jlleitschuh.gradle.ktlint.KtlintExtension
 
@@ -80,6 +82,9 @@ kotlin {
 // Kotlin finalizes publication artifacts after evaluating the build scripts.
 gradle.projectsEvaluated {
     publishing.publications.withType<MavenPublication>().configureEach {
+        if (artifacts.none { it.classifier == "sources" }) {
+            artifact(tasks.named(if (name == "kotlinMultiplatform") "metadataSourcesJar" else "${name}SourcesJar"))
+        }
         // JitPack strips the metadata classifier from native URLs; retain a matching copy.
         artifacts.filter { it.classifier == "metadata" }.forEach { metadata ->
             artifact(metadata.file) { builtBy(metadata.buildDependencies) }
@@ -112,6 +117,8 @@ configure<KtlintExtension> {
 }
 
 mavenPublishing {
+    // JitPack drops classifiers from Gradle source-variant URLs; attach the platform JARs separately.
+    configure(KotlinMultiplatform(sourcesJar = SourcesJar.None()))
     pom {
         name.set("InnerTubeX")
         description.set(
