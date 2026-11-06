@@ -22,6 +22,7 @@ import io.ktor.util.AttributeKey
 import io.ktor.utils.io.cancel
 import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.buffer
@@ -46,12 +47,14 @@ class SabrAudioStream(
     private val requestRetryDelay: suspend (Long) -> Unit = { delay(it) },
     private val initialPlayerTimeMs: Long = 0,
     private val logger: InnerTubeLogger = InnerTubeLogger.NONE,
+    private val tokenSupplier: (suspend () -> ByteArray?)? = null,
 ) {
     private val delegate =
         SabrMediaStream(
             httpClient = httpClient,
             bootstrap = bootstrap,
             mediaType = SabrMediaType.AUDIO,
+            tokenSupplier = tokenSupplier,
             maxRequestsWithoutProgress = maxRequestsWithoutProgress,
             playbackPositionMs = playbackPositionMs,
             onResponse = onResponse,
@@ -105,6 +108,7 @@ private class SabrMediaStream(
     private val requestRetryDelay: suspend (Long) -> Unit,
     private val initialPlayerTimeMs: Long,
     private val logger: InnerTubeLogger,
+    private val tokenSupplier: (suspend () -> ByteArray?)? = null,
 ) {
     private val selectedFormat =
         when (mediaType) {
@@ -129,6 +133,22 @@ private class SabrMediaStream(
         var lastRequestPlayerTimeMs = initialPlayerTimeMs
         var lastObservedPlaybackPositionMs: Long? = null
         return channelFlow {
+            val pendingToken =
+                tokenSupplier?.takeIf { bootstrap.poToken == null }?.let { supplier ->
+                    async {
+                        try {
+                            withTimeoutOrNull(LATE_TOKEN_TIMEOUT_MS) {
+                                supplier()?.takeIf { it.isNotEmpty() && it.size <= MAX_PO_TOKEN_BYTES }
+                            }
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            null
+                        }
+                    }
+                }
+            var poToken = bootstrap.poToken
+            var retryWithToken = false
             logger.i(
                 tag,
                 buildString {
@@ -174,12 +194,20 @@ private class SabrMediaStream(
             val requestWriter = ProtoWriter()
 
             while (
-                !ended &&
-                initialization?.endSegmentNumber?.let { end ->
-                    lastSequenceNumber?.let { sequence -> sequence >= end } == true
-                } != true &&
-                playerTimeMs < expectedDurationMs(initialization)
+                retryWithToken || (
+                    !ended &&
+                        initialization?.endSegmentNumber?.let { end ->
+                            lastSequenceNumber?.let { sequence -> sequence >= end } == true
+                        } != true &&
+                        playerTimeMs < expectedDurationMs(initialization)
+                )
             ) {
+                retryWithToken = false
+                if (poToken == null && pendingToken != null &&
+                    (pendingToken.isCompleted || playerTimeMs >= LATE_TOKEN_MEDIA_LIMIT_MS)
+                ) {
+                    poToken = pendingToken.await()
+                }
                 if (requestNumber >= MAX_REQUEST_COUNT) {
                     throw SabrProtocolException("SABR exceeded $MAX_REQUEST_COUNT requests")
                 }
@@ -211,6 +239,7 @@ private class SabrMediaStream(
                         activeContextTypes = activeContextTypes,
                         mediaType = mediaType,
                         writer = requestWriter,
+                        poToken = poToken,
                     )
                 val retryResponse =
                     httpClient.withRedirectsDisabled {
@@ -671,6 +700,19 @@ private class SabrMediaStream(
                                 logResponse(diagnostics)
                             }
 
+                            if ((protectionPending || (newSegmentCount == 0 && !ended)) && poToken == null && pendingToken != null) {
+                                val supplied = pendingToken.await()
+                                if (supplied != null) {
+                                    poToken = supplied
+                                    protectionPending = false
+                                    protectionRetryCount = 0
+                                    protectionRetryLimit = null
+                                    omittedProtectionPendingCount = 0
+                                    retryWithToken = true
+                                    return@execute true
+                                }
+                            }
+
                             // ponytail: allow at most five responses while an omitted allowance is pending per stream;
                             // refine only if observed protocol behavior warrants a larger budget.
                             val protectionRetriesExhausted =
@@ -689,7 +731,8 @@ private class SabrMediaStream(
 
                             if (newSegmentCount == 0 && !ended) {
                                 val playbackPosition = playbackPositionMs?.invoke()?.coerceAtLeast(0L)
-                                val hasSafeReadahead = playbackPosition != null && playerTimeMs - playbackPosition > STARVATION_TOLERANCE_MS
+                                val hasSafeReadahead =
+                                    playbackPosition != null && playerTimeMs - playbackPosition > STARVATION_TOLERANCE_MS
                                 if (hasSafeReadahead) {
                                     requestsWithoutProgress = 0
                                     awaitPlaybackProgress(
@@ -737,6 +780,7 @@ private class SabrMediaStream(
                         "protectionRetries" to protectionRetryCount.toString(),
                     ) + bootstrap.logDetails(selectedFormat, mediaType),
             )
+            pendingToken?.cancel()
         }.buffer(0).catch { error ->
             if (error is CancellationException) throw error
             onResponse?.invoke(
@@ -777,7 +821,8 @@ private class SabrMediaStream(
                             }
                         },
             )
-            throw if (error is SabrProtocolException) error else SabrProtocolException("SABR transport failed")
+            // The type alone: transport messages can contain signed media URLs.
+            throw if (error is SabrProtocolException) error else SabrProtocolException("SABR transport failed: ${error::class.simpleName}")
         }
     }
 
@@ -930,6 +975,11 @@ private class SabrMediaStream(
         const val PROTECTION_ATTESTATION_PENDING = 2
         const val PROTECTION_ATTESTATION_REQUIRED = 3
         const val MAX_OMITTED_PROTECTION_PENDING = 5
+
+        // Leave room before networks that enforce attestation around 90 to 100 seconds of media.
+        const val LATE_TOKEN_MEDIA_LIMIT_MS = 80_000L
+        const val LATE_TOKEN_TIMEOUT_MS = 30_000L
+        const val MAX_PO_TOKEN_BYTES = 16 * 1024
         const val MAX_REQUEST_COUNT = 10_000
         const val MAX_BACKOFF_MS = 30_000L
         const val MAX_RESPONSE_MEDIA_BYTES = 64L * 1024 * 1024

@@ -10,6 +10,11 @@ that `0.x` releases may contain breaking API changes.
 
 ### Added
 
+- `SabrAudioStream` accepts an optional suspend token supplier. Tokenless audio
+  starts immediately and attaches the result on later requests. It waits up to
+  30 seconds when attestation is pending or before reaching 80 seconds of media. Existing tokenized streams and
+  calls without a supplier retain their behavior. `SabrBootstrap.tokenVisitorData`
+  retains the player visitor for the supplier's token binding.
 - `TVHTML5_SAMSUNG`, a manually selected tokenless TV client for direct audio.
   YouTube forbids its media until pre-roll ads would end, so extraction waits
   6 to 30 seconds.

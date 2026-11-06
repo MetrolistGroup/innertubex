@@ -408,6 +408,7 @@ internal class PlayerClientDirector(
                         clientId = client.clientId.toIntOrNull() ?: 0,
                         clientVersion = client.clientVersion,
                         useSabr = client.useSabr,
+                        visitorData = requestSession.visitorData,
                     )
                 if (result.profileId in excludedClients) {
                     logger.d(

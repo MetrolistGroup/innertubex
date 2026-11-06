@@ -15,6 +15,7 @@ internal object SabrProtoCodec {
         activeContextTypes: Set<Int> = emptySet(),
         mediaType: SabrMediaType = SabrMediaType.AUDIO,
         writer: ProtoWriter = ProtoWriter(),
+        poToken: ByteArray? = bootstrap.poToken,
     ): ByteArray {
         val videoFormat =
             if (mediaType == SabrMediaType.VIDEO) {
@@ -61,7 +62,7 @@ internal object SabrProtoCodec {
                         int32(16, bootstrap.clientName)
                         string(17, bootstrap.clientVersion)
                     }
-                    bootstrap.poToken?.let { bytes(2, it) }
+                    poToken?.let { bytes(2, it) }
                     playbackCookie?.let { bytes(3, it) }
                     contexts.filter { it.type in activeContextTypes }.forEach { context ->
                         message(5) {

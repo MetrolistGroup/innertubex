@@ -1178,15 +1178,16 @@ class InnerTubeExtractor internal constructor(
                 // Validate the bootstrap (duration, format identities, bounded config) before paying for any n transform.
                 val bootstrapResult =
                     runCatching {
-                        response.toSabrBootstrap(
-                            clientId = result.clientId,
-                            clientVersion = result.clientVersion,
-                            audioFormat = audioFormat,
-                            poToken = result.streamingDataPoToken,
-                            requestUserAgent = result.userAgent,
-                            requestOrigin = sabrRequestOrigin(result.clientName),
-                            videoFormat = videoFormat,
-                        )
+                        response
+                            .toSabrBootstrap(
+                                clientId = result.clientId,
+                                clientVersion = result.clientVersion,
+                                audioFormat = audioFormat,
+                                poToken = result.streamingDataPoToken,
+                                requestUserAgent = result.userAgent,
+                                requestOrigin = sabrRequestOrigin(result.clientName),
+                                videoFormat = videoFormat,
+                            ).copy(tokenVisitorData = result.visitorData)
                     }
                 val untransformedBootstrap = bootstrapResult.getOrNull()
                 if (untransformedBootstrap == null) {

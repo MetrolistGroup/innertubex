@@ -14,6 +14,7 @@ import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.writeFully
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collect
@@ -37,6 +38,263 @@ import kotlin.time.TimeSource
 
 @OptIn(ExperimentalSabrApi::class)
 class SabrAudioStreamTest {
+    @Test
+    fun lateTokenStartsWithoutWaitingAndIsSentOnLaterRequests() =
+        runTest {
+            val firstRequest = CompletableDeferred<Unit>()
+            val supplied = CompletableDeferred<ByteArray?>()
+            val token = byteArrayOf(9, 8, 7)
+            val requests = mutableListOf<ByteArray>()
+            val client =
+                HttpClient(MockEngine) {
+                    engine {
+                        dispatcher = StandardTestDispatcher(testScheduler)
+                        addHandler { request ->
+                            requests += (request.body as OutgoingContent.ByteArrayContent).bytes()
+                            val response =
+                                when (requests.size) {
+                                    1 -> {
+                                        assertEquals(null, streamingToken(requests.last()))
+                                        firstRequest.complete(Unit)
+                                        supplied.await()
+                                        initializationAndSegmentResponse(2, durationMs = 3000)
+                                    }
+
+                                    2 -> {
+                                        mediaResponseSegment(3, 1, 1000, byteArrayOf(8, 9, 10))
+                                    }
+
+                                    else -> {
+                                        mediaResponseSegment(4, 2, 2000, byteArrayOf(11, 12, 13)) +
+                                            umpPart(UmpPartType.END_OF_TRACK, byteArrayOf())
+                                    }
+                                }
+                            respond(response, headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"))
+                        }
+                    }
+                }
+            try {
+                val result =
+                    async {
+                        SabrAudioStream(
+                            client,
+                            bootstrap().copy(durationMs = 3000, contentLengthBytes = 13),
+                            tokenSupplier = { supplied.await() },
+                        ).chunks()
+                            .toList()
+                    }
+                firstRequest.await()
+                assertFalse(result.isCompleted)
+                supplied.complete(token)
+                withTimeout(5000) { result.await() }
+                assertEquals(3, requests.size)
+                requests.drop(1).forEach { assertContentEquals(token, streamingToken(it)) }
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun wholeFileRequestsWaitAtEightySecondsOfMediaForTheToken() =
+        runTest {
+            val supplied = CompletableDeferred<ByteArray?>()
+            val atLimit = CompletableDeferred<Unit>()
+            val token = byteArrayOf(8, 9)
+            var requests = 0
+            val client =
+                HttpClient(MockEngine) {
+                    engine {
+                        dispatcher = StandardTestDispatcher(testScheduler)
+                        addHandler { request ->
+                            val response =
+                                when (++requests) {
+                                    1 -> {
+                                        initializationResponsePrefix(2, durationMs = 120_000) +
+                                            mediaResponseSegment(2, 0, 0, byteArrayOf(5, 6, 7), durationMs = 40_000)
+                                    }
+
+                                    2 -> {
+                                        atLimit.complete(Unit)
+                                        mediaResponseSegment(3, 1, 40_000, byteArrayOf(8, 9, 10), durationMs = 40_000)
+                                    }
+
+                                    else -> {
+                                        assertContentEquals(
+                                            token,
+                                            streamingToken((request.body as OutgoingContent.ByteArrayContent).bytes()),
+                                        )
+                                        mediaResponseSegment(4, 2, 80_000, byteArrayOf(11, 12, 13), durationMs = 40_000) +
+                                            umpPart(UmpPartType.END_OF_TRACK, byteArrayOf())
+                                    }
+                                }
+                            respond(response, headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"))
+                        }
+                    }
+                }
+            try {
+                val result =
+                    async {
+                        SabrAudioStream(
+                            client,
+                            bootstrap().copy(durationMs = 120_000, contentLengthBytes = 13),
+                            tokenSupplier = { supplied.await() },
+                        ).chunks().toList()
+                    }
+                atLimit.await()
+                runCurrent()
+                assertEquals(2, requests)
+                assertFalse(result.isCompleted)
+                supplied.complete(token)
+                result.await()
+                assertEquals(3, requests)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun pendingAndRequiredWaitForLateTokenWithoutSpendingRetryAllowance() =
+        runBlocking {
+            for (status in listOf(2, 3)) {
+                val token = byteArrayOf(5, 6)
+                val pending = CompletableDeferred<Unit>()
+                val supplied = CompletableDeferred<ByteArray?>()
+                var requests = 0
+                val client =
+                    HttpClient(
+                        MockEngine { request ->
+                            val response =
+                                if (++requests == 1) {
+                                    pending.complete(Unit)
+                                    umpPart(UmpPartType.STREAM_PROTECTION_STATUS, streamProtectionStatus(status, maxRetries = 0))
+                                } else {
+                                    assertContentEquals(token, streamingToken((request.body as OutgoingContent.ByteArrayContent).bytes()))
+                                    umpPart(UmpPartType.STREAM_PROTECTION_STATUS, streamProtectionStatus(1)) + completeResponse(0)
+                                }
+                            respond(response, headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"))
+                        },
+                    )
+                try {
+                    val result = async { SabrAudioStream(client, bootstrap(), tokenSupplier = { supplied.await() }).chunks().toList() }
+                    pending.await()
+                    assertFalse(result.isCompleted)
+                    supplied.complete(token)
+                    withTimeout(5000) { result.await() }
+                    assertEquals(2, requests)
+                } finally {
+                    client.close()
+                }
+            }
+        }
+
+    @Test
+    fun failedOrEmptyLateTokenKeepsTheAttestationFailure() =
+        runBlocking {
+            for (fails in listOf(false, true)) {
+                var requests = 0
+                val client =
+                    HttpClient(
+                        MockEngine {
+                            requests++
+                            respond(
+                                umpPart(UmpPartType.STREAM_PROTECTION_STATUS, streamProtectionStatus(3)),
+                                headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"),
+                            )
+                        },
+                    )
+                try {
+                    val error =
+                        assertFailsWith<SabrProtocolException> {
+                            SabrAudioStream(
+                                client,
+                                bootstrap(),
+                                tokenSupplier = { if (fails) error("Mint failed") else null },
+                            ).chunks().toList()
+                        }
+                    assertEquals(SabrFailureKind.ATTESTATION_REQUIRED, error.kind)
+                    assertEquals(1, requests)
+                } finally {
+                    client.close()
+                }
+            }
+        }
+
+    @Test
+    fun absentSupplierKeepsRequestBytesAndExistingTokensNeverMint() =
+        runBlocking {
+            val requests = mutableListOf<ByteArray>()
+            val client =
+                HttpClient(
+                    MockEngine { request ->
+                        requests += (request.body as OutgoingContent.ByteArrayContent).bytes()
+                        respond(completeResponse(0), headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"))
+                    },
+                )
+            try {
+                SabrAudioStream(client, bootstrap()).chunks().toList()
+                SabrAudioStream(client, bootstrap(), tokenSupplier = null).chunks().toList()
+                assertContentEquals(requests[0], requests[1])
+                val token = byteArrayOf(1, 2)
+                SabrAudioStream(client, bootstrap().copy(poToken = token), tokenSupplier = { error("Must not mint") }).chunks().toList()
+                assertContentEquals(token, streamingToken(requests.last()))
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun lateTokenWaitHasABoundAndCancelsTheMinter() =
+        runTest {
+            var cancelled = false
+            val client =
+                HttpClient(MockEngine) {
+                    engine {
+                        dispatcher = StandardTestDispatcher(testScheduler)
+                        addHandler {
+                            respond(
+                                umpPart(UmpPartType.STREAM_PROTECTION_STATUS, streamProtectionStatus(3)),
+                                headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"),
+                            )
+                        }
+                    }
+                }
+            try {
+                val error =
+                    assertFailsWith<SabrProtocolException> {
+                        SabrAudioStream(client, bootstrap(), tokenSupplier = {
+                            try {
+                                awaitCancellation()
+                            } finally {
+                                cancelled = true
+                            }
+                        }).chunks().toList()
+                    }
+                assertEquals(SabrFailureKind.ATTESTATION_REQUIRED, error.kind)
+                assertTrue(cancelled)
+                assertEquals(30_000L, testScheduler.currentTime)
+            } finally {
+                client.close()
+            }
+        }
+
+    private fun streamingToken(request: ByteArray): ByteArray? {
+        val reader = ProtoReader(request)
+        while (reader.hasRemaining) {
+            val tag = reader.tag()
+            if (tag.field == 19) {
+                val context = ProtoReader(reader.bytes())
+                while (context.hasRemaining) {
+                    val field = context.tag()
+                    if (field.field == 2) return context.bytes()
+                    context.skip(field)
+                }
+                return null
+            }
+            reader.skip(tag)
+        }
+        return null
+    }
+
     @Test
     fun transportCancellationRemainsCancellation() =
         runBlocking {
@@ -1864,6 +2122,7 @@ class SabrAudioStreamTest {
         data: ByteArray,
         itag: Int = 140,
         lastModified: Long = 100,
+        durationMs: Long = 1_000,
     ): ByteArray =
         umpPart(
             UmpPartType.MEDIA_HEADER,
@@ -1875,6 +2134,7 @@ class SabrAudioStreamTest {
                 startMs = startMs,
                 itag = itag,
                 lastModified = lastModified,
+                durationMs = durationMs,
             ),
         ) +
             umpPart(UmpPartType.MEDIA, byteArrayOf(headerId.toByte()) + data) +
@@ -1951,6 +2211,7 @@ class SabrAudioStreamTest {
         startMs: Long = 0,
         itag: Int = 140,
         lastModified: Long = 100,
+        durationMs: Long = 1_000,
     ): ByteArray =
         ProtoWriter()
             .apply {
@@ -1962,7 +2223,7 @@ class SabrAudioStreamTest {
                 int32(9, sequenceNumber)
                 if (!isInit) {
                     if (startMs != 0L) int64(11, startMs)
-                    int64(12, 1_000)
+                    int64(12, durationMs)
                 }
                 int64(14, contentLength.toLong())
             }.toByteArray()
