@@ -23,6 +23,7 @@ internal class SabrUmpProcessor(
     private var pendingMediaBytes = 0L
     private var responseBytes = 0L
     private var responseHeaderCount = 0
+    private var terminalProtection = false
 
     fun feed(chunk: ByteArray): List<SabrEvent> = feed(chunk, chunk.size)
 
@@ -30,10 +31,14 @@ internal class SabrUmpProcessor(
         chunk: ByteArray,
         length: Int,
     ): List<SabrEvent> {
+        if (terminalProtection) return emptyList()
         accountResponseBytes(length)
         val events = mutableListOf<SabrEvent>()
         reader.feed(chunk, offset = 0, length = length) { type, data, from, to ->
-            events += process(type, data, from, to)
+            val decoded = process(type, data, from, to)
+            events += decoded
+            terminalProtection = decoded.any { it is SabrEvent.StreamProtectionStatus && it.status >= 3 }
+            !terminalProtection
         }
         return events
     }
@@ -47,6 +52,7 @@ internal class SabrUmpProcessor(
     }
 
     fun finish() {
+        if (terminalProtection) return
         reader.finish()
         if (pendingSegments.isNotEmpty()) {
             throw SabrProtocolException(

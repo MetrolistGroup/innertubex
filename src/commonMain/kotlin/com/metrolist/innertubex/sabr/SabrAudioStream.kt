@@ -7,6 +7,7 @@ import com.metrolist.innertubex.i
 import com.metrolist.innertubex.w
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpResponseRedirectEvent
+import io.ktor.client.plugins.expectSuccess
 import io.ktor.client.request.header
 import io.ktor.client.request.preparePost
 import io.ktor.client.request.setBody
@@ -147,6 +148,7 @@ private class SabrMediaStream(
             var playbackCookie: ByteArray? = null
             var targetAudioReadaheadMs = 0L
             var maxTimeSinceLastRequestMs = 0L
+            var lastRequestStarted = TimeSource.Monotonic.markNow()
             var minAudioReadaheadMs = 0L
             var bufferedRanges = emptyList<SabrBufferedRange>()
             var firstBufferedSegment: SabrMediaHeader? = null
@@ -185,10 +187,14 @@ private class SabrMediaStream(
                     awaitReadaheadCapacity(
                         downloadedPositionMs = playerTimeMs,
                         targetAudioReadaheadMs = targetAudioReadaheadMs,
-                        maxTimeSinceLastRequestMs = maxTimeSinceLastRequestMs,
+                        deadline = heartbeatDeadline(lastRequestStarted, maxTimeSinceLastRequestMs),
                     )
                 }
-                if (backoffTimeMs > 0) delay(backoffTimeMs.coerceAtMost(MAX_BACKOFF_MS))
+                if (backoffTimeMs > 0) {
+                    val backoff = backoffTimeMs.coerceAtMost(MAX_BACKOFF_MS)
+                    val remaining = remainingWaitMs(heartbeatDeadline(lastRequestStarted, maxTimeSinceLastRequestMs))
+                    delay(if (maxTimeSinceLastRequestMs > 0) minOf(backoff, remaining) else backoff)
+                }
                 val currentRequestNumber = requestNumber
                 val observedPlaybackPositionMs = playbackPositionMs?.invoke()?.coerceAtLeast(0L)
                 val requestPlayerTimeMs = playerTimeMs
@@ -208,7 +214,9 @@ private class SabrMediaStream(
                     )
                 val retryResponse =
                     httpClient.withRedirectsDisabled {
+                        lastRequestStarted = TimeSource.Monotonic.markNow()
                         preparePost(withRequestNumber(streamingUrl, requestNumber++)) {
+                            expectSuccess = false
                             attributes.put(SABR_REQUEST_ATTRIBUTE, Unit)
                             contentType(ContentType.parse(CONTENT_TYPE_PROTOBUF))
                             header(HttpHeaders.Accept, CONTENT_TYPE_UMP)
@@ -301,6 +309,7 @@ private class SabrMediaStream(
                             var newSegmentsBytes = 0L
                             var newSegmentCount = 0
                             var openingDeadline: TimeMark? = null
+                            var trackEndDeadline: TimeMark? = null
 
                             suspend fun emitMediaSegment(segment: SabrSegment) {
                                 if (firstSequenceNumber == null) {
@@ -326,7 +335,13 @@ private class SabrMediaStream(
                                 initialSeekSequence: Int? = null,
                                 establishFromMinimum: Boolean = false,
                             ) {
+                                if (!initSegmentEmitted && pendingMediaBySequence.isNotEmpty()) {
+                                    throw SabrProtocolException("SABR media arrived without initialization")
+                                }
                                 if (lastSequenceNumber == null) {
+                                    if (requestPlayerTimeMs > 0L) {
+                                        pendingMediaBySequence.entries.removeAll { it.value.checkedEndTimeMs() <= requestPlayerTimeMs }
+                                    }
                                     initialSeekSequence?.let { seekSequence ->
                                         pendingMediaBySequence.keys
                                             .filter { it < seekSequence }
@@ -365,7 +380,7 @@ private class SabrMediaStream(
                                 if (firstSequenceNumber != null || requestPlayerTimeMs <= 0L) return null
                                 return pendingMediaBySequence.values
                                     .firstOrNull { pending ->
-                                        pending.header.startMs <= requestPlayerTimeMs &&
+                                        pending.header.startMs - requestPlayerTimeMs <= START_TIME_TOLERANCE_MS &&
                                             requestPlayerTimeMs < pending.checkedEndTimeMs()
                                     }?.header
                                     ?.sequenceNumber
@@ -531,6 +546,12 @@ private class SabrMediaStream(
                                 while (!terminalProtection) {
                                     // Only time spent waiting on the network counts; emitting can block on player readahead.
                                     val readStart = TimeSource.Monotonic.markNow()
+                                    // Drain control events for a bounded interval after the track ends.
+                                    if (ended) {
+                                        if (trackEndDeadline == null) trackEndDeadline = readStart + TRACK_END_DRAIN_MS.milliseconds
+                                        val timeLeft = -checkNotNull(trackEndDeadline).elapsedNow()
+                                        if (withTimeoutOrNull(timeLeft) { channel.awaitContent() } == null) break
+                                    }
                                     // Time out readiness, not a consuming read, so a timeout race cannot lose bytes.
                                     if (hasPendingOpening()) {
                                         if (openingDeadline == null) {
@@ -554,9 +575,8 @@ private class SabrMediaStream(
                                         if (terminalProtection) break
                                     }
                                 }
-                                if (terminalProtection) {
-                                    channel.cancel(null)
-                                } else {
+                                if (terminalProtection || ended) channel.cancel(null)
+                                if (!terminalProtection) {
                                     processor.finish()
                                     emitReadyMediaSegments(establishFromMinimum = true)
                                 }
@@ -672,7 +692,10 @@ private class SabrMediaStream(
                                 val hasSafeReadahead = playbackPosition != null && playerTimeMs - playbackPosition > STARVATION_TOLERANCE_MS
                                 if (hasSafeReadahead) {
                                     requestsWithoutProgress = 0
-                                    awaitPlaybackProgress(playbackPosition, maxTimeSinceLastRequestMs)
+                                    awaitPlaybackProgress(
+                                        playbackPosition,
+                                        heartbeatDeadline(lastRequestStarted, maxTimeSinceLastRequestMs),
+                                    )
                                 } else if (++requestsWithoutProgress >= maxRequestsWithoutProgress) {
                                     throw SabrProtocolException(
                                         "SABR made no $mediaLabel progress for $requestsWithoutProgress requests " +
@@ -754,26 +777,32 @@ private class SabrMediaStream(
                             }
                         },
             )
-            throw error
+            throw if (error is SabrProtocolException) error else SabrProtocolException("SABR transport failed")
         }
     }
 
-    private suspend fun awaitPlaybackProgress(
-        previousPositionMs: Long,
+    private fun heartbeatDeadline(
+        requestStarted: TimeMark,
         maxTimeSinceLastRequestMs: Long,
-    ) {
-        val waitLimitMs =
+    ): TimeMark {
+        val intervalMs =
             maxTimeSinceLastRequestMs
                 .takeIf { it > 0 }
                 ?.coerceAtMost(MAX_HEARTBEAT_INTERVAL_MS)
                 ?: DEFAULT_HEARTBEAT_INTERVAL_MS
-        var waitedMs = 0L
-        while (
-            playbackPositionMs?.invoke()?.coerceAtLeast(0L) == previousPositionMs &&
-            waitedMs < waitLimitMs
-        ) {
-            delay(PLAYBACK_POLL_INTERVAL_MS)
-            waitedMs += PLAYBACK_POLL_INTERVAL_MS
+        return requestStarted + intervalMs.milliseconds
+    }
+
+    private fun remainingWaitMs(deadline: TimeMark): Long = (-deadline.elapsedNow()).inWholeMilliseconds.coerceAtLeast(0L)
+
+    private suspend fun awaitPlaybackProgress(
+        previousPositionMs: Long,
+        deadline: TimeMark,
+    ) {
+        while (playbackPositionMs?.invoke()?.coerceAtLeast(0L) == previousPositionMs) {
+            val remaining = remainingWaitMs(deadline)
+            if (remaining == 0L) return
+            delay(minOf(PLAYBACK_POLL_INTERVAL_MS, remaining))
         }
     }
 
@@ -812,19 +841,14 @@ private class SabrMediaStream(
     private suspend fun awaitReadaheadCapacity(
         downloadedPositionMs: Long,
         targetAudioReadaheadMs: Long,
-        maxTimeSinceLastRequestMs: Long,
+        deadline: TimeMark,
     ) {
-        val waitLimitMs =
-            maxTimeSinceLastRequestMs
-                .takeIf { it > 0 }
-                ?.coerceAtMost(MAX_HEARTBEAT_INTERVAL_MS)
-                ?: DEFAULT_HEARTBEAT_INTERVAL_MS
-        var waitedMs = 0L
-        while (waitedMs < waitLimitMs) {
+        while (true) {
             val playbackPosition = playbackPositionMs?.invoke()?.coerceAtLeast(0L) ?: return
             if (downloadedPositionMs - playbackPosition <= targetAudioReadaheadMs) return
-            delay(PLAYBACK_POLL_INTERVAL_MS)
-            waitedMs += PLAYBACK_POLL_INTERVAL_MS
+            val remaining = remainingWaitMs(deadline)
+            if (remaining == 0L) return
+            delay(minOf(PLAYBACK_POLL_INTERVAL_MS, remaining))
         }
     }
 
@@ -918,6 +942,8 @@ private class SabrMediaStream(
 
         // Tick-to-millisecond rounding can shift the opening boundary by one millisecond.
         const val START_TIME_TOLERANCE_MS = 1L
+
+        const val TRACK_END_DRAIN_MS = 100L
 
         // shortcut: bound startup reordering to 250 ms; use a protocol ordering watermark if SABR exposes one.
         const val OPENING_REORDER_WAIT_MS = 250L

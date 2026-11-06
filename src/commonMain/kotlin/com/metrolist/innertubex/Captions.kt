@@ -6,6 +6,7 @@ import com.metrolist.innertubex.models.response.GetTranscriptResponse
 import io.ktor.client.statement.HttpResponse
 import io.ktor.http.Url
 import io.ktor.http.isSuccess
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -73,7 +74,14 @@ private fun parseTranscriptCues(body: String): List<TranscriptCue> {
 /** Fetches a public YouTube caption track without redirects, cookies, or account headers. */
 public suspend fun InnerTube.fetchCaptionText(url: String): String {
     val captionUrl = validatedCaptionUrl(url)
-    val response = httpClient.getTextWithoutRedirects(captionUrl, MAX_CAPTION_BYTES)
+    val response =
+        try {
+            httpClient.getTextWithoutRedirects(captionUrl, MAX_CAPTION_BYTES)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            throw IllegalStateException("Caption request failed")
+        }
     if (!response.status.isSuccess()) {
         throw InnerTubeHttpException("fetchCaptionText", response.status)
     }
