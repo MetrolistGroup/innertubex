@@ -240,6 +240,33 @@ object PlaybackClientCatalog {
                         "Retained for explicit compatibility testing only.",
             ),
             manifest(
+                id = "TVHTML5_SAMSUNG",
+                client = YouTubeClient.TVHTML5_SAMSUNG,
+                displayName = "TV HTML5 Samsung",
+                lifecycle = ClientLifecycle.EXPERIMENTAL,
+                selectionMode = ClientSelectionMode.MANUAL_ONLY,
+                priority = 72,
+                authentication = AuthenticationPolicy.OPTIONAL,
+                transports = setOf(PlaybackTransport.DIRECT),
+                request =
+                    ClientRequestCapabilities(
+                        signatureTimestamp = true,
+                        signatureCipher = JavaScriptRequirement.RESPONSE_DEPENDENT,
+                        nTransform = JavaScriptRequirement.RESPONSE_DEPENDENT,
+                        cookies = true,
+                    ),
+                content =
+                    unverifiedProbeContent().copy(
+                        normal = CapabilitySupport.SUPPORTED,
+                        kids = CapabilitySupport.SUPPORTED,
+                    ),
+                evidence = setOf(SOURCE_YTDLP),
+                notes =
+                    "Tokenless direct audio passed anonymous normal and made-for-kids samples and 90-second playback " +
+                        "with seeks (November 2026). Media is forbidden until pre-roll ads would end, 6-30 seconds " +
+                        "after the player response, so extraction waits. Manual only: too slow to start automatically.",
+            ),
+            manifest(
                 id = "WEB_REMIX",
                 client = YouTubeClient.WEB_REMIX,
                 displayName = "Web Remix",

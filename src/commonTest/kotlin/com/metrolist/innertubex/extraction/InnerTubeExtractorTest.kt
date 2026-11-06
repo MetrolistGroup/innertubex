@@ -43,8 +43,10 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
+import kotlin.time.TimeSource
 
 class InnerTubeExtractorTest {
     @Test
@@ -2087,6 +2089,23 @@ class InnerTubeExtractorTest {
             assertNotNull(stream)
             assertEquals("https://www.youtube.com/api/manifest/hls.m3u8", stream.audioUrl.substringBefore('?'))
             assertFalse(stream.requireBoundedRange)
+            client.close()
+        }
+
+    @Test
+    fun directStreamIsHeldBackUntilThePreRollAdEnds() =
+        runBlocking {
+            val response =
+                DIRECT_RESPONSE.replaceFirst(
+                    "\"streamingData\":{",
+                    "\"adPlacements\":[{\"adPlacementRenderer\":{\"config\":{\"adPlacementConfig\":" +
+                        "{\"kind\":\"AD_PLACEMENT_KIND_START\"}},\"renderer\":{\"instreamVideoAdRenderer\":" +
+                        "{\"skipOffsetMilliseconds\":300}}}}],\"streamingData\":{",
+                )
+            val client = jsonClient(response)
+            val started = TimeSource.Monotonic.markNow()
+            assertNotNull(extractor(client).extract("video", ContentHints(isExplicit = true)))
+            assertTrue(started.elapsedNow() >= 300.milliseconds)
             client.close()
         }
 

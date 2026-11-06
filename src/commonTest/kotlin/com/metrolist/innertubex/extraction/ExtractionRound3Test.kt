@@ -399,7 +399,7 @@ class ExtractionRound3Test {
                                 ) {
                                     authenticatedPlayers++
                                 }
-                                assertEquals(PLAYER_RESPONSE_FIELD_MASK, request.headers["X-Goog-FieldMask"])
+                                assertTrue(request.headers["X-Goog-FieldMask"].orEmpty().startsWith(PLAYER_RESPONSE_FIELD_MASK))
                                 body(this@Fixture)
                             }
 

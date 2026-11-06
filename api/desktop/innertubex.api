@@ -1869,6 +1869,7 @@ public final class com/metrolist/innertubex/models/YouTubeClient$Companion {
 	public final fun getTVHTML5 ()Lcom/metrolist/innertubex/models/YouTubeClient;
 	public final fun getTVHTML5_DOWNGRADED ()Lcom/metrolist/innertubex/models/YouTubeClient;
 	public final fun getTVHTML5_SABR ()Lcom/metrolist/innertubex/models/YouTubeClient;
+	public final fun getTVHTML5_SAMSUNG ()Lcom/metrolist/innertubex/models/YouTubeClient;
 	public final fun getTVHTML5_SIMPLY ()Lcom/metrolist/innertubex/models/YouTubeClient;
 	public final fun getTVHTML5_SIMPLY_EMBEDDED_PLAYER ()Lcom/metrolist/innertubex/models/YouTubeClient;
 	public final fun getTVHTML5_SIMPLY_SABR ()Lcom/metrolist/innertubex/models/YouTubeClient;

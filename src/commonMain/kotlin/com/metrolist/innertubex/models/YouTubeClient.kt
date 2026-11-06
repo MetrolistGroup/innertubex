@@ -525,6 +525,19 @@ data class YouTubeClient(
                 includeUserAgentInContext = true,
             )
 
+        /** Tokenless TV profile from yt-dlp. Needs the web cipher; media unlocks after pre-roll ads would end. */
+        val TVHTML5_SAMSUNG =
+            TVHTML5_DOWNGRADED.copy(
+                userAgent =
+                    "Mozilla/5.0 (SMART-TV; Linux; Tizen 2.4.0) AppleWebKit/538.1 " +
+                        "(KHTML, like Gecko) Version/2.4.0 TV Safari/538.1",
+                osName = "Tizen",
+                osVersion = "2.4.0",
+                deviceMake = "Samsung",
+                deviceModel = "UKS9800",
+                friendlyName = "TV HTML5 Samsung",
+            )
+
         /** Historical probe identity: iOS Music client ID 26, current source evidence only. */
         val IOS_MUSIC =
             YouTubeClient(

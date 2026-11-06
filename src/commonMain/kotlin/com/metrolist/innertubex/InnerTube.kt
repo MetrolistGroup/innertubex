@@ -826,7 +826,10 @@ class InnerTube(
             .preparePost("player") {
                 playerRequest(client, videoId, null, signatureTimestamp, poToken, null, requestSession, encryptedHostFlags)
                 // Asks the server for only what PlayerResponse decodes: about half the bytes to transfer and parse.
-                if (fieldMask) header(FIELD_MASK_HEADER, PLAYER_RESPONSE_FIELD_MASK)
+                if (fieldMask) {
+                    val mask = if (client.clientName == "TVHTML5") PLAYER_RESPONSE_TV_FIELD_MASK else PLAYER_RESPONSE_FIELD_MASK
+                    header(FIELD_MASK_HEADER, mask)
+                }
                 expectSuccess = false
             }.execute { response ->
                 if (!response.status.isSuccess()) {
@@ -2082,3 +2085,9 @@ internal const val PLAYER_RESPONSE_FIELD_MASK =
         "videostatsScheduledFlushWalltimeSeconds,videostatsDefaultFlushIntervalSeconds)," +
         "playerConfig(audioConfig(loudnessDb,perceptualLoudnessDb)," +
         "mediaCommonConfig(mediaUstreamerRequestConfig(videoPlaybackUstreamerConfig)))"
+
+/** TV media stays forbidden during pre-roll ads, so TV alone also asks how long they run. */
+internal const val PLAYER_RESPONSE_TV_FIELD_MASK =
+    "$PLAYER_RESPONSE_FIELD_MASK," +
+        "adPlacements(adPlacementRenderer(config(adPlacementConfig(kind))," +
+        "renderer(instreamVideoAdRenderer(playerVars,skipOffsetMilliseconds))))"

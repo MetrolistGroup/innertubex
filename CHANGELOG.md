@@ -6,6 +6,12 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+### Added
+
+- `TVHTML5_SAMSUNG`, a manually selected tokenless TV client for direct audio.
+  YouTube forbids its media until pre-roll ads would end, so extraction waits
+  6 to 30 seconds.
+
 ## [0.11.4] - 2026-11-06
 
 ### Changed

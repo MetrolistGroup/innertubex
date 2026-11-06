@@ -33,6 +33,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -526,6 +527,8 @@ class InnerTubeExtractor internal constructor(
         val diagnostics =
             ExtractionDiagnostics(
                 maxPlayerRequests = if (hints.playbackClientOverrideId != null) 1 else MAX_PLAYER_REQUESTS_PER_EXTRACTION,
+                // This client waits out pre-roll ads of up to 30 seconds inside extraction.
+                timeBudgetMs = extractionTimeBudgetMs + if (hints.playbackClientOverrideId == "TVHTML5_SAMSUNG") 35_000L else 0L,
             )
         return try {
             diagnostics.requestBudget.withinTime {
@@ -1427,6 +1430,8 @@ class InnerTubeExtractor internal constructor(
                             ),
                     )
 
+                    delay(response.preRollWaitMs())
+
                     return ExtractedStream(
                         videoId = videoId,
                         audioUrl = directUrl,
@@ -1636,6 +1641,8 @@ class InnerTubeExtractor internal constructor(
                     ),
             )
 
+            delay(response.preRollWaitMs())
+
             return ExtractedStream(
                 videoId = videoId,
                 audioUrl = url,
@@ -1737,6 +1744,7 @@ class InnerTubeExtractor internal constructor(
 
     private inner class ExtractionDiagnostics(
         maxPlayerRequests: Int,
+        timeBudgetMs: Long = extractionTimeBudgetMs,
     ) {
         var session = innerTube.sessionSnapshot()
             private set
@@ -1745,7 +1753,7 @@ class InnerTubeExtractor internal constructor(
             session = currentExtractionSession(session)
         }
 
-        val requestBudget = PlayerRequestBudget(maxPlayerRequests, extractionTimeBudgetMs.milliseconds)
+        val requestBudget = PlayerRequestBudget(maxPlayerRequests, timeBudgetMs.milliseconds)
         val failures = mutableListOf<PlayabilityFailure>()
         val requestFailures = mutableListOf<Throwable>()
         val attempts = mutableListOf<StreamAttemptDiagnostic>()

@@ -46,7 +46,7 @@ class PlaybackClientStrategyTest {
 
     @Test
     fun catalogProfilesHaveConsistentManifestInvariants() {
-        assertEquals(35, PlaybackClientCatalog.benchmarkOptions.size)
+        assertEquals(36, PlaybackClientCatalog.benchmarkOptions.size)
         assertEquals(
             PlaybackClientCatalog.manifests.size,
             PlaybackClientCatalog.manifests

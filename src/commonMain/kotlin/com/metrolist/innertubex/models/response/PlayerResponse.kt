@@ -15,6 +15,63 @@ data class PlayerResponse(
     val playbackTracking: PlaybackTracking? = null,
     val playerConfig: PlayerConfig? = null,
 ) {
+    // Keep this wire-only signal out of the public constructor and copy contract.
+    internal var adPlacements: List<AdPlacement>? = null
+
+    @Serializable
+    internal data class AdPlacement(
+        val adPlacementRenderer: Renderer? = null,
+    ) {
+        @Serializable
+        data class Renderer(
+            val config: Config? = null,
+            val renderer: Content? = null,
+        )
+
+        @Serializable
+        data class Config(
+            val adPlacementConfig: PlacementConfig? = null,
+        )
+
+        @Serializable
+        data class PlacementConfig(
+            val kind: String? = null,
+        )
+
+        @Serializable
+        data class Content(
+            val instreamVideoAdRenderer: VideoAd? = null,
+        )
+
+        @Serializable
+        data class VideoAd(
+            val playerVars: String? = null,
+            val skipOffsetMilliseconds: Long? = null,
+        )
+    }
+
+    /**
+     * Anonymous TV media answers 403 until the pre-roll ads would have finished.
+     * shortcut: reads adPlacements only, a response using adSlots fails with 403; handle adSlots if seen live.
+     */
+    internal fun preRollWaitMs(): Long =
+        adPlacements.orEmpty().sumOf { placement ->
+            val renderer = placement.adPlacementRenderer
+            val ad = renderer?.renderer?.instreamVideoAdRenderer
+            if (renderer?.config?.adPlacementConfig?.kind != "AD_PLACEMENT_KIND_START" || ad == null) {
+                0L
+            } else {
+                ad.skipOffsetMilliseconds
+                    ?: AD_LENGTH_SECONDS
+                        .find(ad.playerVars.orEmpty())
+                        ?.groupValues
+                        ?.get(1)
+                        ?.toLongOrNull()
+                        ?.times(1_000L)
+                    ?: 0L
+            }
+        }
+
     @Serializable
     data class PlayabilityStatus(
         val status: String,
@@ -134,3 +191,5 @@ data class PlayerResponse(
         )
     }
 }
+
+private val AD_LENGTH_SECONDS = Regex("(?:^|&)length_seconds=(\\d+)")
