@@ -2064,20 +2064,19 @@ private fun injectPrefCookie(
     return (otherParts + newPref).joinToString("; ")
 }
 
-private const val PLAYER_DRM_FIELDS =
-    "contentProtection,contentProtectionIds,drmFamilies,drmFamily,drmParameters,drmParams,drmTrackType," +
-        "fairPlay,licenseInfo,licenseInfos,licenseUrl,playReady,widevine"
-
 private const val PLAYER_FORMAT_FIELDS =
     "itag,url,mimeType,bitrate,averageBitrate,width,height,contentLength,quality,audioQuality," +
         "approxDurationMs,audioSampleRate,audioChannels,loudnessDb,lastModified,xtags,audioTrack,isDrc,signatureCipher," +
-        PLAYER_DRM_FIELDS
+        "drmFamilies,drmTrackType"
 
-/** Fields decoded by [PlayerResponse], plus DRM markers checked before decoding. */
+/**
+ * Fields decoded by [PlayerResponse], plus DRM markers checked before decoding.
+ * The server answers 400 for any unknown path, so verify additions live: DRM names are valid only at these levels.
+ */
 internal const val PLAYER_RESPONSE_FIELD_MASK =
     "playabilityStatus(status,reason,desktopLegacyAgeGateReason)," +
         "streamingData(formats($PLAYER_FORMAT_FIELDS),adaptiveFormats($PLAYER_FORMAT_FIELDS)," +
-        "expiresInSeconds,hlsManifestUrl,dashManifestUrl,serverAbrStreamingUrl,$PLAYER_DRM_FIELDS)," +
+        "expiresInSeconds,hlsManifestUrl,dashManifestUrl,serverAbrStreamingUrl,drmParams,licenseInfos)," +
         "videoDetails(videoId,title,author,channelId,lengthSeconds,musicVideoType,viewCount,thumbnail,isLiveContent)," +
         "playbackTracking(videostatsPlaybackUrl,videostatsWatchtimeUrl,atrUrl," +
         "videostatsScheduledFlushWalltimeSeconds,videostatsDefaultFlushIntervalSeconds)," +

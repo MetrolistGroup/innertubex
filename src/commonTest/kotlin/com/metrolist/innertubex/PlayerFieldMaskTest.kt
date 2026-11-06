@@ -57,11 +57,21 @@ class PlayerFieldMaskTest {
     @Test
     fun maskPreservesDrmMarkersBeforeFormatSelection() {
         val streaming = parseMask(PLAYER_RESPONSE_FIELD_MASK)["streamingData"] as Map<*, *>
-        for (selection in listOf(streaming, streaming["formats"] as Map<*, *>, streaming["adaptiveFormats"] as Map<*, *>)) {
+        assertTrue("drmParams" in streaming)
+        assertTrue("licenseInfos" in streaming)
+        for (selection in listOf(streaming["formats"] as Map<*, *>, streaming["adaptiveFormats"] as Map<*, *>)) {
             assertTrue("drmFamilies" in selection)
-            assertTrue("licenseInfos" in selection)
             assertTrue("drmTrackType" in selection)
         }
+    }
+
+    @Test
+    fun maskOmitsDrmPathsTheServerRejects() {
+        // Each of these returned HTTP 400 live, which would disable the whole mask.
+        val streaming = parseMask(PLAYER_RESPONSE_FIELD_MASK)["streamingData"] as Map<*, *>
+        val format = streaming["adaptiveFormats"] as Map<*, *>
+        for (path in listOf("drmFamilies", "drmTrackType", "widevine", "contentProtection")) assertTrue(path !in streaming)
+        for (path in listOf("drmParams", "licenseInfos", "widevine", "contentProtection")) assertTrue(path !in format)
     }
 
     @Test
