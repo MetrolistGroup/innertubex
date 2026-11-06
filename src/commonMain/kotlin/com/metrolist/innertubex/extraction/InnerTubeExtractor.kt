@@ -27,6 +27,7 @@ import io.ktor.util.sha256
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
@@ -426,6 +427,7 @@ class InnerTubeExtractor internal constructor(
                         }
                     }
                 val earlyTokenWarmup = warmToken(fetchedVisitorData)
+                val cipherInitialization = async { cipherService.initialize() }
                 val defaultConfigFetch =
                     async {
                         (
@@ -453,15 +455,33 @@ class InnerTubeExtractor internal constructor(
                     } else {
                         null
                     }
-                cipherService.initialize()
+                val playerWarmups =
+                    listOfNotNull(defaultConfigFetch, authenticatedConfigFetch).map { configFetch ->
+                        async {
+                            val config = configFetch.await()
+                            currentExtractionSession(session)
+                            if (config != null && config.playerUrl.isNotBlank()) {
+                                try {
+                                    cipherInitialization.await()
+                                    cipherService.preloadPlayerCode(config.playerUrl)
+                                } catch (error: CancellationException) {
+                                    throw error
+                                } catch (error: Exception) {
+                                    logger.w(
+                                        TAG,
+                                        "player code prewarm failed",
+                                        details = mapOf("exceptionType" to (error::class.simpleName ?: "unknown")),
+                                    )
+                                }
+                            }
+                            currentExtractionSession(session)
+                        }
+                    }
                 val configs = listOfNotNull(defaultConfigFetch.await(), authenticatedConfigFetch?.await())
                 currentExtractionSession(session)
                 val tokenWarmup = earlyTokenWarmup ?: warmToken(configs.firstNotNullOfOrNull(PlayerConfig::visitorData))
-                configs
-                    .asReversed()
-                    .firstOrNull { it.playerUrl.isNotBlank() }
-                    ?.let { cipherService.preloadPlayerCode(it.playerUrl) }
                 tokenWarmup?.await()
+                playerWarmups.forEach { it.await() }
                 currentExtractionSession(session)
             }
         } catch (e: CancellationException) {
@@ -589,7 +609,8 @@ class InnerTubeExtractor internal constructor(
         val authenticatedPremiumHighQuality =
             hints.premium && audioQuality == AudioQuality.HIGH && innerTube.hasSapCookieAuth()
         val configFreeEligible =
-            hints.playbackClientOverrideId == null && !hints.wantVideo &&
+            hints.playbackClientOverrideId == null &&
+                (!hints.wantVideo || !innerTube.sessionSnapshot().visitorData.isNullOrBlank()) &&
                 hints.isAgeRestricted != true &&
                 hints.isUploaded != true && hints.isLive != true &&
                 !authenticatedPremiumHighQuality
@@ -997,6 +1018,53 @@ class InnerTubeExtractor internal constructor(
         audioQuality: AudioQuality = AudioQuality.AUTO,
         diagnostics: ExtractionDiagnostics,
         tvBearerCredential: TvBearerCredential? = null,
+    ): ExtractedStream? =
+        coroutineScope {
+            var preparation: Job? = null
+            try {
+                extractWithPreparedCipher(
+                    videoId = videoId,
+                    hints = hints,
+                    excludedClients = excludedClients,
+                    clientPlaybackNonce = clientPlaybackNonce,
+                    playerConfig = playerConfig,
+                    totalStartMs = totalStartMs,
+                    allowCipherProcessing = allowCipherProcessing,
+                    audioQuality = audioQuality,
+                    diagnostics = diagnostics,
+                    tvBearerCredential = tvBearerCredential,
+                    prepareCipher = {
+                        if (allowCipherProcessing && playerConfig.playerUrl.isNotBlank() && preparation == null) {
+                            preparation =
+                                launch {
+                                    try {
+                                        cipherService.preloadPlayerCode(playerConfig.playerUrl)
+                                    } catch (error: CancellationException) {
+                                        throw error
+                                    } catch (_: Exception) {
+                                        // Speculative preparation must not prevent a direct response or fallback.
+                                    }
+                                }
+                        }
+                    },
+                )
+            } finally {
+                preparation?.cancel()
+            }
+        }
+
+    private suspend fun extractWithPreparedCipher(
+        videoId: String,
+        hints: ContentHints,
+        excludedClients: Set<String>,
+        clientPlaybackNonce: String,
+        playerConfig: PlayerConfig,
+        totalStartMs: Long,
+        allowCipherProcessing: Boolean,
+        audioQuality: AudioQuality,
+        diagnostics: ExtractionDiagnostics,
+        tvBearerCredential: TvBearerCredential?,
+        prepareCipher: () -> Unit,
     ): ExtractedStream? {
         diagnostics.ensureSessionCurrent()
         if (diagnostics.requestBudget.remaining <= 0) return null
@@ -1018,11 +1086,12 @@ class InnerTubeExtractor internal constructor(
                 hints = hints,
                 excludedClients = excludedClients,
                 acceptCipherOnlyResponse = allowCipherProcessing,
-                directAudioOnlyClients = !allowCipherProcessing && !hints.wantVideo,
+                directAudioOnlyClients = !allowCipherProcessing,
                 wantVideo = hints.wantVideo,
                 premiumHighQuality = hints.premium && audioQuality == AudioQuality.HIGH,
                 requestBudget = diagnostics.requestBudget,
                 tvBearerCredential = tvBearerCredential,
+                prepareCipher = prepareCipher,
             )
         diagnostics.ensureSessionCurrent()
         if (!batch.onlyBootstrapIndependentFailures) diagnostics.nonGatePasses++

@@ -12,6 +12,7 @@ import com.metrolist.innertubex.extraction.strategy.ClientHealthScope
 import com.metrolist.innertubex.extraction.strategy.ClientSelectionRequest
 import com.metrolist.innertubex.extraction.strategy.ContentAwareFallbackStrategy
 import com.metrolist.innertubex.extraction.strategy.InMemoryClientHealthMonitor
+import com.metrolist.innertubex.extraction.strategy.JavaScriptRequirement
 import com.metrolist.innertubex.extraction.strategy.PlaybackClientCatalog
 import com.metrolist.innertubex.extraction.strategy.PlaybackTransportPreference
 import com.metrolist.innertubex.extraction.strategy.PoTokenRequirement
@@ -113,6 +114,7 @@ internal class PlayerClientDirector(
         requestBudget: PlayerRequestBudget? = null,
         prefetchedPoToken: PoTokenPrefetch? = null,
         tvBearerCredential: TvBearerCredential? = null,
+        prepareCipher: (() -> Unit)? = null,
     ): PlayerResponseBatch {
         val budget = requestBudget ?: PlayerRequestBudget(if (hints.playbackClientOverrideId != null) 1 else maxPlayerRequests)
         return budget.withTokenScope {
@@ -128,6 +130,7 @@ internal class PlayerClientDirector(
                 budget,
                 prefetchedPoToken,
                 tvBearerCredential,
+                prepareCipher,
             )
         }
     }
@@ -144,6 +147,7 @@ internal class PlayerClientDirector(
         requestBudget: PlayerRequestBudget,
         prefetchedPoToken: PoTokenPrefetch?,
         tvBearerCredential: TvBearerCredential?,
+        prepareCipher: (() -> Unit)?,
     ): PlayerResponseBatch {
         val startTime = Clock.System.now().toEpochMilliseconds()
         val initialSession = innerTube.sessionSnapshot()
@@ -196,10 +200,17 @@ internal class PlayerClientDirector(
                 }
         val clients =
             selection.candidates.filterNot { selected ->
-                selected.isExcluded(
-                    excludedClients,
-                    premiumEntitlement = selected.hasUsablePremiumEntitlement(authenticated, hints.premium),
-                )
+                val premiumEntitlement = selected.hasUsablePremiumEntitlement(authenticated, hints.premium)
+                val request = selected.manifest?.request
+                selected.isExcluded(excludedClients, premiumEntitlement = premiumEntitlement) ||
+                    (
+                        directAudioOnlyClients && wantVideo &&
+                            (
+                                selected.client.useSignatureTimestamp || selected.tokenPlan(premiumEntitlement).tokenRequired ||
+                                    request?.signatureCipher == JavaScriptRequirement.REQUIRED ||
+                                    request?.nTransform == JavaScriptRequirement.REQUIRED
+                            )
+                    )
             }
         logger.d(
             TAG,
@@ -268,6 +279,13 @@ internal class PlayerClientDirector(
                 requestVisitorData.isNullOrBlank() && hints.playbackClientOverrideId == null
             ) {
                 continue
+            }
+            val request = selectedClient.manifest?.request
+            if (request?.let {
+                    it.signatureCipher != JavaScriptRequirement.NEVER || it.nTransform != JavaScriptRequirement.NEVER
+                } ?: client.useSignatureTimestamp
+            ) {
+                prepareCipher?.invoke()
             }
             val premiumEntitlement = selectedClient.hasUsablePremiumEntitlement(authenticated, hints.premium)
             val untokenizedProfileFailed =
@@ -675,7 +693,10 @@ internal class PlayerClientDirector(
             ) {
                 return ClientAttemptResult(null, null, tokenUnavailable = true)
             }
-            if ((forcePoToken || tokenPlan.playerRequired) && tokenPlan.canMint) {
+            val forceTokenizedRequest =
+                forcePoToken &&
+                    (tokenPlan.playerBinding != null || knownTokenKey == null || !tokenPlan.gvsRequired)
+            if ((forceTokenizedRequest || tokenPlan.playerRequired) && tokenPlan.canMint) {
                 logger.d(TAG, "tokenized request selected", details = mapOf("client" to client.clientName))
                 return tryTokenizedPlayer(
                     selectedClient = selectedClient,

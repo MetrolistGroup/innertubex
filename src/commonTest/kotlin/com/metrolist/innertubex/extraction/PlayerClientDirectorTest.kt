@@ -29,6 +29,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlin.test.Test
@@ -40,6 +41,64 @@ import kotlin.time.Clock
 import kotlin.time.Duration.Companion.hours
 
 class PlayerClientDirectorTest {
+    @Test
+    fun forcedGvsOnlyMintOverlapsPlayerAndRejectsInvalidBindings() =
+        runBlocking {
+            for (outcome in listOf("valid", "missing", "wrong-visitor", "empty-gvs")) {
+                val playerStarted = CompletableDeferred<Unit>()
+                val tokenStarted = CompletableDeferred<Unit>()
+                val client =
+                    HttpClient(
+                        MockEngine {
+                            playerStarted.complete(Unit)
+                            tokenStarted.await()
+                            respond(PLAYER_RESPONSE, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
+                        },
+                    ) { install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) } }
+                val innerTube = InnerTube(client, retryDelay = {}).also { it.visitorData = "visitor" }
+                val provider =
+                    object : TokenProvider {
+                        override val capabilities = TokenProviderCapabilities(setOf(PoTokenProviderKind.WEB_BOTGUARD))
+
+                        override suspend fun getPoToken(
+                            videoId: String,
+                            visitorData: String,
+                            cookie: String?,
+                        ): PoTokenResult? {
+                            tokenStarted.complete(Unit)
+                            playerStarted.await()
+                            return when (outcome) {
+                                "missing" -> null
+                                "wrong-visitor" -> PoTokenResult("", "fixture-gvs", "other-visitor")
+                                "empty-gvs" -> PoTokenResult("fixture-player", "", visitorData)
+                                else -> PoTokenResult("", "fixture-gvs", visitorData)
+                            }
+                        }
+                    }
+                try {
+                    val director =
+                        PlayerClientDirector(innerTube, fixed(checkNotNull(PlaybackClientCatalog.findManifest("WEB_REMIX"))), provider)
+                    val batch =
+                        withTimeout(2_000) {
+                            director.fetchPlayerResponses(
+                                "video",
+                                PlayerConfig("player.js", null, null, null),
+                                ContentHints(playbackClientOverrideId = "WEB_REMIX"),
+                            )
+                        }
+                    if (outcome == "valid") {
+                        assertEquals("fixture-gvs", batch.playableResponses.single().streamingDataPoToken)
+                    } else {
+                        assertTrue(batch.playableResponses.isEmpty())
+                        assertEquals("po_token_unavailable", batch.attempts.single().outcome)
+                    }
+                    assertEquals(1, (client.engine as MockEngine).requestHistory.size)
+                } finally {
+                    client.close()
+                }
+            }
+        }
+
     @Test
     fun disabledAutomaticTransportsDoNotRequestPlayersOrTokens() =
         runBlocking {
@@ -408,7 +467,7 @@ class PlayerClientDirectorTest {
         }
 
     @Test
-    fun tokenVisitorChangeCancelsBeforeSendingOldCredentials() =
+    fun tokenVisitorChangeCancelsOverlappedRequestBeforeAcceptingResponse() =
         runBlocking {
             var requests = 0
             val client =
@@ -417,7 +476,7 @@ class PlayerClientDirectorTest {
                         requests++
                         respond(PLAYER_RESPONSE, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
                     },
-                )
+                ) { install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) } }
             val innerTube = InnerTube(client, retryDelay = {}).also { it.visitorData = "old-visitor" }
             val manifest = checkNotNull(PlaybackClientCatalog.findManifest("WEB_REMIX"))
             val provider =
@@ -441,7 +500,7 @@ class PlayerClientDirectorTest {
                     ContentHints(playbackClientOverrideId = "WEB_REMIX"),
                 )
             }
-            assertEquals(0, requests)
+            assertTrue(requests <= 1)
             client.close()
         }
 
