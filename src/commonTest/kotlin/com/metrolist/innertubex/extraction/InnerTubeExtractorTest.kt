@@ -50,6 +50,101 @@ import kotlin.time.TimeSource
 
 class InnerTubeExtractorTest {
     @Test
+    fun failedCipherInitializationLeavesConfigAndTokenWarmupsRunning() =
+        runBlocking {
+            val client = jsonClient(DIRECT_RESPONSE)
+            val tube =
+                InnerTube(client, retryDelay = {}).also {
+                    it.cookie = "SAPISID=fixture"
+                    it.visitorData = "visitor"
+                }
+            val tokenStarted = CompletableDeferred<Unit>()
+            val publicStarted = CompletableDeferred<Unit>()
+            val authenticatedStarted = CompletableDeferred<Unit>()
+            var completedConfigs = 0
+            var tokenCompleted = false
+            var ejsWarmups = 0
+            val parser =
+                object : YtConfigParser {
+                    override suspend fun fetchConfig(
+                        videoId: String,
+                        useLoginCookies: Boolean,
+                    ): PlayerConfig {
+                        (if (useLoginCookies) authenticatedStarted else publicStarted).complete(Unit)
+                        delay(50)
+                        completedConfigs++
+                        return PlayerConfig("https://www.youtube.com/s/player/test/base.js", 123, null, null)
+                    }
+                }
+            val provider =
+                object : TokenProvider {
+                    override val capabilities = TokenProviderCapabilities(setOf(PoTokenProviderKind.WEB_BOTGUARD))
+
+                    override suspend fun getPoToken(
+                        videoId: String,
+                        visitorData: String,
+                        cookie: String?,
+                    ): PoTokenResult? {
+                        tokenStarted.complete(Unit)
+                        delay(50)
+                        tokenCompleted = true
+                        return null
+                    }
+                }
+            val cipher =
+                object : ExtractionCipherService by AudioOnlyCipherService {
+                    override suspend fun initialize() {
+                        tokenStarted.await()
+                        publicStarted.await()
+                        authenticatedStarted.await()
+                        error("Fixture initialization failure")
+                    }
+
+                    override suspend fun prewarmEjs() {
+                        ejsWarmups++
+                    }
+
+                    override suspend fun preloadPlayerCode(playerUrl: String) = error("Initialization failed")
+                }
+            try {
+                val extractor =
+                    InnerTubeExtractor(
+                        parser,
+                        PlayerClientDirector(tube, DirectFallback, provider),
+                        cipher,
+                        tube,
+                        tokenProvider = provider,
+                    )
+                withTimeout(2_000) { extractor.prewarm() }
+                assertEquals(2, completedConfigs)
+                assertTrue(tokenCompleted)
+                assertEquals(1, ejsWarmups)
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
+    fun cipherInitializationCancellationStillCancelsPrewarm() =
+        runBlocking {
+            val client = jsonClient(DIRECT_RESPONSE)
+            val cipher =
+                object : ExtractionCipherService by AudioOnlyCipherService {
+                    override suspend fun initialize(): Unit = throw CancellationException("Fixture cancellation")
+
+                    override suspend fun prewarmEjs() = error("Cancellation must propagate")
+                }
+            try {
+                assertFailsWith<CancellationException> {
+                    makeExtractor(client, InnerTube(client, retryDelay = {}), CountingParser(), cipherService = cipher).prewarm()
+                }
+            } finally {
+                client.close()
+            }
+            Unit
+        }
+
+    @Test
     fun prewarmPropagatesPlayerWarmupCancellationAndSessionChanges() =
         runBlocking {
             for (changeSession in listOf(false, true)) {
@@ -2104,9 +2199,32 @@ class InnerTubeExtractorTest {
                 )
             val client = jsonClient(response)
             val started = TimeSource.Monotonic.markNow()
-            assertNotNull(extractor(client).extract("video", ContentHints(isExplicit = true)))
+            val stream =
+                extractor(client, ContentAwareFallbackStrategy())
+                    .extract("video", ContentHints(isExplicit = true, playbackClientOverrideId = "TVHTML5_SAMSUNG"))
+            assertNotNull(stream)
+            assertEquals("TVHTML5_SAMSUNG__nopo", stream.profileId)
             assertTrue(started.elapsedNow() >= 300.milliseconds)
             client.close()
+        }
+
+    @Test
+    fun nonTvDirectStreamsIgnoreUnmaskedPreRollMetadata() =
+        runBlocking {
+            val response =
+                DIRECT_RESPONSE.replaceFirst(
+                    "\"streamingData\":{",
+                    "\"adPlacements\":[{\"adPlacementRenderer\":{\"config\":{\"adPlacementConfig\":" +
+                        "{\"kind\":\"AD_PLACEMENT_KIND_START\"}},\"renderer\":{\"instreamVideoAdRenderer\":" +
+                        "{\"skipOffsetMilliseconds\":9223372036854775807}}}}],\"streamingData\":{",
+                )
+            val client = jsonClient(response)
+            try {
+                assertNotNull(withTimeout(2_000) { extractor(client).extract("video", ContentHints(isExplicit = true)) })
+            } finally {
+                client.close()
+            }
+            Unit
         }
 
     @Test

@@ -198,6 +198,13 @@ public class YtConfigParserImpl(
     internal fun extractPlayerId(script: String): String? = PLAYER_ID_REGEX.find(script.replace("\\/", "/"))?.groupValues?.get(1)
 
     internal fun extractSignatureTimestamp(html: String): Int? {
+        if (html.trimStart().startsWith('<')) {
+            return SCRIPT_CONTENT.findAll(html).firstNotNullOfOrNull { scanSignatureTimestamp(it.groupValues[1]) }
+        }
+        return scanSignatureTimestamp(html)
+    }
+
+    private fun scanSignatureTimestamp(html: String): Int? {
         var position = 0
         while (position < html.length) {
             val start = position
@@ -211,6 +218,24 @@ public class YtConfigParserImpl(
 
                 char == '/' && html.getOrNull(position) == '*' -> {
                     position = html.indexOf("*/", position + 1).takeIf { it >= 0 }?.plus(2) ?: html.length
+                    continue
+                }
+
+                char == '/' -> {
+                    var previous = start - 1
+                    while (previous >= 0 && html[previous].isWhitespace()) previous--
+                    // shortcut: recognizes regexes at expression starts, extend only for observed player syntax.
+                    if (previous < 0 || html[previous] in "=(:,[!&|?;{}") {
+                        var inClass = false
+                        while (position < html.length && html[position] != '\n' && html[position] != '\r') {
+                            when (html[position++]) {
+                                '\\' -> position++
+                                '[' -> inClass = true
+                                ']' -> inClass = false
+                                '/' -> if (!inClass) break
+                            }
+                        }
+                    }
                     continue
                 }
 
@@ -349,6 +374,7 @@ public class YtConfigParserImpl(
         private val LOOSE_PLAYER_URL_PATTERN = Regex("""(?<![A-Za-z0-9:/])(/s/player/[A-Za-z0-9_-]+/[^"'\\]*\.js[^"'\\]*)""")
         private val PLAYER_ID_REGEX = Regex("/s/player/([a-zA-Z0-9_-]+)/")
         private val TIMESTAMP_KEYS = setOf("signatureTimestamp", "sts", "STS")
+        private val SCRIPT_CONTENT = Regex("""<script\b[^>]*>([\s\S]*?)(?:</script\s*>|$)""", RegexOption.IGNORE_CASE)
         private const val MAX_CONFIG_STRING_LENGTH = 64 * 1024
 
         @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)

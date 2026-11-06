@@ -66,6 +66,18 @@ class YtConfigParserTest {
     }
 
     @Test
+    fun timestampSurvivesHtmlApostrophesAndRegexQuotes() {
+        val parser = parser()
+        assertEquals(20668, parser.extractSignatureTimestamp("<p>Don't stop</p><script>var c={STS:20668};</script>"))
+        assertEquals(20668, parser.extractSignatureTimestamp("""var quote=/["']/; var c={STS:20668};"""))
+        assertEquals(20668, parser.extractSignatureTimestamp("""var decoy=/signatureTimestamp:12345["']/; var c={STS:20668};"""))
+        assertEquals(
+            20668,
+            parser.extractSignatureTimestamp("<p>Don't stop</p><script>/* STS:12345 */ 'sts:12345'</script><script>{STS:20668}"),
+        )
+    }
+
+    @Test
     fun timestampIgnoresStringsAndComments() {
         val parser = parser()
         assertEquals(20668, parser.extractSignatureTimestamp("""{"STS":20668,"title":"signatureTimestamp:12345"}"""))

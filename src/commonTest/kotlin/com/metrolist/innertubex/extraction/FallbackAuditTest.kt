@@ -146,6 +146,52 @@ class FallbackAuditTest {
         }
 
     @Test
+    fun staleConfigFailuresDoNotOverrideALaterPlayableResponse() =
+        runBlocking {
+            for (embeddedFails in listOf(false, true)) {
+                val client = client { DIRECT.replace("r.googlevideo.com", "invalid.test") }
+                val tube = InnerTube(client, retryDelay = {}).also { it.cookie = "SAPISID=fixture" }
+                var configCalls = 0
+                val parser =
+                    object : YtConfigParser {
+                        override suspend fun fetchConfig(
+                            videoId: String,
+                            useLoginCookies: Boolean,
+                        ): PlayerConfig {
+                            if (++configCalls == 1) error("Fixture watch config failure")
+                            return CONFIG
+                        }
+
+                        override suspend fun fetchEmbeddedConfig(
+                            videoId: String,
+                            useLoginCookies: Boolean,
+                        ): PlayerConfig {
+                            if (embeddedFails) error("Fixture embedded config failure")
+                            return CONFIG
+                        }
+                    }
+                try {
+                    val extractor =
+                        InnerTubeExtractor(
+                            parser,
+                            PlayerClientDirector(tube, legacy(YouTubeClient.VISIONOS), UnavailableTokenProvider),
+                            cipher { it },
+                            tube,
+                        )
+                    val error =
+                        assertFailsWith<StreamResolveException> {
+                            extractor.extract("video", ContentHints(isExplicit = true, isKidsContent = false))
+                        }
+                    assertEquals(2, configCalls)
+                    assertTrue(error.diagnostics?.attempts?.any { it.outcome == "playable_response" } == true)
+                    assertEquals(StreamResolveException.Reason.NO_PLAYABLE_STREAM, error.reason)
+                } finally {
+                    client.close()
+                }
+            }
+        }
+
+    @Test
     fun cipherFailureKeepsNetworkCauseAfterPlayableResponse() =
         runBlocking {
             val failure = IOException("fixture transport failure")

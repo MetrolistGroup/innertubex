@@ -8,7 +8,9 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
@@ -84,8 +86,8 @@ class YouTubeCipherServiceJvmTest {
             val repository = YouTubeCipherServiceTest().configRepository()
             var now = repository.cachedAtMs
             val client = HttpClient(MockEngine { respond(repository.cachedJson) })
+            val store = RemotePlayerConfigStore(client, repository) { now }
             try {
-                val store = RemotePlayerConfigStore(client, repository) { now }
                 assertEquals(20613, store.getCachedSignatureTimestamp(PLAYER_URL))
                 val mutex = privateField<Mutex>(store, "mutex")
                 val configs = privateField<Map<String, RemotePlayerConfigParser.HardcodedPlayerConfig>>(store, "configs")
@@ -110,6 +112,7 @@ class YouTubeCipherServiceJvmTest {
                 now += 6 * 60 * 60 * 1000L
                 assertEquals(20613, store.getConfig(PLAYER_URL)?.signatureTimestamp)
             } finally {
+                privateField<CoroutineScope>(store, "backgroundScope").coroutineContext[Job]?.cancelAndJoin()
                 client.close()
             }
         }

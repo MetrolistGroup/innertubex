@@ -55,20 +55,22 @@ data class PlayerResponse(
      * shortcut: reads adPlacements only, a response using adSlots fails with 403; handle adSlots if seen live.
      */
     internal fun preRollWaitMs(): Long =
-        adPlacements.orEmpty().sumOf { placement ->
+        adPlacements.orEmpty().fold(0L) { total, placement ->
             val renderer = placement.adPlacementRenderer
             val ad = renderer?.renderer?.instreamVideoAdRenderer
             if (renderer?.config?.adPlacementConfig?.kind != "AD_PLACEMENT_KIND_START" || ad == null) {
-                0L
+                total
             } else {
-                ad.skipOffsetMilliseconds
-                    ?: AD_LENGTH_SECONDS
-                        .find(ad.playerVars.orEmpty())
-                        ?.groupValues
-                        ?.get(1)
-                        ?.toLongOrNull()
-                        ?.times(1_000L)
-                    ?: 0L
+                val duration =
+                    ad.skipOffsetMilliseconds?.takeIf { it >= 0 }
+                        ?: AD_LENGTH_SECONDS
+                            .find(ad.playerVars.orEmpty())
+                            ?.groupValues
+                            ?.get(1)
+                            ?.takeUnless { it.startsWith('-') }
+                            ?.let { (it.toLongOrNull() ?: Long.MAX_VALUE).coerceAtMost(MAX_PRE_ROLL_WAIT_MS / 1_000L) * 1_000L }
+                        ?: 0L
+                (total + duration.coerceAtMost(MAX_PRE_ROLL_WAIT_MS)).coerceAtMost(MAX_PRE_ROLL_WAIT_MS)
             }
         }
 
@@ -192,4 +194,5 @@ data class PlayerResponse(
     }
 }
 
-private val AD_LENGTH_SECONDS = Regex("(?:^|&)length_seconds=(\\d+)")
+internal const val MAX_PRE_ROLL_WAIT_MS = 35_000L
+private val AD_LENGTH_SECONDS = Regex("(?:^|&)length_seconds=(-?\\d+)(?:&|$)")

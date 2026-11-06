@@ -23,7 +23,9 @@ import io.ktor.utils.io.cancel
 import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.catch
@@ -141,7 +143,8 @@ private class SabrMediaStream(
                                 supplier()?.takeIf { it.isNotEmpty() && it.size <= MAX_PO_TOKEN_BYTES }
                             }
                         } catch (cancelled: CancellationException) {
-                            throw cancelled
+                            currentCoroutineContext().ensureActive()
+                            null
                         } catch (_: Exception) {
                             null
                         }
@@ -571,6 +574,7 @@ private class SabrMediaStream(
                             }
 
                             val readBuffer = ByteArray(64 * 1024)
+                            var drainTimedOut = false
                             try {
                                 while (!terminalProtection) {
                                     // Only time spent waiting on the network counts; emitting can block on player readahead.
@@ -579,7 +583,10 @@ private class SabrMediaStream(
                                     if (ended) {
                                         if (trackEndDeadline == null) trackEndDeadline = readStart + TRACK_END_DRAIN_MS.milliseconds
                                         val timeLeft = -checkNotNull(trackEndDeadline).elapsedNow()
-                                        if (withTimeoutOrNull(timeLeft) { channel.awaitContent() } == null) break
+                                        if (withTimeoutOrNull(timeLeft) { channel.awaitContent() } == null) {
+                                            drainTimedOut = true
+                                            break
+                                        }
                                     }
                                     // Time out readiness, not a consuming read, so a timeout race cannot lose bytes.
                                     if (hasPendingOpening()) {
@@ -606,7 +613,8 @@ private class SabrMediaStream(
                                 }
                                 if (terminalProtection || ended) channel.cancel(null)
                                 if (!terminalProtection) {
-                                    processor.finish()
+                                    // A local drain deadline can leave a valid trailing control part incomplete.
+                                    if (!drainTimedOut) processor.finish()
                                     emitReadyMediaSegments(establishFromMinimum = true)
                                 }
                                 if (!terminalProtection && pendingMediaBySequence.isNotEmpty()) {
@@ -708,6 +716,7 @@ private class SabrMediaStream(
                                     protectionRetryCount = 0
                                     protectionRetryLimit = null
                                     omittedProtectionPendingCount = 0
+                                    ended = false
                                     retryWithToken = true
                                     return@execute true
                                 }

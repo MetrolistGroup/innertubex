@@ -77,6 +77,28 @@ class PlayerFieldMaskTest {
     }
 
     @Test
+    fun preRollWaitRejectsNegativesAndBoundsWireDurationsAndTotals() {
+        fun wait(vararg fields: String): Long {
+            val placements =
+                fields.joinToString(",") {
+                    """{"adPlacementRenderer":{"config":{"adPlacementConfig":{"kind":"AD_PLACEMENT_KIND_START"}},""" +
+                        """"renderer":{"instreamVideoAdRenderer":{$it}}}}"""
+                }
+            return Json
+                .decodeFromString<PlayerResponse>(
+                    """{"playabilityStatus":{"status":"OK"},"adPlacements":[$placements]}""",
+                ).preRollWaitMs()
+        }
+        assertEquals(0L, wait(""""skipOffsetMilliseconds":-1"""))
+        assertEquals(0L, wait(""""playerVars":"length_seconds=-9223372036854775809""""))
+        assertEquals(6_000L, wait(""""skipOffsetMilliseconds":-1,"playerVars":"length_seconds=6""""))
+        assertEquals(35_000L, wait(""""skipOffsetMilliseconds":9223372036854775807"""))
+        assertEquals(35_000L, wait(""""playerVars":"length_seconds=9223372036854775807""""))
+        assertEquals(35_000L, wait(""""playerVars":"length_seconds=9223372036854775808""""))
+        assertEquals(35_000L, wait(*Array(10) { """"skipOffsetMilliseconds":30000""" }))
+    }
+
+    @Test
     fun maskPreservesDrmMarkersBeforeFormatSelection() {
         val streaming = parseMask(PLAYER_RESPONSE_FIELD_MASK)["streamingData"] as Map<*, *>
         assertTrue("drmParams" in streaming)

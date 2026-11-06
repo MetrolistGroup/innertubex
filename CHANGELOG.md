@@ -17,7 +17,18 @@ that `0.x` releases may contain breaking API changes.
   retains the player visitor for the supplier's token binding.
 - `TVHTML5_SAMSUNG`, a manually selected tokenless TV client for direct audio.
   YouTube forbids its media until pre-roll ads would end, so extraction waits
-  6 to 30 seconds.
+  up to 35 seconds.
+
+### Changed
+
+- `ClientFallbackStrategy.selectClients` now attaches catalog manifests when an
+  implementation overrides only `resolveClients`. Catalog age filters, cipher
+  preparation, token policies, health keys and `manifestId__po` or
+  `manifestId__nopo` profile IDs now apply to those implementations. Legacy
+  profile aliases still work for exclusions.
+- `SabrAudioStream` and `SabrBootstrap` constructors and `SabrBootstrap.copy`,
+  including `copy$default`, changed JVM binary signatures. Consumers compiled
+  against an earlier release must recompile.
 
 ### Fixed
 
