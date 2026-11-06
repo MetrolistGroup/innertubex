@@ -6,6 +6,31 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.11.4] - 2026-11-06
+
+### Changed
+
+- Depends on QuackJS 0.1.4, which compiles players about 11% faster with 22%
+  less allocation and rejects constructs it cannot run faithfully.
+- Native video skips the watch-page fetch when visitor data is available and
+  the response needs no cipher work.
+- Cold cipher preparation overlaps token and player requests, and prewarming
+  also warms the public player.
+- Player script downloads have a 15-second stage budget, leaving time for
+  variant and client fallbacks.
+
+### Fixed
+
+- SABR requests keep their retries and typed errors when the host client sets
+  `expectSuccess`, and transport errors no longer expose signed URLs.
+- Authenticated requests reject redirects, and isolated clients have finite
+  timeouts.
+- Cookie-authenticated responses now reject DRM formats.
+- Remote config recovers from unusable cached bodies, and n parameter matching
+  honors query boundaries.
+- Client health ignores removed videos, caller timeouts, and failures from a
+  previous account.
+
 ## [0.11.3] - 2026-11-05
 
 ### Changed
