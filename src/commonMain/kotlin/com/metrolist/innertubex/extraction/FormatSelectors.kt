@@ -19,12 +19,12 @@ public fun selectBestAudioFormat(
     if (validFormats.isEmpty()) return null
     return when (audioQuality) {
         AudioQuality.LOW -> {
-            validFormats.filter { it.mimeType.contains("audio/mp4") }.minByOrNull { it.bitrate }
+            validFormats.filter { it.mimeType.contains("audio/mp4", ignoreCase = true) }.minByOrNull { it.bitrate }
                 ?: validFormats.minByOrNull { it.bitrate }
         }
 
         AudioQuality.AUTO -> {
-            validFormats.filter { it.mimeType.contains("audio/webm") }.maxByOrNull(::audioFormatScore)
+            validFormats.filter { it.mimeType.contains("audio/webm", ignoreCase = true) }.maxByOrNull(::audioFormatScore)
                 ?: validFormats.maxByOrNull(::audioFormatScore)
         }
 
@@ -33,20 +33,18 @@ public fun selectBestAudioFormat(
         }
 
         AudioQuality.MP4 -> {
-            validFormats.filter { it.mimeType.contains("audio/mp4") }.maxByOrNull(::audioFormatScore)
+            validFormats.filter { it.mimeType.contains("audio/mp4", ignoreCase = true) }.maxByOrNull(::audioFormatScore)
         }
     }
 }
 
 // Multi-language uploads expose one format per dubbed track; a dub can outrank the original by bitrate.
-private fun originalAudioTrack(formats: List<Format>): List<Format> {
-    if (formats.none { it.audioTrack != null }) return formats
-    return formats
+private fun originalAudioTrack(formats: List<Format>): List<Format> =
+    formats
         .filter { it.audioContent() == "original" }
         .ifEmpty {
             formats.filter { it.audioTrack?.audioIsDefault == true }
         }.ifEmpty { formats }
-}
 
 // xtags is a base64url protobuf map of repeated {1: key, 2: value} entries, e.g. acont=original.
 private fun Format.audioContent(): String? {
@@ -98,8 +96,8 @@ public fun selectBestVideoFormat(
 private fun audioFormatScore(format: Format): Long {
     val codecRank =
         when {
-            format.mimeType.contains("audio/webm") -> 100
-            format.mimeType.contains("audio/mp4") -> 50
+            format.mimeType.contains("audio/webm", ignoreCase = true) -> 100
+            format.mimeType.contains("audio/mp4", ignoreCase = true) -> 50
             else -> 0
         }
     val channelBonus =
@@ -129,8 +127,8 @@ private fun Format.audioChannelRank(): Int =
 
 private fun Format.audioContainerRank(): Int =
     when {
-        mimeType.contains("audio/webm") -> 2
-        mimeType.contains("audio/mp4") -> 1
+        mimeType.contains("audio/webm", ignoreCase = true) -> 2
+        mimeType.contains("audio/mp4", ignoreCase = true) -> 1
         else -> 0
     }
 

@@ -2064,15 +2064,20 @@ private fun injectPrefCookie(
     return (otherParts + newPref).joinToString("; ")
 }
 
+private const val PLAYER_DRM_FIELDS =
+    "contentProtection,contentProtectionIds,drmFamilies,drmFamily,drmParameters,drmParams,drmTrackType," +
+        "fairPlay,licenseInfo,licenseInfos,licenseUrl,playReady,widevine"
+
 private const val PLAYER_FORMAT_FIELDS =
     "itag,url,mimeType,bitrate,averageBitrate,width,height,contentLength,quality,audioQuality," +
-        "approxDurationMs,audioSampleRate,audioChannels,loudnessDb,lastModified,xtags,audioTrack,isDrc,signatureCipher"
+        "approxDurationMs,audioSampleRate,audioChannels,loudnessDb,lastModified,xtags,audioTrack,isDrc,signatureCipher," +
+        PLAYER_DRM_FIELDS
 
-/** Every field [PlayerResponse] decodes, and nothing else. Keep in sync with that model. */
+/** Fields decoded by [PlayerResponse], plus DRM markers checked before decoding. */
 internal const val PLAYER_RESPONSE_FIELD_MASK =
     "playabilityStatus(status,reason,desktopLegacyAgeGateReason)," +
         "streamingData(formats($PLAYER_FORMAT_FIELDS),adaptiveFormats($PLAYER_FORMAT_FIELDS)," +
-        "expiresInSeconds,hlsManifestUrl,dashManifestUrl,serverAbrStreamingUrl)," +
+        "expiresInSeconds,hlsManifestUrl,dashManifestUrl,serverAbrStreamingUrl,$PLAYER_DRM_FIELDS)," +
         "videoDetails(videoId,title,author,channelId,lengthSeconds,musicVideoType,viewCount,thumbnail,isLiveContent)," +
         "playbackTracking(videostatsPlaybackUrl,videostatsWatchtimeUrl,atrUrl," +
         "videostatsScheduledFlushWalltimeSeconds,videostatsDefaultFlushIntervalSeconds)," +

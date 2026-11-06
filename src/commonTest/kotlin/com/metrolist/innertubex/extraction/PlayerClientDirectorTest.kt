@@ -154,7 +154,7 @@ class PlayerClientDirectorTest {
     @Test
     fun videoSpecificFailuresDoNotDemoteClientsAcrossVideos() =
         runBlocking {
-            for (status in listOf("VIDEO_UNAVAILABLE", "LIVE_STREAM_OFFLINE", "UNPLAYABLE")) {
+            for (status in listOf("ERROR", "VIDEO_UNAVAILABLE", "LIVE_STREAM_OFFLINE", "UNPLAYABLE")) {
                 var response = """{"playabilityStatus":{"status":"$status"}}"""
                 val client = client { response }
                 try {

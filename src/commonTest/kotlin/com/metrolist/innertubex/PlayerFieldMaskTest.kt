@@ -55,6 +55,16 @@ class PlayerFieldMaskTest {
     }
 
     @Test
+    fun maskPreservesDrmMarkersBeforeFormatSelection() {
+        val streaming = parseMask(PLAYER_RESPONSE_FIELD_MASK)["streamingData"] as Map<*, *>
+        for (selection in listOf(streaming, streaming["formats"] as Map<*, *>, streaming["adaptiveFormats"] as Map<*, *>)) {
+            assertTrue("drmFamilies" in selection)
+            assertTrue("licenseInfos" in selection)
+            assertTrue("drmTrackType" in selection)
+        }
+    }
+
+    @Test
     fun maskParserKeepsSelectionsScopedToTheirParent() {
         val parsed = parseMask("a(x,y(z)),b")
         assertEquals(setOf("a", "b"), parsed.keys)

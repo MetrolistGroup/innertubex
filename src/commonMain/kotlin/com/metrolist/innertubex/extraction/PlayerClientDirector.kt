@@ -11,6 +11,7 @@ import com.metrolist.innertubex.extraction.strategy.ClientHealthMonitor
 import com.metrolist.innertubex.extraction.strategy.ClientHealthScope
 import com.metrolist.innertubex.extraction.strategy.ClientSelectionRequest
 import com.metrolist.innertubex.extraction.strategy.ContentAwareFallbackStrategy
+import com.metrolist.innertubex.extraction.strategy.InMemoryClientHealthMonitor
 import com.metrolist.innertubex.extraction.strategy.PlaybackClientCatalog
 import com.metrolist.innertubex.extraction.strategy.PlaybackTransportPreference
 import com.metrolist.innertubex.extraction.strategy.PoTokenRequirement
@@ -29,6 +30,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -318,7 +321,7 @@ internal class PlayerClientDirector(
                     when {
                         attemptResult.requestFailure != null -> {
                             if (effectiveRequestBudget.firstHealthReport(manifestId, "request")) {
-                                clientHealthMonitor.recordFailure(manifestId, ClientFailureKind.PLAYER_REQUEST, healthScope)
+                                recordFailure(manifestId, ClientFailureKind.PLAYER_REQUEST, healthScope, requestSession.generation)
                             }
                         }
 
@@ -326,10 +329,11 @@ internal class PlayerClientDirector(
                         // and recording it here would clear that failure's cooldown.
                         attempt == null && !attemptResult.tokenUnavailable && !attemptResult.budgetExhausted &&
                             !attemptResult.failure?.status.isAccountGateStatus() &&
+                            attemptResult.failure?.status != "ERROR" &&
                             attemptResult.failure?.status != "VIDEO_UNAVAILABLE" &&
                             attemptResult.failure?.status != "LIVE_STREAM_OFFLINE" -> {
                             if (effectiveRequestBudget.firstHealthReport(manifestId, "playability")) {
-                                clientHealthMonitor.recordFailure(manifestId, ClientFailureKind.PLAYABILITY, healthScope)
+                                recordFailure(manifestId, ClientFailureKind.PLAYABILITY, healthScope, requestSession.generation)
                             }
                         }
                     }
@@ -791,7 +795,7 @@ internal class PlayerClientDirector(
         val retryRestrictedWithPoToken =
             !initialPlayable &&
                 tokenCanChangeRequest &&
-                (hints.isUploaded == true || hints.isAgeRestricted == true)
+                (hints.isUploaded == true || requestBudget.withKnownAge(hints).isAgeRestricted == true)
         if (!initialPlayable && !retryRestrictedWithPoToken) {
             logger.d(TAG, "token fetch skipped", details = mapOf("client" to client.clientName, "playable" to "false"))
             return ClientAttemptResult(null, initialFailure, observedResponse = initialResponse)
@@ -831,8 +835,13 @@ internal class PlayerClientDirector(
                 if (requestBudget.visitorUnavailable) return ClientAttemptResult(null, fallbackFailure, tokenUnavailable = true)
                 logger.d(TAG, "visitor data requested", details = mapOf("client" to client.clientName))
                 val visitorData =
-                    withTimeoutOrNull(requestBudget.timeLeft(visitorDataFetchTimeoutMs.milliseconds)) {
-                        innerTube.fetchFreshVisitorData(requestSession)
+                    try {
+                        withTimeoutOrNull(requestBudget.timeLeft(visitorDataFetchTimeoutMs.milliseconds)) {
+                            innerTube.fetchFreshVisitorData(requestSession)
+                        }
+                    } catch (_: TimeoutCancellationException) {
+                        currentCoroutineContext().ensureActive()
+                        null
                     }
                 if (visitorData.isNullOrBlank()) {
                     requestBudget.visitorUnavailable = true
@@ -987,6 +996,7 @@ internal class PlayerClientDirector(
                     )
                 }
             } catch (error: TimeoutCancellationException) {
+                currentCoroutineContext().ensureActive()
                 // Running out of the extraction's own time is not this client's fault; don't record it as a failure.
                 if (timeout < playerRequestTimeoutMs.milliseconds) throw PlayerRequestBudgetExhaustedException()
                 throw PlayerRequestTimeoutException(client.clientName, playerRequestTimeoutMs, error)
@@ -1030,7 +1040,7 @@ internal class PlayerClientDirector(
                 )
             }
         return withContext(Dispatchers.Default) {
-            parsePlayerResponse(payload, videoId, client, startTime, bearerToken != null)
+            parsePlayerResponse(payload, videoId, client, startTime)
         }
     }
 
@@ -1040,16 +1050,11 @@ internal class PlayerClientDirector(
         videoId: String,
         client: YouTubeClient,
         startTime: Long,
-        bearerAuthenticated: Boolean = false,
     ): PlayerResponse? {
-        val parsedRoot =
-            if (bearerAuthenticated) {
-                runCatching { json.parseToJsonElement(payload).jsonObject }.getOrNull()
-            } else {
-                null
-            }
-        if (bearerAuthenticated && parsedRoot?.let(::containsKnownDrmMarker) == true) {
-            logger.w(TAG, "bearer player response rejected", details = mapOf("client" to client.clientName, "reason" to "drm"))
+        if (!hasBoundedJsonStructure(payload)) return null
+        val parsedRoot = runCatching { json.parseToJsonElement(payload).jsonObject }.getOrNull()
+        if (parsedRoot?.let(::containsKnownDrmMarker) == true) {
+            logger.w(TAG, "player response rejected", details = mapOf("client" to client.clientName, "reason" to "drm"))
             return null
         }
         val decoded =
@@ -1135,6 +1140,58 @@ internal class PlayerClientDirector(
         )
         if (formatCount > MAX_PLAYER_FORMATS) return null
         return response
+    }
+
+    private fun recordFailure(
+        clientId: String,
+        kind: ClientFailureKind,
+        scope: ClientHealthScope,
+        generation: Long,
+    ) {
+        if (clientHealthMonitor is InMemoryClientHealthMonitor) {
+            clientHealthMonitor.recordFailure(clientId, kind, scope, generation)
+        } else if (innerTube.sessionSnapshot().generation == generation) {
+            clientHealthMonitor.recordFailure(clientId, kind, scope)
+        }
+    }
+
+    // Count collection entries as well as containers without allocating a JSON tree.
+    private fun hasBoundedJsonStructure(payload: String): Boolean {
+        var depth = 0
+        var entries = 0
+        var quoted = false
+        var escaped = false
+        for (character in payload) {
+            if (quoted) {
+                if (escaped) {
+                    escaped = false
+                } else {
+                    when (character) {
+                        '\\' -> escaped = true
+                        '"' -> quoted = false
+                    }
+                }
+            } else {
+                when (character) {
+                    '"' -> {
+                        quoted = true
+                    }
+
+                    '{', '[' -> {
+                        if (++depth > 64 || ++entries > 65_536) return false
+                    }
+
+                    '}', ']' -> {
+                        depth--
+                    }
+
+                    ',', ':' -> {
+                        if (++entries > 65_536) return false
+                    }
+                }
+            }
+        }
+        return true
     }
 
     private fun containsKnownDrmMarker(root: JsonObject): Boolean {

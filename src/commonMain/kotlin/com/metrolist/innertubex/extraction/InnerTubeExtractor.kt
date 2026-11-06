@@ -28,8 +28,11 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -89,10 +92,8 @@ class InnerTubeExtractor internal constructor(
         private const val PLAYER_CONFIG_CACHE_TTL_MS = 3 * 60 * 60 * 1000L
         private const val PREWARM_VIDEO_ID = "dQw4w9WgXcQ"
         private const val WEB_EMBEDDED_PLAYER_ID = "WEB_EMBEDDED_PLAYER"
-        private const val WEB_KIDS_ID = "WEB_KIDS"
         private val PO_TOKEN_PREFETCH_TIMEOUT = 18.seconds
         private const val TV_BEARER_PROVIDER_TIMEOUT_MS = 8_000L
-        private val EXPIRE_REGEX = Regex("[?&]expire=([0-9]+)")
         private val N_PARAMETER_REGEX = Regex("(?:[?&]|%26)n(?:=|%3[dD])", RegexOption.IGNORE_CASE)
         private val CODECS_REGEX = Regex("codecs=\"([^\"]+)\"")
 
@@ -284,7 +285,7 @@ class InnerTubeExtractor internal constructor(
             return extract(videoId, hints, excludedClients, audioQuality, clientPlaybackNonce)
         }
         val baselineHints = hints.withPremium()
-        val baselineGeneration = innerTube.sessionSnapshot().generation
+        val baselineSession = innerTube.sessionSnapshot()
         var baseline: ExtractedStream? = null
         var baselineFailure: Exception? = null
         try {
@@ -294,7 +295,7 @@ class InnerTubeExtractor internal constructor(
         } catch (error: Exception) {
             baselineFailure = error
         }
-        ensureSessionGeneration(baselineGeneration)
+        val baselineGeneration = currentExtractionSession(baselineSession).generation
 
         val credential =
             withTvBearerProviderTimeout {
@@ -362,6 +363,9 @@ class InnerTubeExtractor internal constructor(
     private suspend fun <T> withTvBearerProviderTimeout(block: suspend () -> T): T? =
         try {
             withTimeoutOrNull(tvBearerProviderTimeoutMs) { block() }
+        } catch (_: TimeoutCancellationException) {
+            currentCoroutineContext().ensureActive()
+            null
         } catch (error: CancellationException) {
             throw error
         } catch (_: Exception) {
@@ -684,7 +688,7 @@ class InnerTubeExtractor internal constructor(
         val classifiedFailure = classifyPlayabilityFailures(diagnostics.failures)
         if (shouldTryUnknownKidsFallback(diagnostics.requestBudget.withKnownAge(hints), classifiedFailure)) {
             val kidsStream =
-                extractWithWebKidsFallback(
+                extractWithKidsFallback(
                     videoId = videoId,
                     hints = hints,
                     excludedClients = excludedClients,
@@ -712,7 +716,7 @@ class InnerTubeExtractor internal constructor(
             !hints.wantVideo &&
             classifiedFailure != StreamResolveException.Reason.AGE_RESTRICTED
 
-    private suspend fun extractWithWebKidsFallback(
+    private suspend fun extractWithKidsFallback(
         videoId: String,
         hints: ContentHints,
         excludedClients: Set<String>,
@@ -727,11 +731,7 @@ class InnerTubeExtractor internal constructor(
                 nowMs = Clock.System.now().toEpochMilliseconds(),
             )?.config ?: return null
         logger.d(TAG, "kids fallback attempted", details = mapOf("fallback" to "kids"))
-        val fallbackHints =
-            hints.copy(
-                isKidsContent = true,
-                playbackClientOverrideId = WEB_KIDS_ID,
-            )
+        val fallbackHints = hints.copy(isKidsContent = true)
         return extractWithConfig(
             videoId = videoId,
             hints = fallbackHints,
@@ -819,14 +819,14 @@ class InnerTubeExtractor internal constructor(
                     diagnostics = diagnostics.snapshot(),
                 )
             }
-            diagnostics.requestFailures.lastOrNull()?.let { failure ->
-                throw StreamResolveException(
-                    reason = StreamResolveException.Reason.NETWORK,
-                    message = "Unable to fetch stream data from YouTube.",
-                    cause = failure,
-                    diagnostics = diagnostics.snapshot(),
-                )
-            }
+        }
+        diagnostics.requestFailures.lastOrNull()?.let { failure ->
+            throw StreamResolveException(
+                reason = StreamResolveException.Reason.NETWORK,
+                message = "Unable to fetch stream data from YouTube.",
+                cause = failure,
+                diagnostics = diagnostics.snapshot(),
+            )
         }
         throw StreamResolveException(
             reason = StreamResolveException.Reason.NO_PLAYABLE_STREAM,
@@ -1088,7 +1088,10 @@ class InnerTubeExtractor internal constructor(
                 val videoFormat =
                     if (hints.wantVideo) {
                         selectBestVideoFormat(
-                            formats = preferredVideoFormats(streamingData, requireUrl = false),
+                            formats =
+                                preferredVideoFormats(streamingData, requireUrl = false).filter {
+                                    it.itag > 0 && (it.lastModified?.toLongOrNull() ?: 0L) > 0L
+                                },
                             requireUrl = false,
                             maxHeight = hints.maxVideoHeight ?: 2160,
                         )
@@ -1132,19 +1135,18 @@ class InnerTubeExtractor internal constructor(
                 }
                 val processedSabrUrl =
                     if (rawSabrUrl?.hasNParameter() == true) {
-                        cipherService
-                            .processFormats(
-                                playerUrl = playerConfig.playerUrl,
-                                formats =
-                                    listOf(
-                                        audioFormat.copy(
-                                            url = rawSabrUrl,
-                                            signatureCipher = null,
-                                            cipher = null,
-                                        ),
+                        processFormats(
+                            playerUrl = playerConfig.playerUrl,
+                            formats =
+                                listOf(
+                                    audioFormat.copy(
+                                        url = rawSabrUrl,
+                                        signatureCipher = null,
+                                        cipher = null,
                                     ),
-                            ).also { diagnostics.ensureSessionCurrent() }
-                            .firstOrNull()
+                                ),
+                            diagnostics = diagnostics,
+                        ).firstOrNull()
                             ?.url
                     } else {
                         rawSabrUrl
@@ -1161,10 +1163,7 @@ class InnerTubeExtractor internal constructor(
                         }.getOrNull()
                     } ?: continue
                 val bootstrap = untransformedBootstrap.copy(serverAbrStreamingUrl = trackedSabrUrl)
-                val expiresAt =
-                    streamingData.expiresInSeconds
-                        ?.takeIf { it > 0 }
-                        ?.let { Clock.System.now() + it.seconds }
+                val expiresAt = streamExpiry(streamingData, trackedSabrUrl)
                 logger.i(TAG, "SABR stream selected", details = mapOf("client" to result.clientName, "profile" to result.profileId))
                 return ExtractedStream(
                     videoId = videoId,
@@ -1201,7 +1200,7 @@ class InnerTubeExtractor internal constructor(
             val hlsManifestUrl =
                 streamingData.hlsManifestUrl
                     ?.withPoToken(result.streamingDataPoToken)
-                    ?.let { appendClientPlaybackNonce(it, clientPlaybackNonce) }
+                    ?.let { appendHlsClientPlaybackNonce(it, clientPlaybackNonce) }
             val hasAnyVideoFormat = allFormats.any { it.width != null }
             val needsVideoButNoVideoFormats = hints.wantVideo && !hasAnyVideoFormat
 
@@ -1228,7 +1227,7 @@ class InnerTubeExtractor internal constructor(
                             hints.isUploaded == true && !result.bearerAuthenticated,
                         ),
                     loudnessDb = response.playerConfig?.audioConfig?.loudnessDb,
-                    expiresAt = hlsExpiry(streamingData, hlsManifestUrl),
+                    expiresAt = streamExpiry(streamingData, hlsManifestUrl),
                     contentLengthBytes = null,
                     itag = 96,
                     mimeType = "application/x-mpegURL",
@@ -1309,8 +1308,7 @@ class InnerTubeExtractor internal constructor(
                 if (wantVideo && (directVideoUrl.isNullOrBlank() || !isAllowedMediaUrl(directVideoUrl))) continue
                 // Fast path: if the selected URLs are already playback-ready, skip cipher/ejs work.
                 if (!directUrl.hasNParameter() && directVideoUrl?.hasNParameter() != true) {
-                    val expireSeconds = extractExpire(directUrl)
-                    val expiresAt = expireSeconds?.let { Instant.fromEpochSeconds(it) }
+                    val expiresAt = streamExpiry(streamingData, directUrl, directVideoUrl)
                     val directHeaders =
                         buildHeaders(
                             diagnostics,
@@ -1415,7 +1413,7 @@ class InnerTubeExtractor internal constructor(
                     selectBestVideoFormat(
                         rawVideoFormats.filter {
                             it.itag != preferredRawVideoFormat?.itag &&
-                                it.height == preferredRawVideoFormat?.height &&
+                                (it.height ?: 0) <= (hints.maxVideoHeight ?: 2160) &&
                                 it.hasReadyVideoUrl()
                         },
                         maxHeight = hints.maxVideoHeight ?: 2160,
@@ -1424,11 +1422,11 @@ class InnerTubeExtractor internal constructor(
             val rawVideoCandidates = listOfNotNull(preferredRawVideoFormat, rawVideoFallback)
             val formatsForCipher = audioFormatsForCipher + rawVideoCandidates
             var processedFormats =
-                cipherService
-                    .processFormats(
-                        playerUrl = playerConfig.playerUrl,
-                        formats = formatsForCipher,
-                    ).also { diagnostics.ensureSessionCurrent() }
+                processFormats(
+                    playerUrl = playerConfig.playerUrl,
+                    formats = formatsForCipher,
+                    diagnostics = diagnostics,
+                )
             val processedVideoFormat =
                 rawVideoCandidates.firstNotNullOfOrNull { candidate ->
                     processedFormats.firstOrNull {
@@ -1458,11 +1456,11 @@ class InnerTubeExtractor internal constructor(
             if (audioFormat == null && audioFormatsForCipher.size != rawAudioFormats.size) {
                 val fallbackCipherStart = Clock.System.now().toEpochMilliseconds()
                 processedFormats =
-                    cipherService
-                        .processFormats(
-                            playerUrl = playerConfig.playerUrl,
-                            formats = rawAudioFormats,
-                        ).also { diagnostics.ensureSessionCurrent() }
+                    processFormats(
+                        playerUrl = playerConfig.playerUrl,
+                        formats = rawAudioFormats,
+                        diagnostics = diagnostics,
+                    )
                 logger.d(
                     TAG,
                     "cipher fallback completed",
@@ -1517,8 +1515,7 @@ class InnerTubeExtractor internal constructor(
                 logger.d(TAG, "video candidate unavailable", details = mapOf("client" to result.clientName))
                 continue
             }
-            val expireSeconds = extractExpire(url)
-            val expiresAt = expireSeconds?.let { Instant.fromEpochSeconds(it) }
+            val expiresAt = streamExpiry(streamingData, url, videoUrl)
             val directHeaders =
                 buildHeaders(
                     diagnostics,
@@ -1608,7 +1605,7 @@ class InnerTubeExtractor internal constructor(
                 fallbackResult.response.streamingData
                     ?.hlsManifestUrl
                     ?.withPoToken(fallbackResult.streamingDataPoToken)
-                    ?.let { appendClientPlaybackNonce(it, clientPlaybackNonce) }
+                    ?.let { appendHlsClientPlaybackNonce(it, clientPlaybackNonce) }
             if (!hlsManifestUrl.isNullOrBlank() && isAllowedHlsUrl(hlsManifestUrl)) {
                 logger.i(
                     TAG,
@@ -1625,7 +1622,7 @@ class InnerTubeExtractor internal constructor(
                     videoUrl = hlsManifestUrl,
                     headers = buildHeaders(diagnostics, fallbackResult.clientName, fallbackResult.userAgent),
                     loudnessDb = null,
-                    expiresAt = hlsExpiry(checkNotNull(fallbackResult.response.streamingData), hlsManifestUrl),
+                    expiresAt = streamExpiry(checkNotNull(fallbackResult.response.streamingData), hlsManifestUrl),
                     contentLengthBytes = null,
                     itag = 96,
                     mimeType = "application/x-mpegURL",
@@ -1696,24 +1693,39 @@ class InnerTubeExtractor internal constructor(
             )
     }
 
-    private fun hlsExpiry(
-        streamingData: StreamingData,
-        url: String,
-    ): Instant? {
-        val parsed = Url(url)
-        val pathSegments = parsed.encodedPath.split('/')
-        val pathExpiry = pathSegments.zipWithNext().firstOrNull { it.first == "expire" }?.second
-        val urlDeadlines =
-            listOfNotNull(parsed.parameters["expire"], pathExpiry)
-                .mapNotNull { value -> value.toLongOrNull()?.takeIf { it > 0 } }
-                .mapNotNull { epochSeconds -> runCatching { Instant.fromEpochSeconds(epochSeconds) }.getOrNull() }
-        val deadlines = urlDeadlines + listOfNotNull(streamingData.expiresInSeconds?.takeIf { it > 0 }?.let { now() + it.seconds })
-        return deadlines.minOrNull()
-    }
+    private suspend fun processFormats(
+        playerUrl: String,
+        formats: List<Format>,
+        diagnostics: ExtractionDiagnostics,
+    ): List<Format> =
+        try {
+            cipherService.processFormats(playerUrl, formats)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            diagnostics.requestFailures += error
+            emptyList()
+        }.also { diagnostics.ensureSessionCurrent() }
 
-    private fun extractExpire(url: String): Long? {
-        val match = EXPIRE_REGEX.find(url)
-        return match?.groupValues?.get(1)?.toLongOrNull()
+    private fun streamExpiry(
+        streamingData: StreamingData,
+        vararg urls: String?,
+    ): Instant? {
+        val urlDeadlines =
+            urls.filterNotNull().flatMap { url ->
+                val parsed = runCatching { Url(url) }.getOrNull() ?: return@flatMap emptyList()
+                val pathExpiry =
+                    parsed.encodedPath
+                        .split('/')
+                        .zipWithNext()
+                        .filter { it.first == "expire" }
+                        .map { it.second }
+                (parsed.parameters.getAll("expire").orEmpty() + pathExpiry)
+                    .mapNotNull { value -> value.toLongOrNull()?.takeIf { it > 0 } }
+                    .mapNotNull { epochSeconds -> runCatching { Instant.fromEpochSeconds(epochSeconds) }.getOrNull() }
+            }
+        val lifetime = streamingData.expiresInSeconds?.takeIf { it > 0 }?.let { now() + it.seconds }
+        return (urlDeadlines + listOfNotNull(lifetime)).minOrNull()
     }
 
     private fun String.hasNParameter(): Boolean = N_PARAMETER_REGEX.containsMatchIn(this)
@@ -1781,7 +1793,9 @@ class InnerTubeExtractor internal constructor(
     }
 
     private fun String.withPoToken(poToken: String?): String {
-        if (poToken.isNullOrBlank() || contains("&pot=") || contains("?pot=")) return this
+        if (poToken.isNullOrBlank()) return this
+        val query = substringBefore('#').substringAfter('?', "")
+        if (query.split('&').any { it.substringBefore('=') == "pot" }) return this
         val fragmentStart = indexOf('#').takeIf { it >= 0 } ?: length
         val separator = if (indexOf('?').let { it >= 0 && it < fragmentStart }) "&" else "?"
         return buildString(length + poToken.length + 6) {
@@ -1848,16 +1862,6 @@ class InnerTubeExtractor internal constructor(
                         it.host == "youtube.com" || it.host.endsWith(".youtube.com")
                 ) &&
                 it.encodedPath == "/videoplayback" && it.user == null && it.password == null
-        } == true
-
-    private fun isAllowedHlsUrl(value: String): Boolean =
-        runCatching { Url(value) }.getOrNull()?.let {
-            it.protocol == URLProtocol.HTTPS && it.port == 443 && it.user == null && it.password == null &&
-                (
-                    it.host == "googlevideo.com" || it.host.endsWith(".googlevideo.com") ||
-                        it.host == "youtube.com" || it.host.endsWith(".youtube.com")
-                ) &&
-                (it.encodedPath.startsWith("/manifest/") || it.encodedPath.startsWith("/api/manifest/"))
         } == true
 }
 

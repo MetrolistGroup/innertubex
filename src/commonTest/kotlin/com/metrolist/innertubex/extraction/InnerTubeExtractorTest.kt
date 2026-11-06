@@ -656,6 +656,7 @@ class InnerTubeExtractorTest {
                     tvBearerProviderTimeoutMs = 10,
                 )
             var providerCalls = 0
+            var providerCancelled = false
             val provider =
                 object : TvBearerCredentialProvider {
                     override suspend fun getCredential(
@@ -663,22 +664,28 @@ class InnerTubeExtractorTest {
                         sessionGeneration: Long,
                     ): TvBearerCredential? {
                         providerCalls++
-                        delay(100)
-                        return null
+                        try {
+                            awaitCancellation()
+                        } finally {
+                            providerCancelled = true
+                        }
                     }
 
                     override suspend fun isCredentialCurrent(credential: TvBearerCredential) = true
                 }
 
             val stream =
-                extractor.extractWithAuthenticatedTvDiscovery(
-                    "video",
-                    confirmedPremium = true,
-                    credentialProvider = provider,
-                    hints = ContentHints(isExplicit = true),
-                )
+                withTimeout(2_000) {
+                    extractor.extractWithAuthenticatedTvDiscovery(
+                        "video",
+                        confirmedPremium = true,
+                        credentialProvider = provider,
+                        hints = ContentHints(isExplicit = true),
+                    )
+                }
 
             assertNotNull(stream)
+            assertTrue(providerCancelled)
             assertEquals(1, providerCalls)
             client.close()
         }
@@ -701,7 +708,7 @@ class InnerTubeExtractorTest {
                         playerUrl: String,
                         formats: List<PlayerResponse.StreamingData.Format>,
                     ): List<PlayerResponse.StreamingData.Format> {
-                        innerTube.visitorData = "changed-session"
+                        innerTube.cookie = "SAPISID=changed-session"
                         return formats.map { it.copy(url = "https://r.googlevideo.com/videoplayback") }
                     }
                 }
@@ -1656,6 +1663,9 @@ class InnerTubeExtractorTest {
                 object : com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy {
                     override fun resolveClients(hints: ContentHints) =
                         List(PlaybackClientCatalog.automaticManifests.size * 2) { YouTubeClient.VISIONOS }
+
+                    override fun selectClients(request: ClientSelectionRequest) =
+                        ClientSelectionResult(resolveClients(request.hints).map(::SelectedClient))
                 }
             try {
                 val extractor = makeExtractor(client, InnerTube(client, retryDelay = {}), parser, fallback)
@@ -1920,7 +1930,7 @@ class InnerTubeExtractorTest {
             val stream = extractor(client).extract("video", ContentHints(isExplicit = true, isLive = true))
 
             assertNotNull(stream)
-            assertEquals("https://www.youtube.com/api/manifest/hls.m3u8", stream.audioUrl)
+            assertEquals("https://www.youtube.com/api/manifest/hls.m3u8", stream.audioUrl.substringBefore('?'))
             client.close()
         }
 
@@ -1964,7 +1974,7 @@ class InnerTubeExtractorTest {
                     ContentHints(isExplicit = true).withStreamCapabilities(allowBoundedRange = false),
                 )
             assertNotNull(stream)
-            assertEquals("https://www.youtube.com/api/manifest/hls.m3u8", stream.audioUrl)
+            assertEquals("https://www.youtube.com/api/manifest/hls.m3u8", stream.audioUrl.substringBefore('?'))
             assertFalse(stream.requireBoundedRange)
             client.close()
         }
@@ -2286,6 +2296,10 @@ class InnerTubeExtractorTest {
 
     private object DirectFallback : com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy {
         override fun resolveClients(hints: ContentHints) = listOf(YouTubeClient.VISIONOS)
+
+        // These transport fixtures choose clients without catalog capability or token policy.
+        override fun selectClients(request: ClientSelectionRequest) =
+            ClientSelectionResult(resolveClients(request.hints).map(::SelectedClient))
     }
 
     private object WebRemixFallback : com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy {
@@ -2297,12 +2311,16 @@ class InnerTubeExtractorTest {
                 com.metrolist.innertubex.extraction.strategy
                     .ClientSelectionResult(emptyList())
             } else {
-                super.selectClients(request)
+                ClientSelectionResult(resolveClients(request.hints).map(::SelectedClient))
             }
     }
 
     private object IosFallback : com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy {
         override fun resolveClients(hints: ContentHints) = listOf(YouTubeClient.IOS)
+
+        // These transport fixtures choose clients without catalog capability or token policy.
+        override fun selectClients(request: ClientSelectionRequest) =
+            ClientSelectionResult(resolveClients(request.hints).map(::SelectedClient))
     }
 
     private object NoTokenProvider : TokenProvider {
