@@ -1450,7 +1450,7 @@ class InnerTubeExtractorTest {
                 assertNotNull(stream)
                 assertEquals(listOf(false, true), configModes)
                 // The authenticated pass reuses the identical unplayable response instead of resending it.
-                assertEquals(4, playerRequests)
+                assertEquals(3, playerRequests)
             } finally {
                 client.close()
             }

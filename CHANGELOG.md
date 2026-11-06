@@ -6,11 +6,21 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.11.5] - 2026-11-06
+
 ### Added
 
 - `TVHTML5_SAMSUNG`, a manually selected tokenless TV client for direct audio.
   YouTube forbids its media until pre-roll ads would end, so extraction waits
   6 to 30 seconds.
+
+### Fixed
+
+- Web Embedded is probe-only after anonymous normal and made-for-kids probes
+  returned `NO_PLAYABLE_STREAM`. It leaves automatic selection and remains
+  only as the last-resort embedded fallback.
+- Android VR 1.65.10 is marked broken after normal audio returned HTTP 403
+  on the second media range. It remains probe-only.
 
 ## [0.11.4] - 2026-11-06
 

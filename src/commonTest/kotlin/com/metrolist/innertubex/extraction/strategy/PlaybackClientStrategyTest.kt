@@ -81,7 +81,7 @@ class PlaybackClientStrategyTest {
     }
 
     @Test
-    fun premiumDemotionRequiresHighQualityIntent() {
+    fun premiumNormalAudioKeepsTokenBackedDirectForBothQualityIntents() {
         val strategy = ContentAwareFallbackStrategy()
         val request =
             ClientSelectionRequest(
@@ -96,7 +96,7 @@ class PlaybackClientStrategyTest {
         val high = strategy.selectClients(request, premiumHighQuality = true)
 
         assertEquals(
-            "WEB_EMBEDDED_PLAYER",
+            "WEB_REMIX",
             normal.candidates
                 .first()
                 .manifest
@@ -147,7 +147,7 @@ class PlaybackClientStrategyTest {
         )
         assertTrue(signedOutPremium.rejected.any { it.manifest.id == "WEB_REMIX" })
         assertEquals(
-            "WEB_EMBEDDED_PLAYER",
+            "VISIONOS_SABR",
             signedOutPremium.candidates
                 .first()
                 .manifest
@@ -169,7 +169,12 @@ class PlaybackClientStrategyTest {
                     ),
                 ).candidates
 
-        assertEquals("WEB_EMBEDDED_PLAYER", candidates.first().manifest?.id)
+        assertEquals("WEB_REMIX", candidates.first().manifest?.id)
+        assertTrue(candidates.none { it.manifest?.id == "WEB_EMBEDDED_PLAYER" })
+        assertEquals(
+            CapabilitySupport.UNSUPPORTED,
+            PlaybackClientCatalog.findManifest("WEB_EMBEDDED_PLAYER")?.content?.supportFor(ContentHints()),
+        )
         assertTrue(candidates.none { it.manifest?.id == "VISIONOS_0_1" })
         assertTrue(strategy.resolveClients(ContentHints()).none { it == YouTubeClient.VISIONOS_0_1 })
         assertTrue(PlaybackClientCatalog.automaticManifests.none { it.id == "VISIONOS_0_1" })

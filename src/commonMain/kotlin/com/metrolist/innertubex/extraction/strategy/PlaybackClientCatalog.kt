@@ -137,7 +137,7 @@ object PlaybackClientCatalog {
                 id = "ANDROID_VR_1_65_10",
                 client = YouTubeClient.ANDROID_VR_1_65_10,
                 displayName = "Android VR 1.65.10",
-                lifecycle = ClientLifecycle.STABLE,
+                lifecycle = ClientLifecycle.BROKEN,
                 selectionMode = ClientSelectionMode.PROBE_ONLY,
                 priority = 40,
                 transports = setOf(PlaybackTransport.DIRECT),
@@ -145,8 +145,9 @@ object PlaybackClientCatalog {
                 benchmarkContent = globallyUnusableContent(),
                 evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP, SOURCE_YOUTUBE_JS),
                 notes =
-                    "A live anonymous visitor request resolved, but every audio itag reached a CDN 403 after " +
-                        "1 MiB. Kept for explicit benchmark probing only.",
+                    "2026-11-06 anonymous tokenless probes resolved normal audio, but the first 512 KiB range " +
+                        "returned HTTP 206 and the next returned HTTP 403 in cold and warm runs. " +
+                        "Kept for explicit benchmark probing only.",
             ),
             manifest(
                 id = "ANDROID_VR_1_43_32",
@@ -355,8 +356,8 @@ object PlaybackClientCatalog {
                 id = "WEB_EMBEDDED_PLAYER",
                 client = YouTubeClient.WEB_EMBEDDED_PLAYER,
                 displayName = "Web Embedded",
-                lifecycle = ClientLifecycle.STABLE,
-                selectionMode = ClientSelectionMode.AUTOMATIC,
+                lifecycle = ClientLifecycle.BROKEN,
+                selectionMode = ClientSelectionMode.PROBE_ONLY,
                 priority = 65,
                 authentication = AuthenticationPolicy.OPTIONAL,
                 transports = setOf(PlaybackTransport.DIRECT, PlaybackTransport.HLS),
@@ -368,22 +369,24 @@ object PlaybackClientCatalog {
                     ),
                 content =
                     ClientContentCapabilities(
-                        normal = CapabilitySupport.SUPPORTED,
+                        normal = CapabilitySupport.UNSUPPORTED,
                         explicit = CapabilitySupport.UNKNOWN,
-                        kids = CapabilitySupport.SUPPORTED,
+                        kids = CapabilitySupport.UNSUPPORTED,
                         ageRestricted = CapabilitySupport.UNSUPPORTED,
                         live = CapabilitySupport.UNSUPPORTED,
                         uploads = CapabilitySupport.UNSUPPORTED,
                     ),
                 benchmarkContent =
                     ClientContentCapabilities(
+                        normal = CapabilitySupport.UNSUPPORTED,
                         explicit = CapabilitySupport.UNSUPPORTED,
-                        kids = CapabilitySupport.SUPPORTED,
+                        kids = CapabilitySupport.UNSUPPORTED,
                     ),
                 evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP, SOURCE_YOUTUBE_JS),
                 notes =
-                    "Normal and made-for-kids playback passed sustained playback and both seek directions after " +
-                        "fetching per-video encryptedHostFlags; age-restricted media was rejected.",
+                    "2026-11-06 anonymous tokenless probes returned NO_PLAYABLE_STREAM for normal and " +
+                        "made-for-kids videos in cold and warm runs with per-video encryptedHostFlags. " +
+                        "Age-restricted playback remains unsupported. Kept for explicit probing only.",
             ),
             /*
              * Disabled after the normal case timed out and the other two cases failed to resolve.

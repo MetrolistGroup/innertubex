@@ -75,7 +75,14 @@ class ExtractionLatencyTest {
 
     @Test
     fun unhealthyDirectClientsFallBehindHealthySabr() {
-        val healthy = ContentAwareFallbackStrategy().selectClients(ClientSelectionRequest(ContentHints(), authenticated = false)).candidates
+        val request =
+            ClientSelectionRequest(
+                ContentHints(),
+                authenticated = false,
+                availablePoTokenProviders = setOf(PoTokenProviderKind.WEBPAGE_ATTESTATION),
+                webViewAvailable = true,
+            )
+        val healthy = ContentAwareFallbackStrategy().selectClients(request).candidates
         val leadingDirect = healthy.first { !it.client.useSabr }
         val penalized =
             ContentAwareFallbackStrategy(
@@ -85,7 +92,7 @@ class ExtractionLatencyTest {
                         scope: ClientHealthScope?,
                     ) = if (clientId == leadingDirect.manifest?.id) -1_000 else 0
                 },
-            ).selectClients(ClientSelectionRequest(ContentHints(), authenticated = false)).candidates
+            ).selectClients(request).candidates
         val sabrIndex = penalized.indexOfFirst { it.client.useSabr }
         val demotedIndex = penalized.indexOfFirst { it.manifest?.id == leadingDirect.manifest?.id }
         assertTrue(sabrIndex in 0 until demotedIndex, "a cooled-down direct client must not precede healthy SABR")
