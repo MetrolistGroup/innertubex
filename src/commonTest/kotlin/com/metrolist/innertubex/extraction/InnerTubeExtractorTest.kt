@@ -417,7 +417,8 @@ class InnerTubeExtractorTest {
                         innerTube,
                     )
                 assertFailsWith<CancellationException> { extractor.extract("video", ContentHints(isUploaded = true)) }
-                assertEquals(1, playerRequests)
+                // The mint can win the race and cancel extraction before the player request.
+                assertTrue(playerRequests <= 1)
             } finally {
                 client.close()
             }

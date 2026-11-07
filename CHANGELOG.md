@@ -6,6 +6,13 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.11.6] - 2026-11-07
+
+### Fixed
+
+- iOS cipher work now runs on threads with 16 MB stacks. On the 512 KB GCD worker
+  stacks, QuackJS overflowed and ended the process on a debug build.
+
 ## [0.11.5] - 2026-11-06
 
 ### Added
