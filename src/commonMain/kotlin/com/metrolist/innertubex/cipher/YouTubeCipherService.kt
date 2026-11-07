@@ -15,7 +15,6 @@ import io.ktor.http.URLDecodeException
 import io.ktor.http.Url
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -133,7 +132,7 @@ class YouTubeCipherService(
             return formats
         }
         val program = availableProgram(playerUrl)
-        return withContext(Dispatchers.Default) {
+        return withContext(cipherDispatcher) {
             val signatures = mutableMapOf<String, String?>()
             val nValues = mutableMapOf<String, String?>()
             formats.map { format ->
@@ -175,7 +174,7 @@ class YouTubeCipherService(
         val signature = params["s"] ?: return null
         if (!params.hasValidSignatureParameter()) return null
         val program = availableProgram(playerUrl)
-        return withContext(Dispatchers.Default) {
+        return withContext(cipherDispatcher) {
             transform(
                 playerUrl,
                 program,
@@ -193,7 +192,7 @@ class YouTubeCipherService(
         val match = url.findNParameter() ?: return null
         val challenge = decodeChallenge(match.groupValues[1]) ?: return null
         val program = availableProgram(playerUrl)
-        return withContext(Dispatchers.Default) {
+        return withContext(cipherDispatcher) {
             transform(playerUrl, program, challenge, n = true)?.let { replaceQueryParameterInApprovedUrl(url, match, it) }
         }
     }
@@ -305,7 +304,7 @@ class YouTubeCipherService(
         }
         // Never hold the CPU-operation lock during network IO: speculative preload must not block playback.
         val code = getOrDownloadPlayerCode(key.playerUrl, generation)
-        return withContext(Dispatchers.Default) {
+        return withContext(cipherDispatcher) {
             operationMutex.withLock {
                 currentCoroutineContext().ensureActive()
                 cacheMutex.withLock {
