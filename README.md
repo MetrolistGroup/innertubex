@@ -17,6 +17,36 @@ playlist, and player operations while adding:
 - Bounded remote bodies and protocol state with strict media URL validation.
 - Injectable logging, player configuration, diagnostics, and token providers.
 
+
+## Used by
+
+InnerTubeX powers YouTube API access and stream extraction in a growing number of open-source music applications.
+
+| Project | Stars | Downloads |
+| --- | --- | --- |
+| [Metrolist](https://github.com/MetrolistGroup/Metrolist) | ![Stars](https://img.shields.io/github/stars/MetrolistGroup/Metrolist) | ![Downloads](https://img.shields.io/github/downloads/MetrolistGroup/Metrolist/total) |
+| [BitChord](https://github.com/kushagrasinghx/BitChord) | ![Stars](https://img.shields.io/github/stars/kushagrasinghx/BitChord) | ![Downloads](https://img.shields.io/github/downloads/kushagrasinghx/BitChord/total) |
+| [Vivi Music](https://github.com/vivizzz007/vivi-music) | ![Stars](https://img.shields.io/github/stars/vivizzz007/vivi-music) | ![Downloads](https://img.shields.io/github/downloads/vivizzz007/vivi-music/total) |
+| [LastWave Native](https://github.com/Clash-Projects/LastWave-Native) | ![Stars](https://img.shields.io/github/stars/Clash-Projects/LastWave-Native) | ![Downloads](https://img.shields.io/github/downloads/Clash-Projects/LastWave-Native/total) |
+| [Echo Music](https://github.com/EchoMusicApp/Echo-Music) | ![Stars](https://img.shields.io/github/stars/EchoMusicApp/Echo-Music) | ![Downloads](https://img.shields.io/github/downloads/EchoMusicApp/Echo-Music/total) |
+| [Kreate](https://github.com/knighthat/Kreate) | ![Stars](https://img.shields.io/github/stars/knighthat/Kreate) | ![Downloads](https://img.shields.io/github/downloads/knighthat/Kreate/total) |
+| [Muzza](https://github.com/Maloy-Android/Muzza) | ![Stars](https://img.shields.io/github/stars/Maloy-Android/Muzza) | ![Downloads](https://img.shields.io/github/downloads/Maloy-Android/Muzza/total) |
+| [N-Zik](https://github.com/N-Zik-Group/N-Zik) | ![Stars](https://img.shields.io/github/stars/N-Zik-Group/N-Zik) | ![Downloads](https://img.shields.io/github/downloads/N-Zik-Group/N-Zik/total) |
+| [OpenTune](https://github.com/justshivv/Opentune) | ![Stars](https://img.shields.io/github/stars/justshivv/Opentune) | ![Downloads](https://img.shields.io/github/downloads/justshivv/Opentune/total) |
+| [Natune](https://github.com/NatuneGroup/Natune) | ![Stars](https://img.shields.io/github/stars/NatuneGroup/Natune) | ![Downloads](https://img.shields.io/github/downloads/NatuneGroup/Natune/total) |
+| [Sonora](https://github.com/gero-dev/sonora) | ![Stars](https://img.shields.io/github/stars/gero-dev/sonora) | ![Downloads](https://img.shields.io/github/downloads/gero-dev/sonora/total) |
+| [PixelMusic](https://github.com/Saurav-02/PixelMusic) | ![Stars](https://img.shields.io/github/stars/Saurav-02/PixelMusic) | ![Downloads](https://img.shields.io/github/downloads/Saurav-02/PixelMusic/total) |
+| [Avidtune](https://github.com/cgens67/avidtune) | ![Stars](https://img.shields.io/github/stars/cgens67/avidtune) | ![Downloads](https://img.shields.io/github/downloads/cgens67/avidtune/total) |
+| [Wavvy](https://github.com/Zev-Kaapor/Wavvy) | ![Stars](https://img.shields.io/github/stars/Zev-Kaapor/Wavvy) | ![Downloads](https://img.shields.io/github/downloads/Zev-Kaapor/Wavvy/total) |
+| [Mimikyu](https://github.com/szzsuke/Mimikyu) | ![Stars](https://img.shields.io/github/stars/szzsuke/Mimikyu) | ![Downloads](https://img.shields.io/github/downloads/szzsuke/Mimikyu/total) |
+| [Riff](https://github.com/leovaldez2k22/riff) | ![Stars](https://img.shields.io/github/stars/leovaldez2k22/riff) | ![Downloads](https://img.shields.io/github/downloads/leovaldez2k22/riff/total) |
+| [Utaloom](https://github.com/cabrata/utaloom) | ![Stars](https://img.shields.io/github/stars/cabrata/utaloom) | ![Downloads](https://img.shields.io/github/downloads/cabrata/utaloom/total) |
+| [PaltaSound](https://github.com/AndresTarma1/PaltaSound) | ![Stars](https://img.shields.io/github/stars/AndresTarma1/PaltaSound) | ![Downloads](https://img.shields.io/github/downloads/AndresTarma1/PaltaSound/total) |
+
+>[!NOTE]
+> Some projects use InnerTubeX as a dependency, while others vendor or adapt its source code. This is a non-exhaustive list.
+
+
 ## Install
 
 ```kotlin
