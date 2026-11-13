@@ -315,6 +315,10 @@ internal class PlayerClientDirector(
                                 forceTokenizedTvHtml5 &&
                                     client.clientName == YouTubeClient.TVHTML5.clientName
                             ),
+                    preferPoToken =
+                        selectedClient.manifest?.id == "WEB_REMIX_SABR" && !hints.wantVideo &&
+                            hints.playbackClientOverrideId == null && !premiumEntitlement &&
+                            selectedClient.profileIds(usedPoToken = true).none { it in excludedClients },
                     requestSession = requestSession,
                     requestBudget = effectiveRequestBudget,
                     prefetchedPoToken = prefetchedPoToken,
@@ -678,6 +682,7 @@ internal class PlayerClientDirector(
         allowUntokenizedWebPoClient: Boolean,
         premiumEntitlement: Boolean,
         forcePoToken: Boolean,
+        preferPoToken: Boolean,
         requestSession: InnerTube.SessionSnapshot,
         requestBudget: PlayerRequestBudget,
         prefetchedPoToken: PoTokenPrefetch?,
@@ -733,6 +738,7 @@ internal class PlayerClientDirector(
                     requestSession,
                     requestBudget,
                     prefetch,
+                    preferPoToken,
                 )
             }
             tryUntokenizedFirst(
@@ -745,6 +751,7 @@ internal class PlayerClientDirector(
                 requestSession,
                 requestBudget,
                 prefetchedPoToken,
+                preferPoToken,
             )
         } catch (e: CancellationException) {
             throw e
@@ -774,6 +781,7 @@ internal class PlayerClientDirector(
         requestSession: InnerTube.SessionSnapshot,
         requestBudget: PlayerRequestBudget,
         prefetchedPoToken: PoTokenPrefetch?,
+        preferPoToken: Boolean,
     ): ClientAttemptResult {
         val client = selectedClient.client
         // Fast path: try once without PO token first.
@@ -792,6 +800,21 @@ internal class PlayerClientDirector(
         val initialFailure = initialResponse.playabilityStatus.toFailure()
         if (initialPlayable) {
             if (!tokenPlan.tokenRequired || allowUntokenizedWebPoClient) {
+                if (preferPoToken && tokenPlan.canMint) {
+                    val tokenized =
+                        tryTokenizedPlayer(
+                            selectedClient = selectedClient,
+                            tokenPlan = tokenPlan,
+                            videoId = videoId,
+                            playerConfig = playerConfig,
+                            requestSession = requestSession,
+                            fallbackFailure = null,
+                            existingPlayableResponse = initialResponse,
+                            requestBudget = requestBudget,
+                            prefetchedPoToken = prefetchedPoToken,
+                        )
+                    if (tokenized.attempt != null) return tokenized
+                }
                 if (tokenPlan.canMint && allowUntokenizedWebPoClient) {
                     logger.d(TAG, "untokenized response accepted", details = mapOf("client" to client.clientName))
                 }

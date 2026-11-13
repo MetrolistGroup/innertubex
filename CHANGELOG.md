@@ -6,6 +6,14 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.11.7] - 2026-11-13
+
+### Fixed
+
+- Audio-only extraction prefers YouTube Music SABR profiles, minting a PO token for
+  them first. A WEB SABR session whose token YouTube kept attestation-pending stopped
+  after about 60 seconds of audio.
+
 ## [0.11.6] - 2026-11-07
 
 ### Fixed
