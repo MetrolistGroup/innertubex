@@ -42,6 +42,69 @@ import kotlin.time.Duration.Companion.hours
 
 class PlayerClientDirectorTest {
     @Test
+    fun remixSabrAudioPrecedesWebForNormalAndExplicitTracks() {
+        for (explicit in listOf(false, true)) {
+            val selection =
+                ContentAwareFallbackStrategy()
+                    .selectClients(
+                        ClientSelectionRequest(
+                            hints = ContentHints(isExplicit = explicit, sabrFirst = true),
+                            authenticated = true,
+                            availablePoTokenProviders = PoTokenProviderKind.entries.toSet(),
+                            webViewAvailable = true,
+                            transportPreference = PlaybackTransportPreference.SABR,
+                        ),
+                    ).candidates
+                    .map { it.manifest?.id }
+            assertTrue(selection.indexOf("WEB_REMIX_SABR") >= 0)
+            assertTrue(selection.indexOf("WEB_REMIX_SABR") < selection.indexOf("WEB_SABR"), selection.toString())
+        }
+    }
+
+    @Test
+    fun automaticRemixSabrTriesTokenizedThenUntokenizedProfiles() =
+        runBlocking {
+            for (tokenAvailable in listOf(true, false)) {
+                for (excluded in listOf(emptySet(), setOf("WEB_REMIX_SABR__po"))) {
+                    var mints = 0
+                    val client = client { TOKEN_PLAYER_RESPONSE }
+                    val tube = InnerTube(client, retryDelay = {}).also { it.visitorData = "visitor" }
+                    val tokens =
+                        object : TokenProvider {
+                            override val capabilities = TokenProviderCapabilities(PoTokenProviderKind.entries.toSet(), usesWebView = true)
+
+                            override suspend fun getPoToken(
+                                videoId: String,
+                                visitorData: String,
+                                cookie: String?,
+                            ): PoTokenResult? {
+                                mints++
+                                return if (tokenAvailable) PoTokenResult("", "fixture-gvs", visitorData) else null
+                            }
+                        }
+                    try {
+                        val director =
+                            PlayerClientDirector(tube, fixed(checkNotNull(PlaybackClientCatalog.findManifest("WEB_REMIX_SABR"))), tokens)
+                        val response =
+                            director
+                                .fetchPlayerResponses(
+                                    "video",
+                                    PlayerConfig("player.js", null, null, null),
+                                    ContentHints(),
+                                    excludedClients = excluded,
+                                ).playableResponses
+                                .single()
+                        val expectsToken = tokenAvailable && excluded.isEmpty()
+                        assertEquals(if (expectsToken) "WEB_REMIX_SABR__po" else "WEB_REMIX_SABR__nopo", response.profileId)
+                        assertEquals(if (excluded.isEmpty()) 1 else 0, mints)
+                    } finally {
+                        client.close()
+                    }
+                }
+            }
+        }
+
+    @Test
     fun forcedGvsOnlyMintOverlapsPlayerAndRejectsInvalidBindings() =
         runBlocking {
             for (outcome in listOf("valid", "missing", "wrong-visitor", "empty-gvs")) {

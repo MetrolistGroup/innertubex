@@ -60,21 +60,21 @@ class ExtractionRound4Test {
         }
 
     @Test
-    fun remixSuccessMintsNothingAndWebFallbackMintsOnceOnlyWhenAttempted() =
+    fun remixAndWebSuccessMintOnceOnlyForThePlayableClient() =
         runBlocking {
             for (hinted in listOf(false, true)) {
                 for (success in listOf("WEB_REMIX_SABR", "WEB_SABR")) {
                     val fixture = Fixture(hinted, success)
                     try {
                         val batch = fixture.director().fetchPlayerResponses("video", CONFIG, ContentHints(isAgeRestricted = hinted))
-                        val tokenized = success == "WEB_SABR"
-                        assertEquals("${success}__${if (tokenized) "po" else "nopo"}", batch.playableResponses.single().profileId)
-                        assertEquals(if (tokenized) 1 else 0, fixture.tokens.calls)
+                        val webFallback = success == "WEB_SABR"
+                        assertEquals("${success}__po", batch.playableResponses.single().profileId)
+                        assertEquals(1, fixture.tokens.calls)
                         assertEquals(
-                            (if (hinted) emptyList() else listOf("VISIONOS")) + SABR_ORDER.take(if (tokenized) 2 else 1),
+                            (if (hinted) emptyList() else listOf("VISIONOS")) + SABR_ORDER.take(if (webFallback) 2 else 1),
                             fixture.requests,
                         )
-                        if (tokenized) assertEquals("AQID", batch.playableResponses.single().streamingDataPoToken)
+                        assertEquals("AQID", batch.playableResponses.single().streamingDataPoToken)
                     } finally {
                         fixture.client.close()
                     }
