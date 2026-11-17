@@ -6,6 +6,14 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.11.9] - 2026-11-17
+
+### Fixed
+
+- A track YouTube reports as unavailable to every client is looked up through YouTube Music's
+  `navigation/resolve_url`. When YouTube Music now serves the song under a new video ID, as it does
+  for re-released catalogue tracks, extraction plays that ID instead of failing.
+
 ## [0.11.8] - 2026-11-17
 
 ### Fixed

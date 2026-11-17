@@ -21,6 +21,7 @@ import io.ktor.client.engine.mock.respond
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.content.TextContent
 import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.CancellationException
@@ -34,6 +35,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -2008,6 +2011,42 @@ class InnerTubeExtractorTest {
                 }
             assertEquals(StreamResolveException.Reason.UNAVAILABLE, failure.reason)
             client.close()
+        }
+
+    @Test
+    fun unavailableReleasedTrackPlaysUnderItsCurrentMusicId() =
+        runBlocking {
+            val playerIds = mutableListOf<String>()
+            val client =
+                HttpClient(
+                    MockEngine { request ->
+                        val body =
+                            Json.parseToJsonElement((request.body as TextContent).text).jsonObject
+                        val payload =
+                            if (request.url.encodedPath.endsWith("navigation/resolve_url")) {
+                                assertEquals("https://music.youtube.com/watch?v=wxI-VHJFDdo", body["url"]?.jsonPrimitive?.content)
+                                """{"endpoint":{"watchEndpoint":{"videoId":"1-Tw5KX2Pb4"}}}"""
+                            } else {
+                                val videoId = body["videoId"]!!.jsonPrimitive.content
+                                playerIds += videoId
+                                if (videoId == "1-Tw5KX2Pb4") {
+                                    DIRECT_RESPONSE.replace("\"videoId\":\"video\"", "\"videoId\":\"1-Tw5KX2Pb4\"")
+                                } else {
+                                    """{"playabilityStatus":{"status":"UNPLAYABLE","reason":"Video unavailable"}}"""
+                                }
+                            }
+                        respond(payload, HttpStatusCode.OK, headersOf("Content-Type", "application/json"))
+                    },
+                ) {
+                    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+                }
+            try {
+                assertNotNull(extractor(client).extract("wxI-VHJFDdo", ContentHints()))
+                assertEquals("1-Tw5KX2Pb4", playerIds.last())
+                assertTrue("wxI-VHJFDdo" in playerIds)
+            } finally {
+                client.close()
+            }
         }
 
     @Test

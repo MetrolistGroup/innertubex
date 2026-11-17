@@ -18,6 +18,7 @@ import com.metrolist.innertubex.models.body.LikeBody
 import com.metrolist.innertubex.models.body.NextBody
 import com.metrolist.innertubex.models.body.PlayerBody
 import com.metrolist.innertubex.models.body.PlaylistDeleteBody
+import com.metrolist.innertubex.models.body.ResolveUrlBody
 import com.metrolist.innertubex.models.body.SearchBody
 import com.metrolist.innertubex.models.body.SubscribeBody
 import com.metrolist.innertubex.models.response.ImageUploadResponse
@@ -87,6 +88,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.concurrent.Volatile
 import kotlin.concurrent.atomics.AtomicReference
@@ -126,6 +128,8 @@ class InnerTube(
         private const val TV_BEARER_PLAYER_ENDPOINT = "$API_BASE_WWW/player"
         private const val TV_BEARER_TIMEOUT_MS = 8_000L
         private const val MAX_API_RESPONSE_BYTES = 4 * 1024 * 1024
+        private const val MAX_RESOLVE_URL_RESPONSE_BYTES = 256 * 1024
+        private val VIDEO_ID = Regex("[A-Za-z0-9_-]{11}")
         private const val MAX_TV_BEARER_RESPONSE_BYTES = 4 * 1024 * 1024
 
         private val TRANSIENT_STATUS_CODES = setOf(408, 425, 429, 500, 502, 503, 504)
@@ -688,6 +692,40 @@ class InnerTube(
                 )
             }
         }
+    }
+
+    /**
+     * Returns the video ID YouTube Music now serves for [videoId], or null when it is unchanged or unknown.
+     * Re-released catalogue tracks keep their old ID, which every player client reports as unavailable.
+     */
+    internal suspend fun currentMusicVideoId(videoId: String): String? {
+        if (!VIDEO_ID.matches(videoId)) return null
+        val requestSession = sessionSnapshot()
+        val response =
+            executeRequest(operation = "resolve_url", retryTransientFailures = false) {
+                postClient.postBounded("navigation/resolve_url", maxBytes = MAX_RESOLVE_URL_RESPONSE_BYTES, keepErrorBody = false) {
+                    ytClient(YouTubeClient.WEB_REMIX, requestSession, includeAccountCookies = false)
+                    setBody(
+                        ResolveUrlBody(
+                            context = YouTubeClient.WEB_REMIX.toContext(requestSession.locale, requestSession.visitorData, null),
+                            url = "https://music.youtube.com/watch?v=$videoId",
+                        ),
+                    )
+                }
+            }
+        val resolved =
+            runCatching {
+                IMAGE_UPLOAD_JSON
+                    .parseToJsonElement(response.bodyAsTextLimited(MAX_RESOLVE_URL_RESPONSE_BYTES))
+                    .jsonObject["endpoint"]
+                    ?.jsonObject
+                    ?.get("watchEndpoint")
+                    ?.jsonObject
+                    ?.get("videoId")
+                    ?.jsonPrimitive
+                    ?.contentOrNull
+            }.getOrNull()
+        return resolved?.takeIf { it != videoId && VIDEO_ID.matches(it) }
     }
 
     suspend fun player(

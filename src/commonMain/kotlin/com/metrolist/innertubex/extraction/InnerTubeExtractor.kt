@@ -518,6 +518,30 @@ class InnerTubeExtractor internal constructor(
         excludedClients: Set<String>,
         audioQuality: AudioQuality,
         clientPlaybackNonce: String,
+    ): ExtractedStream? =
+        try {
+            extractVideo(videoId, hints, excludedClients, audioQuality, clientPlaybackNonce)
+        } catch (e: StreamResolveException) {
+            if (e.reason != StreamResolveException.Reason.UNAVAILABLE || hints.playbackClientOverrideId != null) throw e
+            // YouTube Music web plays a re-released track under its new ID, so do the same.
+            val currentId =
+                try {
+                    innerTube.currentMusicVideoId(videoId)
+                } catch (cancel: CancellationException) {
+                    throw cancel
+                } catch (_: Exception) {
+                    null
+                } ?: throw e
+            logger.i(TAG, "unavailable video replaced by its current YouTube Music ID")
+            extractVideo(currentId, hints, excludedClients, audioQuality, clientPlaybackNonce)
+        }
+
+    private suspend fun extractVideo(
+        videoId: String,
+        hints: ContentHints,
+        excludedClients: Set<String>,
+        audioQuality: AudioQuality,
+        clientPlaybackNonce: String,
     ): ExtractedStream? {
         val terminalKey =
             if (hints.playbackClientOverrideId == null) {
