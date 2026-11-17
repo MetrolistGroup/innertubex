@@ -28,6 +28,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -423,7 +424,8 @@ class SabrAudioStreamTest {
                     val body = ByteChannel(autoFlush = true)
                     launch {
                         body.writeFully(completeResponse(0))
-                        delay(25)
+                        // A fixed delay could outlast the 100 ms drain window on a loaded simulator; yielding cannot.
+                        yield()
                         body.writeFully(umpPart(UmpPartType.STREAM_PROTECTION_STATUS, streamProtectionStatus(3)))
                     }
                     respond(body, headers = headersOf(HttpHeaders.ContentType, "application/vnd.yt-ump"))

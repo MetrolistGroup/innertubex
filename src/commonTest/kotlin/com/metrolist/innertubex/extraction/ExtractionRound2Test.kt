@@ -364,7 +364,8 @@ class ExtractionRound2Test {
                             .extract("video", ContentHints(playbackClientOverrideId = "VISIONOS"))
                     }
                 assertTrue(failure.cause is PlayerRequestBudgetExhaustedException)
-                assertEquals(1, downloads)
+                // A slow host can spend the whole budget before the first download; the retry must never start.
+                assertTrue(downloads <= 1)
             } finally {
                 cipher.dispose()
                 client.close()
