@@ -261,6 +261,7 @@ private fun client(
                 followRedirects(false)
                 followSslRedirects(false)
             }
+            addInterceptor(MediaRedirects)
             addInterceptor(capture)
         }
         install(HttpTimeout) {
