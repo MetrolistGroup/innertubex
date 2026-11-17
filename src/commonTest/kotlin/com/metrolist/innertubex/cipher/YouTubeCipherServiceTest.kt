@@ -100,24 +100,39 @@ class YouTubeCipherServiceTest {
         }
 
     @Test
-    fun hintFreeEs6WatchConfigUsesTheStandardIasVariant() =
+    fun hintFreeNonIasConfigsUseTheStandardIasVariant() =
         runBlocking {
-            val supplied = "https://www.youtube.com/s/player/12345678/player_es6.vflset/pl_PL/base.js"
             val preferred = "https://www.youtube.com/s/player/12345678/player_ias.vflset/en_GB/base.js"
-            val engine =
-                MockEngine { request ->
-                    assertEquals(preferred, request.url.toString())
-                    respond(PLAYER_CODE)
+            // Embed pages advertise player_embed_es6, which the runtime cannot parse; it must never be fetched.
+            for (suffix in listOf(
+                "player_es6.vflset/pl_PL/base.js",
+                "player_embed_es6.vflset/pl_PL/base.js",
+                "tv-player-ias.vflset/tv-player-ias.js",
+            )) {
+                val supplied = "https://www.youtube.com/s/player/12345678/$suffix"
+                val engine =
+                    MockEngine { request ->
+                        assertEquals(preferred, request.url.toString())
+                        respond(PLAYER_CODE)
+                    }
+                val client = HttpClient(engine)
+                val service = YouTubeCipherService(client)
+                try {
+                    assertEquals("$MEDIA_URL?n=value_done", service.processNParameter(supplied, "$MEDIA_URL?n=value"))
+                    assertEquals("$MEDIA_URL?signature=cba", service.deobfuscateSignatureCipher(supplied, "s=abc&url=$MEDIA_URL"))
+                    assertEquals(
+                        preferred,
+                        service.playerCode(supplied).let {
+                            engine.requestHistory
+                                .single()
+                                .url
+                                .toString()
+                        },
+                    )
+                } finally {
+                    service.dispose()
+                    client.close()
                 }
-            val client = HttpClient(engine)
-            val service = YouTubeCipherService(client)
-            try {
-                assertEquals("$MEDIA_URL?n=value_done", service.processNParameter(supplied, "$MEDIA_URL?n=value"))
-                assertEquals("$MEDIA_URL?signature=cba", service.deobfuscateSignatureCipher(supplied, "s=abc&url=$MEDIA_URL"))
-                assertEquals(1, engine.requestHistory.size)
-            } finally {
-                service.dispose()
-                client.close()
             }
         }
 
@@ -125,7 +140,12 @@ class YouTubeCipherServiceTest {
     fun suppliedPlayerVariantIsUsedWhenPreferredPlayerIsUnavailableOrUnsupported() =
         runBlocking {
             val preferred = "https://www.youtube.com/s/player/12345678/player_ias.vflset/en_GB/base.js"
-            for (suffix in listOf("player_ias.vflset/pl_PL/base.js", "player_es6.vflset/pl_PL/base.js")) {
+            for (suffix in listOf(
+                "player_ias.vflset/pl_PL/base.js",
+                "player_es6.vflset/pl_PL/base.js",
+                "player_embed_es6.vflset/pl_PL/base.js",
+                "tv-player-ias.vflset/tv-player-ias.js",
+            )) {
                 val supplied = "https://www.youtube.com/s/player/12345678/$suffix"
                 for (hinted in listOf(true, false)) {
                     for (httpFailure in listOf(true, false)) {

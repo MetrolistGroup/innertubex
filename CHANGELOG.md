@@ -6,6 +6,15 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.11.8] - 2026-11-17
+
+### Fixed
+
+- Every script variant of a player build (`player_es6`, `player_embed_es6`, `tv-player-ias` and
+  others) now resolves to its `player_ias` script for signature and n transforms. QuackJS cannot
+  parse those variants, so embed and TV player URLs left ciphered formats without a URL and web
+  clients fell back to HLS streams the CDN refused.
+
 ## [0.11.7] - 2026-11-13
 
 ### Fixed

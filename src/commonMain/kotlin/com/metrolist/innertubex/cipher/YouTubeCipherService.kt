@@ -274,9 +274,7 @@ class YouTubeCipherService(
             }
         val hints = config?.let { PlayerHints(it.signatureExpression, it.nClass, it.signatureTimestamp) }
         val epoch = store?.configEpoch ?: 0L
-        val preferredUrl =
-            (if (hints != null || "/player_es6.vflset/" in playerUrl) faradayCipherPlayerUrl(playerUrl) else null)
-                ?: canonicalPlayerUrl(playerUrl)
+        val preferredUrl = (if (hints != null) faradayCipherPlayerUrl(playerUrl) else null) ?: canonicalPlayerUrl(playerUrl)
         try {
             programAt(ProgramKey(preferredUrl, hints), epoch, generation)?.let { return it }
         } catch (e: CancellationException) {
