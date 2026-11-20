@@ -6,6 +6,8 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-20
+
 ### Added
 
 - `IOS_PRODUCER` (client ID 92) plays normal, explicit and made-for-kids media without a PO token,
@@ -19,6 +21,10 @@ that `0.x` releases may contain breaking API changes.
 
 - `withStreamCapabilities` takes a fourth parameter. Callers recompile unchanged; previously compiled
   binaries need a rebuild.
+- `MWEB_SABR` and `WEB_SAFARI_SABR` are probe-only and no longer part of automatic selection. On a
+  signed-in Android device their SABR media requests now fail with HTTP 4xx and playback does not
+  advance, and they were the two most common final profiles of exhausted stream retries in Metrolist
+  14.0.1. Both remain available for benchmarks.
 
 ## [0.11.9] - 2026-11-17
 

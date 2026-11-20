@@ -36,9 +36,9 @@ class ExtractionRound4Test {
             )
         val ids = strategy.selectClients(request).candidates.map { it.manifest!!.id }
         for (direct in listOf("WEB_REMIX", "WEB_CREATOR")) {
-            for (sabr in SABR_ORDER) assertTrue(ids.indexOf(direct) < ids.indexOf(sabr))
+            for (sabr in listOf("WEB_REMIX_SABR", "WEB_SABR")) assertTrue(ids.indexOf(direct) < ids.indexOf(sabr))
         }
-        assertTrue("WEB_SAFARI" !in ids && "MWEB" !in ids)
+        assertTrue(listOf("WEB_SAFARI", "MWEB", "WEB_SAFARI_SABR", "MWEB_SABR").none { it in ids })
         val premium = strategy.selectClients(request.copy(hints = request.hints.withPremium(), premium = true)).candidates
         assertTrue(premium.indexOfFirst { it.manifest!!.id == "WEB_REMIX" } < premium.indexOfFirst { it.manifest!!.id == "WEB_REMIX_SABR" })
     }
