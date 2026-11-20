@@ -32,6 +32,9 @@ enum class PlaybackTransport {
     SABR,
     HLS,
     DASH,
+
+    /** Muxed audio/video file. Hosts opt in through `ContentHints.allowProgressive`. */
+    PROGRESSIVE,
 }
 
 enum class CapabilitySupport {
@@ -176,6 +179,8 @@ data class PlaybackClientManifest(
 
     val isPlaybackClient: Boolean
         get() = selectionMode != ClientSelectionMode.API_ONLY
+
+    internal fun isProgressiveOnly(): Boolean = transports == setOf(PlaybackTransport.PROGRESSIVE)
 
     fun supportsProvider(kinds: Set<PoTokenProviderKind>): Boolean {
         val requiredRules = listOf(poTokens.player, poTokens.gvs).filter { it.requirement == PoTokenRequirement.REQUIRED }

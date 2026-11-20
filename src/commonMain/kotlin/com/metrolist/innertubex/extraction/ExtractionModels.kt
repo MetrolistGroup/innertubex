@@ -28,6 +28,10 @@ public class ContentHints(
     public var allowBoundedRange: Boolean = true
         private set
 
+    /** Muxed audio/video files; off unless the host player can play audio from them. */
+    public var allowProgressive: Boolean = false
+        private set
+
     public operator fun component1(): Boolean? = isExplicit
 
     public operator fun component2(): Boolean? = isKidsContent
@@ -80,6 +84,7 @@ public class ContentHints(
             it.allowHls = allowHls
             it.allowSabr = allowSabr
             it.allowBoundedRange = allowBoundedRange
+            it.allowProgressive = allowProgressive
         }
 
     /** Returns a copy carrying the caller-confirmed entitlement state. */
@@ -92,11 +97,13 @@ public class ContentHints(
         allowHls: Boolean = true,
         allowSabr: Boolean = true,
         allowBoundedRange: Boolean = true,
+        allowProgressive: Boolean = false,
     ): ContentHints =
         copy().also {
             it.allowHls = allowHls
             it.allowSabr = allowSabr
             it.allowBoundedRange = allowBoundedRange
+            it.allowProgressive = allowProgressive
         }
 
     override fun equals(other: Any?): Boolean {
@@ -116,7 +123,8 @@ public class ContentHints(
             premium == other.premium &&
             allowHls == other.allowHls &&
             allowSabr == other.allowSabr &&
-            allowBoundedRange == other.allowBoundedRange
+            allowBoundedRange == other.allowBoundedRange &&
+            allowProgressive == other.allowProgressive
     }
 
     override fun hashCode(): Int {
@@ -134,7 +142,8 @@ public class ContentHints(
         result = 31 * result + premium.hashCode()
         result = 31 * result + allowHls.hashCode()
         result = 31 * result + allowSabr.hashCode()
-        return 31 * result + allowBoundedRange.hashCode()
+        result = 31 * result + allowBoundedRange.hashCode()
+        return 31 * result + allowProgressive.hashCode()
     }
 
     override fun toString(): String = diagnosticSummary()
@@ -145,7 +154,8 @@ public fun ContentHints.diagnosticSummary(): String =
         "live=$isLive, uploaded=$isUploaded, local=$isLocal, " +
         "endpointParamsPresent=${endpointParams != null}, wantVideo=$wantVideo, " +
         "clientOverride=$playbackClientOverrideId, sabrFirst=$sabrFirst, maxVideoHeight=$maxVideoHeight, " +
-        "premium=$premium, allowHls=$allowHls, allowSabr=$allowSabr, allowBoundedRange=$allowBoundedRange}"
+        "premium=$premium, allowHls=$allowHls, allowSabr=$allowSabr, allowBoundedRange=$allowBoundedRange, " +
+        "allowProgressive=$allowProgressive}"
 
 public data class PlayerConfig(
     val playerUrl: String,

@@ -579,6 +579,20 @@ data class YouTubeClient(
                 friendlyName = "Android Producer probe",
             )
 
+        /** Client ID 92. Tokenless, but YouTube only returns muxed progressive itag 18 for it. */
+        val IOS_PRODUCER =
+            YouTubeClient(
+                clientName = "IOS_PRODUCER",
+                clientVersion = "0.10",
+                clientId = "92",
+                userAgent = "com.google.ios.youtubeproducer/0.10 (iPhone16,2; U; CPU iOS 18_6_2 like Mac OS X;)",
+                osName = "iPhone",
+                osVersion = "18.6.2.22G100",
+                deviceMake = "Apple",
+                deviceModel = "iPhone16,2",
+                friendlyName = "iOS Producer progressive",
+            )
+
         /** Historical probe identity: Media Connect Frontend client ID 95, current source evidence only. */
         val MEDIA_CONNECT_FRONTEND =
             YouTubeClient(

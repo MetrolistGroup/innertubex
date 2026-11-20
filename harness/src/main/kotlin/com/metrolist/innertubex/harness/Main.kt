@@ -220,6 +220,8 @@ internal fun hints(
         playbackClientOverrideId = client.takeUnless { it in AUTOMATIC_SELECTIONS },
         sabrFirst = client == "SABR_FIRST",
     ).withPremium(premium)
+        // ffmpeg decodes with -vn, so muxed progressive files are playable here.
+        .withStreamCapabilities(allowProgressive = true)
 
 internal fun readCookieFile(file: File): String {
     require(file.length() in 1..16384) { "Invalid cookie file size" }

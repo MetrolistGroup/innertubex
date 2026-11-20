@@ -46,7 +46,7 @@ class PlaybackClientStrategyTest {
 
     @Test
     fun catalogProfilesHaveConsistentManifestInvariants() {
-        assertEquals(36, PlaybackClientCatalog.benchmarkOptions.size)
+        assertEquals(37, PlaybackClientCatalog.benchmarkOptions.size)
         assertEquals(
             PlaybackClientCatalog.manifests.size,
             PlaybackClientCatalog.manifests
@@ -57,6 +57,38 @@ class PlaybackClientStrategyTest {
         assertTrue(
             PlaybackClientCatalog.manifests.all { it.client.clientName.isNotBlank() },
         )
+    }
+
+    @Test
+    fun progressiveFallbackRunsLastOnlyForHostsThatAllowIt() {
+        val strategy = ContentAwareFallbackStrategy()
+
+        fun ids(
+            hints: ContentHints,
+            providers: Set<PoTokenProviderKind> = allProviders,
+            fastPathOnly: Boolean = false,
+        ) = strategy
+            .selectClients(
+                ClientSelectionRequest(
+                    hints = hints,
+                    authenticated = false,
+                    availablePoTokenProviders = providers,
+                    webViewAvailable = true,
+                    fastPathOnly = fastPathOnly,
+                ),
+            ).candidates
+            .mapNotNull { it.manifest?.id }
+
+        val progressive = ContentHints().withStreamCapabilities(allowProgressive = true)
+        val allowed = ids(progressive)
+        assertEquals("IOS_PRODUCER", allowed.last())
+        assertTrue(allowed.any { it.endsWith("_SABR") })
+        assertEquals("IOS_PRODUCER", ids(progressive.copy(isKidsContent = true)).last())
+        assertTrue("IOS_PRODUCER" in ids(progressive, providers = emptySet()))
+        assertTrue("IOS_PRODUCER" !in ids(ContentHints()))
+        assertTrue("IOS_PRODUCER" !in ids(progressive.copy(wantVideo = true)))
+        assertTrue("IOS_PRODUCER" !in ids(progressive.copy(isLive = true)))
+        assertTrue("IOS_PRODUCER" !in ids(progressive, fastPathOnly = true))
     }
 
     @Test

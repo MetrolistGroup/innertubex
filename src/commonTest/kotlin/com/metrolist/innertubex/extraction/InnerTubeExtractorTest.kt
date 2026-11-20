@@ -1090,6 +1090,27 @@ class InnerTubeExtractorTest {
         }
 
     @Test
+    fun progressiveFallbackReturnsMuxedAudioOnlyWhenTheHostAllowsIt() =
+        runBlocking {
+            val client = jsonClient(PROGRESSIVE_RESPONSE)
+            try {
+                val stream =
+                    assertNotNull(
+                        extractor(client, ProgressiveFallback)
+                            .extract("video", ContentHints().withStreamCapabilities(allowProgressive = true)),
+                    )
+                assertEquals(18, stream.itag)
+                assertEquals("video/mp4", stream.mimeType)
+                assertEquals(44100, stream.sampleRate)
+                assertEquals("IOS_PRODUCER__nopo", stream.profileId)
+
+                assertNull(runCatching { extractor(client, ProgressiveFallback).extract("video", ContentHints()) }.getOrNull())
+            } finally {
+                client.close()
+            }
+        }
+
+    @Test
     fun transformedNParameterRemainsUsable() =
         runBlocking {
             val client = jsonClient(DIRECT_RESPONSE.replace("expire=9999999999", "expire=9999999999&n=source"))
@@ -2590,6 +2611,15 @@ class InnerTubeExtractorTest {
             ClientSelectionResult(resolveClients(request.hints).map(::SelectedClient))
     }
 
+    private object ProgressiveFallback : ClientFallbackStrategy {
+        override fun resolveClients(hints: ContentHints) = listOf(YouTubeClient.IOS_PRODUCER)
+
+        override fun selectClients(request: ClientSelectionRequest) =
+            ClientSelectionResult(
+                listOf(SelectedClient(YouTubeClient.IOS_PRODUCER, PlaybackClientCatalog.findManifest("IOS_PRODUCER"))),
+            )
+    }
+
     private object WebRemixFallback : com.metrolist.innertubex.extraction.strategy.ClientFallbackStrategy {
         override fun resolveClients(hints: ContentHints) = listOf(YouTubeClient.WEB_REMIX)
 
@@ -2696,6 +2726,10 @@ class InnerTubeExtractorTest {
         val DIRECT_RESPONSE =
             """
             {"playabilityStatus":{"status":"OK"},"videoDetails":{"videoId":"video","title":"Track title","author":"Artist","channelId":"channel","lengthSeconds":"60","musicVideoType":"MUSIC_VIDEO_TYPE_ATV","viewCount":"42","thumbnail":{"thumbnails":[{"url":"https://i.ytimg.com/vi/video/default.jpg","width":120,"height":90}]}},"playerConfig":{"audioConfig":{"loudnessDb":-5.0,"perceptualLoudnessDb":-8.5}},"streamingData":{"adaptiveFormats":[{"itag":251,"url":"https://r.googlevideo.com/videoplayback?expire=9999999999","mimeType":"audio/webm; codecs=\"opus\"","bitrate":128000}]}}
+            """.trimIndent()
+        val PROGRESSIVE_RESPONSE =
+            """
+            {"playabilityStatus":{"status":"OK"},"streamingData":{"formats":[{"itag":18,"url":"https://r.googlevideo.com/videoplayback?expire=9999999999","mimeType":"video/mp4; codecs=\"avc1.42001E, mp4a.40.2\"","bitrate":312854,"width":640,"height":360,"audioSampleRate":44100,"audioQuality":"AUDIO_QUALITY_LOW"}]}}
             """.trimIndent()
         val VIDEO_RESPONSE =
             """

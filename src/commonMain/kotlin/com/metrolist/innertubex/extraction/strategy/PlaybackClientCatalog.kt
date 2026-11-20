@@ -22,6 +22,7 @@ object PlaybackClientCatalog {
     private const val SOURCE_YOUTUBE_JS = "YouTube.js client constants"
     private const val SOURCE_HISTORICAL_CLIENTS = "YouTube-Internal-Clients survey (2022)"
     private const val SOURCE_PYTUBEFIX = "pytubefix innertube.py (b6521f09)"
+    private const val SOURCE_CLIENT_ID_SURVEY = "InnerTube client ID survey (2026-11-19)"
 
     private val webProviders =
         setOf(PoTokenProviderKind.WEB_BOTGUARD, PoTokenProviderKind.WEBPAGE_ATTESTATION, PoTokenProviderKind.EXTERNAL)
@@ -965,6 +966,27 @@ object PlaybackClientCatalog {
                 content = unverifiedProbeContent(),
                 evidence = setOf(SOURCE_PYTUBEFIX, SOURCE_HISTORICAL_CLIENTS),
                 notes = "Historical Media Connect identity and app fields; playback and transport support are unverified.",
+            ),
+            manifest(
+                id = "IOS_PRODUCER",
+                client = YouTubeClient.IOS_PRODUCER,
+                displayName = "iOS Producer progressive",
+                lifecycle = ClientLifecycle.EXPERIMENTAL,
+                selectionMode = ClientSelectionMode.AUTOMATIC,
+                priority = 0,
+                transports = setOf(PlaybackTransport.PROGRESSIVE),
+                content =
+                    ClientContentCapabilities(
+                        explicit = CapabilitySupport.SUPPORTED,
+                        kids = CapabilitySupport.SUPPORTED,
+                        live = CapabilitySupport.UNSUPPORTED,
+                    ),
+                evidence = setOf(SOURCE_CLIENT_ID_SURVEY),
+                notes =
+                    "Anonymous tokenless requests return direct, unciphered itag 18 (360p video with low-quality " +
+                        "AAC) for normal, explicit and made-for-kids media; full files downloaded without throttling. " +
+                        "No adaptive, HLS or SABR formats for any accepted version (0.10-0.99). Live replays are " +
+                        "unplayable. Automatic only as the last fallback for hosts that allow progressive audio.",
             ),
             manifest(
                 id = "WEB",

@@ -251,6 +251,7 @@ public final class com/metrolist/innertubex/extraction/ContentHints {
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getAllowBoundedRange ()Z
 	public final fun getAllowHls ()Z
+	public final fun getAllowProgressive ()Z
 	public final fun getAllowSabr ()Z
 	public final fun getEndpointParams ()Ljava/lang/String;
 	public final fun getMaxVideoHeight ()Ljava/lang/Integer;
@@ -268,8 +269,8 @@ public final class com/metrolist/innertubex/extraction/ContentHints {
 	public fun toString ()Ljava/lang/String;
 	public final fun withPremium (Z)Lcom/metrolist/innertubex/extraction/ContentHints;
 	public static synthetic fun withPremium$default (Lcom/metrolist/innertubex/extraction/ContentHints;ZILjava/lang/Object;)Lcom/metrolist/innertubex/extraction/ContentHints;
-	public final fun withStreamCapabilities (ZZZ)Lcom/metrolist/innertubex/extraction/ContentHints;
-	public static synthetic fun withStreamCapabilities$default (Lcom/metrolist/innertubex/extraction/ContentHints;ZZZILjava/lang/Object;)Lcom/metrolist/innertubex/extraction/ContentHints;
+	public final fun withStreamCapabilities (ZZZZ)Lcom/metrolist/innertubex/extraction/ContentHints;
+	public static synthetic fun withStreamCapabilities$default (Lcom/metrolist/innertubex/extraction/ContentHints;ZZZZILjava/lang/Object;)Lcom/metrolist/innertubex/extraction/ContentHints;
 }
 
 public final class com/metrolist/innertubex/extraction/ExtractedMediaMetadata {
@@ -965,6 +966,7 @@ public final class com/metrolist/innertubex/extraction/strategy/PlaybackTranspor
 	public static final field DASH Lcom/metrolist/innertubex/extraction/strategy/PlaybackTransport;
 	public static final field DIRECT Lcom/metrolist/innertubex/extraction/strategy/PlaybackTransport;
 	public static final field HLS Lcom/metrolist/innertubex/extraction/strategy/PlaybackTransport;
+	public static final field PROGRESSIVE Lcom/metrolist/innertubex/extraction/strategy/PlaybackTransport;
 	public static final field SABR Lcom/metrolist/innertubex/extraction/strategy/PlaybackTransport;
 	public static fun getEntries ()Lkotlin/enums/EnumEntries;
 	public static fun valueOf (Ljava/lang/String;)Lcom/metrolist/innertubex/extraction/strategy/PlaybackTransport;
@@ -1861,6 +1863,7 @@ public final class com/metrolist/innertubex/models/YouTubeClient$Companion {
 	public final fun getANDROID_VR_SABR ()Lcom/metrolist/innertubex/models/YouTubeClient;
 	public final fun getIOS ()Lcom/metrolist/innertubex/models/YouTubeClient;
 	public final fun getIOS_MUSIC ()Lcom/metrolist/innertubex/models/YouTubeClient;
+	public final fun getIOS_PRODUCER ()Lcom/metrolist/innertubex/models/YouTubeClient;
 	public final fun getIOS_SABR ()Lcom/metrolist/innertubex/models/YouTubeClient;
 	public final fun getIPADOS ()Lcom/metrolist/innertubex/models/YouTubeClient;
 	public final fun getMEDIA_CONNECT_FRONTEND ()Lcom/metrolist/innertubex/models/YouTubeClient;

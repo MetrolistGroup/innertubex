@@ -1286,6 +1286,8 @@ internal class PlayerClientDirector(
         (response.playabilityStatus.status == "OK" || client.skipPlayerResponseValidation) &&
             if (client.useSabr) {
                 hasUsableSabrAudio(response)
+            } else if (PlaybackClientCatalog.findManifest(client)?.isProgressiveOnly() == true) {
+                hasPlaybackReadyProgressiveAudio(response)
             } else {
                 hasUsableAudioFormat(response) || !response.streamingData?.hlsManifestUrl.isNullOrBlank()
             }
@@ -1303,6 +1305,11 @@ internal class PlayerClientDirector(
             )
         }
     }
+
+    private fun hasPlaybackReadyProgressiveAudio(response: PlayerResponse): Boolean =
+        response.streamingData?.formats.orEmpty().any { format ->
+            format.carriesProgressiveAudio() && format.url?.let { !it.hasNParameter() } == true
+        }
 
     private fun hasUsableVideoTransport(response: PlayerResponse): Boolean {
         val streamingData = response.streamingData ?: return false

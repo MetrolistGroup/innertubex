@@ -6,6 +6,20 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+### Added
+
+- `IOS_PRODUCER` (client ID 92) plays normal, explicit and made-for-kids media without a PO token,
+  login or signature work. YouTube only returns muxed progressive itag 18 (360p video with
+  low-quality AAC) for it, so automatic selection tries it after every other healthy client.
+- `PlaybackTransport.PROGRESSIVE` and `ContentHints.allowProgressive`. Hosts opt in through the new
+  `allowProgressive` parameter of `withStreamCapabilities` once their player can play audio from a
+  file that also carries a video track. It is off by default, and video requests never select it.
+
+### Changed
+
+- `withStreamCapabilities` takes a fourth parameter. Callers recompile unchanged; previously compiled
+  binaries need a rebuild.
+
 ## [0.11.9] - 2026-11-17
 
 ### Fixed

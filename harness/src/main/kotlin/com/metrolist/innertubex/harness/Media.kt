@@ -397,7 +397,7 @@ internal suspend fun probe(
     val format =
         when (stream.mimeType) {
             "audio/webm" -> "matroska"
-            "audio/mp4" -> "mp4"
+            "audio/mp4", "video/mp4" -> "mp4"
             else -> return base.copy(status = "unsupported", reason = "decoder_format")
         }
     val file = Files.createTempFile("harness-audio-", ".bin").toFile()
