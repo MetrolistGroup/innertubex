@@ -6,6 +6,14 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-21
+
+### Fixed
+
+- Streamed watch and embed config parsing avoids repeated whole-page regular expressions,
+  reducing temporary allocations on Android. It preserves player URL precedence and waits
+  for complete signature timestamps across chunk boundaries.
+
 ## [0.12.0] - 2026-11-20
 
 ### Added
