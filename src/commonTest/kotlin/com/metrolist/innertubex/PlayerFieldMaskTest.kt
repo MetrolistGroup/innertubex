@@ -13,6 +13,7 @@ import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.descriptors.StructureKind
 import kotlinx.serialization.descriptors.elementDescriptors
 import kotlinx.serialization.descriptors.elementNames
+import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -50,8 +51,71 @@ class PlayerFieldMaskTest {
                 }
             }
         }
-        walk(PlayerResponse.serializer().descriptor, parseMask(PLAYER_RESPONSE_FIELD_MASK), "PlayerResponse")
+        walk(PlayerResponse.serializer().descriptor, parseMask(PLAYER_RESPONSE_TV_FIELD_MASK), "PlayerResponse")
         assertEquals(emptyList(), missing)
+    }
+
+    @Test
+    fun preRollWaitCountsStartAdsAndPrefersTheSkipOffset() {
+        fun ad(
+            kind: String,
+            fields: String,
+        ) = """{"adPlacementRenderer":{"config":{"adPlacementConfig":{"kind":"$kind"}},""" +
+            """"renderer":{"instreamVideoAdRenderer":{$fields}}}}"""
+        val placements =
+            listOf(
+                ad("AD_PLACEMENT_KIND_START", """"playerVars":"a=1&length_seconds=30&b=2""""),
+                ad("AD_PLACEMENT_KIND_START", """"playerVars":"length_seconds=6","skipOffsetMilliseconds":5000"""),
+                ad("AD_PLACEMENT_KIND_MILLISECONDS", """"playerVars":"length_seconds=15""""),
+            ).joinToString(",")
+        val response =
+            Json { ignoreUnknownKeys = true }
+                .decodeFromString<PlayerResponse>("""{"playabilityStatus":{"status":"OK"},"adPlacements":[$placements]}""")
+
+        assertEquals(35_000L, response.preRollWaitMs())
+        assertEquals(0L, PlayerResponse(PlayerResponse.PlayabilityStatus("OK")).preRollWaitMs())
+    }
+
+    @Test
+    fun preRollWaitRejectsNegativesAndBoundsWireDurationsAndTotals() {
+        fun wait(vararg fields: String): Long {
+            val placements =
+                fields.joinToString(",") {
+                    """{"adPlacementRenderer":{"config":{"adPlacementConfig":{"kind":"AD_PLACEMENT_KIND_START"}},""" +
+                        """"renderer":{"instreamVideoAdRenderer":{$it}}}}"""
+                }
+            return Json
+                .decodeFromString<PlayerResponse>(
+                    """{"playabilityStatus":{"status":"OK"},"adPlacements":[$placements]}""",
+                ).preRollWaitMs()
+        }
+        assertEquals(0L, wait(""""skipOffsetMilliseconds":-1"""))
+        assertEquals(0L, wait(""""playerVars":"length_seconds=-9223372036854775809""""))
+        assertEquals(6_000L, wait(""""skipOffsetMilliseconds":-1,"playerVars":"length_seconds=6""""))
+        assertEquals(35_000L, wait(""""skipOffsetMilliseconds":9223372036854775807"""))
+        assertEquals(35_000L, wait(""""playerVars":"length_seconds=9223372036854775807""""))
+        assertEquals(35_000L, wait(""""playerVars":"length_seconds=9223372036854775808""""))
+        assertEquals(35_000L, wait(*Array(10) { """"skipOffsetMilliseconds":30000""" }))
+    }
+
+    @Test
+    fun maskPreservesDrmMarkersBeforeFormatSelection() {
+        val streaming = parseMask(PLAYER_RESPONSE_FIELD_MASK)["streamingData"] as Map<*, *>
+        assertTrue("drmParams" in streaming)
+        assertTrue("licenseInfos" in streaming)
+        for (selection in listOf(streaming["formats"] as Map<*, *>, streaming["adaptiveFormats"] as Map<*, *>)) {
+            assertTrue("drmFamilies" in selection)
+            assertTrue("drmTrackType" in selection)
+        }
+    }
+
+    @Test
+    fun maskOmitsDrmPathsTheServerRejects() {
+        // Each of these returned HTTP 400 live, which would disable the whole mask.
+        val streaming = parseMask(PLAYER_RESPONSE_FIELD_MASK)["streamingData"] as Map<*, *>
+        val format = streaming["adaptiveFormats"] as Map<*, *>
+        for (path in listOf("drmFamilies", "drmTrackType", "widevine", "contentProtection")) assertTrue(path !in streaming)
+        for (path in listOf("drmParams", "licenseInfos", "widevine", "contentProtection")) assertTrue(path !in format)
     }
 
     @Test

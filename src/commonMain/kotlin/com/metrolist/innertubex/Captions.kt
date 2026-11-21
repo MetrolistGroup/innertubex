@@ -6,6 +6,7 @@ import com.metrolist.innertubex.models.response.GetTranscriptResponse
 import io.ktor.client.statement.HttpResponse
 import io.ktor.http.Url
 import io.ktor.http.isSuccess
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -23,7 +24,7 @@ public data class TranscriptCue(
 
 /** Decodes a bounded JSON object without relying on an unbounded content-negotiation read. */
 public suspend fun HttpResponse.bodyAsJsonObjectLimited(maxBytes: Int): JsonObject =
-    RESPONSE_JSON.parseToJsonElement(bodyAsTextLimited(maxBytes)).jsonObject
+    decodeResponseJson { RESPONSE_JSON.parseToJsonElement(bodyAsTextLimited(maxBytes)).jsonObject }
 
 /** Requests and parses transcript cues with bounded response, cue-count, and cue-text allocations. */
 public suspend fun InnerTube.transcriptCues(
@@ -37,43 +38,48 @@ public suspend fun InnerTube.transcriptCues(
 }
 
 private fun parseTranscriptCues(body: String): List<TranscriptCue> {
-    val transcript = RESPONSE_JSON.decodeFromString<GetTranscriptResponse>(body)
+    val transcript = decodeResponseJson { RESPONSE_JSON.decodeFromString<GetTranscriptResponse>(body) }
     val groups =
         transcript.actions
-            ?.firstOrNull()
-            ?.updateEngagementPanelAction
-            ?.content
-            ?.transcriptRenderer
-            ?.body
-            ?.transcriptBodyRenderer
-            ?.cueGroups
+            ?.firstNotNullOfOrNull { action ->
+                action.updateEngagementPanelAction
+                    ?.content
+                    ?.transcriptRenderer
+                    ?.body
+                    ?.transcriptBodyRenderer
+            }?.cueGroups
             .orEmpty()
     require(groups.size <= MAX_TRANSCRIPT_CUES) { "Transcript cue count exceeded the supported limit" }
-    return groups.mapNotNull { group ->
-        val cue =
-            group.transcriptCueGroupRenderer
-                ?.cues
-                ?.firstOrNull()
-                ?.transcriptCueRenderer ?: return@mapNotNull null
-        val text =
-            cue.cue
-                ?.simpleText
-                ?.trim('\u266a')
-                ?.trim()
-                ?.takeIf { it.isNotBlank() && it.length <= MAX_TRANSCRIPT_CUE_TEXT_LENGTH }
-                ?: return@mapNotNull null
-        TranscriptCue(
-            text = text,
-            startMs = cue.startOffsetMs ?: return@mapNotNull null,
-            durationMs = cue.durationMs ?: 0L,
-        )
+    val cues = ArrayList<TranscriptCue>()
+    for (group in groups) {
+        for (entry in group.transcriptCueGroupRenderer?.cues.orEmpty()) {
+            val cue = entry.transcriptCueRenderer ?: continue
+            val text =
+                cue.cue
+                    ?.simpleText
+                    ?.trim('\u266a')
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() && it.length <= MAX_TRANSCRIPT_CUE_TEXT_LENGTH }
+                    ?: continue
+            val startMs = cue.startOffsetMs ?: continue
+            require(cues.size < MAX_TRANSCRIPT_CUES) { "Transcript cue count exceeded the supported limit" }
+            cues += TranscriptCue(text = text, startMs = startMs, durationMs = cue.durationMs ?: 0L)
+        }
     }
+    return cues
 }
 
 /** Fetches a public YouTube caption track without redirects, cookies, or account headers. */
 public suspend fun InnerTube.fetchCaptionText(url: String): String {
     val captionUrl = validatedCaptionUrl(url)
-    val response = httpClient.getTextWithoutRedirects(captionUrl, MAX_CAPTION_BYTES)
+    val response =
+        try {
+            httpClient.getTextWithoutRedirects(captionUrl, MAX_CAPTION_BYTES)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            throw IllegalStateException("Caption request failed")
+        }
     if (!response.status.isSuccess()) {
         throw InnerTubeHttpException("fetchCaptionText", response.status)
     }
@@ -102,7 +108,19 @@ private fun validatedCaptionUrl(value: String): Url {
     return url
 }
 
-private val RESPONSE_JSON = Json { ignoreUnknownKeys = true }
+private inline fun <T> decodeResponseJson(block: () -> T): T =
+    try {
+        block()
+    } catch (_: IllegalArgumentException) {
+        throw IllegalArgumentException("Invalid response JSON")
+    }
+
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+private val RESPONSE_JSON =
+    Json {
+        ignoreUnknownKeys = true
+        exceptionsWithDebugInfo = false
+    }
 private val SAFE_VIDEO_ID = Regex("[A-Za-z0-9_-]{1,64}")
 private const val MAX_TRANSCRIPT_BYTES = 4 * 1024 * 1024
 private const val MAX_TRANSCRIPT_CUES = 20_000

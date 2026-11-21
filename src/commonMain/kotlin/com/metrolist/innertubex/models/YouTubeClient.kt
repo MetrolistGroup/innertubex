@@ -525,6 +525,19 @@ data class YouTubeClient(
                 includeUserAgentInContext = true,
             )
 
+        /** Tokenless TV profile from yt-dlp. Needs the web cipher; media unlocks after pre-roll ads would end. */
+        val TVHTML5_SAMSUNG =
+            TVHTML5_DOWNGRADED.copy(
+                userAgent =
+                    "Mozilla/5.0 (SMART-TV; Linux; Tizen 2.4.0) AppleWebKit/538.1 " +
+                        "(KHTML, like Gecko) Version/2.4.0 TV Safari/538.1",
+                osName = "Tizen",
+                osVersion = "2.4.0",
+                deviceMake = "Samsung",
+                deviceModel = "UKS9800",
+                friendlyName = "TV HTML5 Samsung",
+            )
+
         /** Historical probe identity: iOS Music client ID 26, current source evidence only. */
         val IOS_MUSIC =
             YouTubeClient(
@@ -564,6 +577,20 @@ data class YouTubeClient(
                 osVersion = "11",
                 androidSdkVersion = "30",
                 friendlyName = "Android Producer probe",
+            )
+
+        /** Client ID 92. Tokenless, but YouTube only returns muxed progressive itag 18 for it. */
+        val IOS_PRODUCER =
+            YouTubeClient(
+                clientName = "IOS_PRODUCER",
+                clientVersion = "0.10",
+                clientId = "92",
+                userAgent = "com.google.ios.youtubeproducer/0.10 (iPhone16,2; U; CPU iOS 18_6_2 like Mac OS X;)",
+                osName = "iPhone",
+                osVersion = "18.6.2.22G100",
+                deviceMake = "Apple",
+                deviceModel = "iPhone16,2",
+                friendlyName = "iOS Producer progressive",
             )
 
         /** Historical probe identity: Media Connect Frontend client ID 95, current source evidence only. */

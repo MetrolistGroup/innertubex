@@ -39,7 +39,10 @@ public fun extractWebPageAttestationContext(webPage: String): WebPageAttestation
 /** Returns the BotGuard challenge from a page, or null when it cannot be extracted. */
 public fun extractWebPageAttestationChallenge(webPage: String): String? {
     requireSize(webPage, WEB_PAGE_LIMIT, "web page")
-    val rawChallengeData = extractYtAtN(webPage) ?: extractYtAtR(webPage) ?: return null
+    return extractYtAtN(webPage) ?: extractYtAtR(webPage)?.let(::validatedChallenge)
+}
+
+private fun validatedChallenge(rawChallengeData: String): String? {
     val challenge =
         runCatching {
             val root = Json.parseToJsonElement(rawChallengeData).jsonObject
@@ -74,7 +77,7 @@ internal fun extractYtAtN(webPage: CharSequence): String? {
     while (position < webPage.length) {
         val call = YT_AT_N.find(webPage, position) ?: break
         val scan = extractYtAtNCall(webPage, call.range.last + 1)
-        scan.value?.let { return it }
+        scan.value?.let(::validatedChallenge)?.let { return it }
         // Never retry a prefix inside the suffix we have already scanned.
         position = scan.end
     }

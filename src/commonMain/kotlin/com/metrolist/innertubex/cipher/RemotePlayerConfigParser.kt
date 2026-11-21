@@ -164,14 +164,12 @@ internal fun faradayCipherPlayerUrl(playerUrl: String): String? =
         "https://www.youtube.com/s/player/$hash/player_ias.vflset/en_GB/base.js"
     }
 
-private val LOCALIZED_IAS_PLAYER_URL =
-    Regex("^https://www\\.youtube\\.com/s/player/([A-Za-z0-9_-]+)/player_ias\\.vflset/[A-Za-z]{2,3}(?:_[A-Za-z]{2,4})?/base\\.js$")
+private val PLAYER_VARIANT_PATH = Regex("/s/player/[a-f0-9]{8}/[^/]+\\.vflset/")
 
 /**
- * Locale variants of the same `player_ias` build are functionally identical. Mapping them to the variant
- * the remote configs are validated against lets every cipher path share one download and cache entry.
+ * Every script variant of one player build (locale, `es6`, embed, TV) carries the same signature and n code.
+ * Mapping them to the `player_ias` variant the Kotlin runtime and remote configs are verified against lets
+ * every cipher path share one download, and keeps variants the runtime cannot parse from disabling ciphers.
  */
 internal fun canonicalPlayerUrl(playerUrl: String): String =
-    LOCALIZED_IAS_PLAYER_URL.matchEntire(playerUrl)?.let { match ->
-        "https://www.youtube.com/s/player/${match.groupValues[1]}/player_ias.vflset/en_GB/base.js"
-    } ?: playerUrl
+    if (PLAYER_VARIANT_PATH.containsMatchIn(playerUrl)) faradayCipherPlayerUrl(playerUrl) ?: playerUrl else playerUrl

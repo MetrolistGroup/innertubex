@@ -22,6 +22,9 @@ object PlaybackClientCatalog {
     private const val SOURCE_YOUTUBE_JS = "YouTube.js client constants"
     private const val SOURCE_HISTORICAL_CLIENTS = "YouTube-Internal-Clients survey (2022)"
     private const val SOURCE_PYTUBEFIX = "pytubefix innertube.py (b6521f09)"
+    private const val SOURCE_CLIENT_ID_SURVEY = "InnerTube client ID survey (2026-11-19)"
+    private const val SOURCE_DEVICE_BENCHMARK_NOVEMBER = "Android device client benchmark (2026-11-19)"
+    private const val SOURCE_SENTRY_14_0_1 = "Sentry playback failures, release 14.0.1"
 
     private val webProviders =
         setOf(PoTokenProviderKind.WEB_BOTGUARD, PoTokenProviderKind.WEBPAGE_ATTESTATION, PoTokenProviderKind.EXTERNAL)
@@ -137,7 +140,7 @@ object PlaybackClientCatalog {
                 id = "ANDROID_VR_1_65_10",
                 client = YouTubeClient.ANDROID_VR_1_65_10,
                 displayName = "Android VR 1.65.10",
-                lifecycle = ClientLifecycle.STABLE,
+                lifecycle = ClientLifecycle.BROKEN,
                 selectionMode = ClientSelectionMode.PROBE_ONLY,
                 priority = 40,
                 transports = setOf(PlaybackTransport.DIRECT),
@@ -145,8 +148,9 @@ object PlaybackClientCatalog {
                 benchmarkContent = globallyUnusableContent(),
                 evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP, SOURCE_YOUTUBE_JS),
                 notes =
-                    "A live anonymous visitor request resolved, but every audio itag reached a CDN 403 after " +
-                        "1 MiB. Kept for explicit benchmark probing only.",
+                    "2026-11-06 anonymous tokenless probes resolved normal audio, but the first 512 KiB range " +
+                        "returned HTTP 206 and the next returned HTTP 403 in cold and warm runs. " +
+                        "Kept for explicit benchmark probing only.",
             ),
             manifest(
                 id = "ANDROID_VR_1_43_32",
@@ -240,6 +244,33 @@ object PlaybackClientCatalog {
                         "Retained for explicit compatibility testing only.",
             ),
             manifest(
+                id = "TVHTML5_SAMSUNG",
+                client = YouTubeClient.TVHTML5_SAMSUNG,
+                displayName = "TV HTML5 Samsung",
+                lifecycle = ClientLifecycle.EXPERIMENTAL,
+                selectionMode = ClientSelectionMode.MANUAL_ONLY,
+                priority = 72,
+                authentication = AuthenticationPolicy.OPTIONAL,
+                transports = setOf(PlaybackTransport.DIRECT),
+                request =
+                    ClientRequestCapabilities(
+                        signatureTimestamp = true,
+                        signatureCipher = JavaScriptRequirement.RESPONSE_DEPENDENT,
+                        nTransform = JavaScriptRequirement.RESPONSE_DEPENDENT,
+                        cookies = true,
+                    ),
+                content =
+                    unverifiedProbeContent().copy(
+                        normal = CapabilitySupport.SUPPORTED,
+                        kids = CapabilitySupport.SUPPORTED,
+                    ),
+                evidence = setOf(SOURCE_YTDLP),
+                notes =
+                    "Tokenless direct audio passed anonymous normal and made-for-kids samples and 90-second playback " +
+                        "with seeks (November 2026). Media is forbidden until pre-roll ads would end, 6-30 seconds " +
+                        "after the player response, so extraction waits. Manual only: too slow to start automatically.",
+            ),
+            manifest(
                 id = "WEB_REMIX",
                 client = YouTubeClient.WEB_REMIX,
                 displayName = "Web Remix",
@@ -328,8 +359,8 @@ object PlaybackClientCatalog {
                 id = "WEB_EMBEDDED_PLAYER",
                 client = YouTubeClient.WEB_EMBEDDED_PLAYER,
                 displayName = "Web Embedded",
-                lifecycle = ClientLifecycle.STABLE,
-                selectionMode = ClientSelectionMode.AUTOMATIC,
+                lifecycle = ClientLifecycle.BROKEN,
+                selectionMode = ClientSelectionMode.PROBE_ONLY,
                 priority = 65,
                 authentication = AuthenticationPolicy.OPTIONAL,
                 transports = setOf(PlaybackTransport.DIRECT, PlaybackTransport.HLS),
@@ -341,22 +372,24 @@ object PlaybackClientCatalog {
                     ),
                 content =
                     ClientContentCapabilities(
-                        normal = CapabilitySupport.SUPPORTED,
+                        normal = CapabilitySupport.UNSUPPORTED,
                         explicit = CapabilitySupport.UNKNOWN,
-                        kids = CapabilitySupport.SUPPORTED,
+                        kids = CapabilitySupport.UNSUPPORTED,
                         ageRestricted = CapabilitySupport.UNSUPPORTED,
                         live = CapabilitySupport.UNSUPPORTED,
                         uploads = CapabilitySupport.UNSUPPORTED,
                     ),
                 benchmarkContent =
                     ClientContentCapabilities(
+                        normal = CapabilitySupport.UNSUPPORTED,
                         explicit = CapabilitySupport.UNSUPPORTED,
-                        kids = CapabilitySupport.SUPPORTED,
+                        kids = CapabilitySupport.UNSUPPORTED,
                     ),
                 evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP, SOURCE_YOUTUBE_JS),
                 notes =
-                    "Normal and made-for-kids playback passed sustained playback and both seek directions after " +
-                        "fetching per-video encryptedHostFlags; age-restricted media was rejected.",
+                    "2026-11-06 anonymous tokenless probes returned NO_PLAYABLE_STREAM for normal and " +
+                        "made-for-kids videos in cold and warm runs with per-video encryptedHostFlags. " +
+                        "Age-restricted playback remains unsupported. Kept for explicit probing only.",
             ),
             /*
              * Disabled after the normal case timed out and the other two cases failed to resolve.
@@ -541,7 +574,7 @@ object PlaybackClientCatalog {
                 client = YouTubeClient.MWEB_SABR,
                 displayName = "Mobile Web (SABR)",
                 lifecycle = ClientLifecycle.EXPERIMENTAL,
-                selectionMode = ClientSelectionMode.AUTOMATIC,
+                selectionMode = ClientSelectionMode.PROBE_ONLY,
                 priority = 32,
                 authentication = AuthenticationPolicy.OPTIONAL,
                 transports = setOf(PlaybackTransport.SABR),
@@ -549,27 +582,45 @@ object PlaybackClientCatalog {
                 request = webRequest.copy(webView = WebViewRequirement.REQUIRED_TOKEN_MINTING),
                 content = validatedProbeWebContent,
                 benchmarkContent = validatedProbeWebContent.copy(explicit = CapabilitySupport.LIMITED),
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_ANDROID_SABR_BENCHMARK, SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP),
+                evidence =
+                    setOf(
+                        SOURCE_ANDROID_BENCHMARK,
+                        SOURCE_ANDROID_SABR_BENCHMARK,
+                        SOURCE_DEVICE_BENCHMARK_NOVEMBER,
+                        SOURCE_SENTRY_14_0_1,
+                        SOURCE_PLAYBACK_MATRIX,
+                        SOURCE_YTDLP,
+                    ),
                 notes =
-                    "Passed 5 of 6 current cases with 90-second playback and bidirectional seeks. One explicit " +
-                        "sample had a media failure; runtime health fallback remains enabled.",
+                    "Probe-only since November 2026: a signed-in device benchmark failed 3 of 4 recorded cases " +
+                        "with media HTTP 4xx and no playback advancement, and it was the most common final profile " +
+                        "of exhausted stream retries in release 14.0.1. Earlier benchmarks passed 5 of 6 cases.",
             ),
             manifest(
                 id = "WEB_SAFARI_SABR",
                 client = YouTubeClient.WEB_SAFARI_SABR,
                 displayName = "Web Safari (SABR)",
                 lifecycle = ClientLifecycle.EXPERIMENTAL,
-                selectionMode = ClientSelectionMode.AUTOMATIC,
+                selectionMode = ClientSelectionMode.PROBE_ONLY,
                 priority = 28,
                 authentication = AuthenticationPolicy.OPTIONAL,
                 transports = setOf(PlaybackTransport.SABR),
                 poTokens = ClientPoTokenCapabilities(player = webPlayerNotRequired, gvs = pageBoundGvsRequired),
                 request = webRequest.copy(webView = WebViewRequirement.REQUIRED_TOKEN_MINTING),
                 content = validatedProbeWebContent,
-                evidence = setOf(SOURCE_ANDROID_BENCHMARK, SOURCE_ANDROID_SABR_BENCHMARK, SOURCE_PLAYBACK_MATRIX, SOURCE_YTDLP),
+                evidence =
+                    setOf(
+                        SOURCE_ANDROID_BENCHMARK,
+                        SOURCE_ANDROID_SABR_BENCHMARK,
+                        SOURCE_DEVICE_BENCHMARK_NOVEMBER,
+                        SOURCE_SENTRY_14_0_1,
+                        SOURCE_PLAYBACK_MATRIX,
+                        SOURCE_YTDLP,
+                    ),
                 notes =
-                    "Page-bound GVS tokens passed all 6 current normal, explicit, and made-for-kids cases with " +
-                        "90-second playback, bidirectional seeks, and complete telemetry.",
+                    "Probe-only since November 2026: a signed-in device benchmark failed 4 of 5 cases with media " +
+                        "HTTP 4xx and no playback advancement, and it was the second most common final profile of " +
+                        "exhausted stream retries in release 14.0.1. Earlier benchmarks passed all 6 cases.",
             ),
             /*
              * Disabled after the 2026-08-13 Android playback benchmark passed 0/3 cases.
@@ -935,6 +986,28 @@ object PlaybackClientCatalog {
                 content = unverifiedProbeContent(),
                 evidence = setOf(SOURCE_PYTUBEFIX, SOURCE_HISTORICAL_CLIENTS),
                 notes = "Historical Media Connect identity and app fields; playback and transport support are unverified.",
+            ),
+            manifest(
+                id = "IOS_PRODUCER",
+                client = YouTubeClient.IOS_PRODUCER,
+                displayName = "iOS Producer progressive",
+                lifecycle = ClientLifecycle.EXPERIMENTAL,
+                selectionMode = ClientSelectionMode.AUTOMATIC,
+                priority = 0,
+                transports = setOf(PlaybackTransport.PROGRESSIVE),
+                content =
+                    ClientContentCapabilities(
+                        explicit = CapabilitySupport.SUPPORTED,
+                        kids = CapabilitySupport.SUPPORTED,
+                        live = CapabilitySupport.UNSUPPORTED,
+                    ),
+                evidence = setOf(SOURCE_CLIENT_ID_SURVEY, SOURCE_DEVICE_BENCHMARK_NOVEMBER),
+                notes =
+                    "Anonymous tokenless requests return direct, unciphered itag 18 (360p video with low-quality " +
+                        "AAC) for normal, explicit and made-for-kids media; full files downloaded without throttling. " +
+                        "No adaptive, HLS or SABR formats for any accepted version (0.10-0.99). Live replays are " +
+                        "unplayable. A signed-in device benchmark passed 4 of 5 recorded cases with 90-second " +
+                        "playback and seeks. Automatic only as the last fallback for hosts that allow progressive audio.",
             ),
             manifest(
                 id = "WEB",

@@ -497,7 +497,7 @@ internal suspend fun playbackProbe(
         )
     onProgress(base)
     if (!matchesProfile(requested, stream)) return base.copy(reason = "profile_mismatch")
-    if (base.transport != "HLS" && stream.mimeType !in setOf("audio/webm", "audio/mp4")) {
+    if (base.transport != "HLS" && stream.mimeType !in setOf("audio/webm", "audio/mp4", "video/mp4")) {
         return base.copy(reason = "decoder_format")
     }
     if (requested !in AUTOMATIC_SELECTIONS &&

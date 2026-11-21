@@ -43,5 +43,7 @@ interface ClientFallbackStrategy {
     fun resolveClients(hints: ContentHints): List<YouTubeClient>
 
     fun selectClients(request: ClientSelectionRequest): ClientSelectionResult =
-        ClientSelectionResult(resolveClients(request.hints).map(::SelectedClient))
+        ClientSelectionResult(
+            resolveClients(request.hints).map { client -> SelectedClient(client, PlaybackClientCatalog.findManifest(client)) },
+        )
 }

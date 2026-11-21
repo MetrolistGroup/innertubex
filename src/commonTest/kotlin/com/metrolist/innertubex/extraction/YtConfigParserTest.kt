@@ -18,8 +18,75 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
+import kotlin.time.measureTime
 
 class YtConfigParserTest {
+    @Test
+    fun loosePlayerUrlScanHasMeasuredBoundedCost() {
+        val parser = parser()
+        val page = "/s/player/" + "/".repeat(8_192)
+        val legacy = Regex("""(?<![A-Za-z0-9:/])(/s/player/[^"'\\]+/[^"'\\]*\.js[^"'\\]*)""")
+        val legacyTime = List(3) { measureTime { assertNull(legacy.find(page)) } }.sorted()[1]
+        val currentTime = List(3) { measureTime { assertNull(parser.extractPlayerUrl(page)) } }.sorted()[1]
+        println("Loose player URL scan, 8192 slashes: legacy=$legacyTime current=$currentTime")
+        assertTrue(currentTime < legacyTime / 4, "Malformed player paths must avoid overlapping repetitions")
+        assertEquals(
+            "https://www.youtube.com/s/player/abc/player_ias.vflset/en_US/base.js",
+            parser.extractPlayerUrl(" /s/player/abc/player_ias.vflset/en_US/base.js"),
+        )
+    }
+
+    @Test
+    fun decodesEscapedConfigStrings() =
+        runBlocking {
+            val html =
+                """{"jsUrl":"/s/player/abc123/base.js","STS":20668,"visitorData":"visitor\u003d", """ +
+                    """"INNERTUBE_CLIENT_VERSION":"2\u002e0","encryptedHostFlags":"a\/b\"c"}"""
+            val client = HttpClient(MockEngine { respond(html) })
+            val innerTube = InnerTube(client)
+            try {
+                val config = YtConfigParserImpl(client, innerTube).fetchEmbeddedConfig("video")
+                assertEquals("visitor=", config.visitorData)
+                assertEquals("2.0", config.clientVersion)
+                assertEquals("a/b\"c", config.encryptedHostFlags)
+            } finally {
+                innerTube.close()
+                client.close()
+            }
+        }
+
+    @Test
+    fun rejectsIncompleteInvalidAndOversizedConfigStrings() {
+        val parser = parser()
+        assertNull(parser.extractClientVersion("""{"INNERTUBE_CLIENT_VERSION":"unfinished\"}"""))
+        assertNull(parser.extractEncryptedHostFlags("""{"encryptedHostFlags":"invalid\q"}"""))
+        val large = "x".repeat(64 * 1024)
+        assertNull(parser.extractEncryptedHostFlags("""{"encryptedHostFlags":"$large"}"""))
+    }
+
+    @Test
+    fun timestampSurvivesHtmlApostrophesAndRegexQuotes() {
+        val parser = parser()
+        assertEquals(20668, parser.extractSignatureTimestamp("<p>Don't stop</p><script>var c={STS:20668};</script>"))
+        assertEquals(20668, parser.extractSignatureTimestamp("""var quote=/["']/; var c={STS:20668};"""))
+        assertEquals(20668, parser.extractSignatureTimestamp("""var decoy=/signatureTimestamp:12345["']/; var c={STS:20668};"""))
+        assertEquals(
+            20668,
+            parser.extractSignatureTimestamp("<p>Don't stop</p><script>/* STS:12345 */ 'sts:12345'</script><script>{STS:20668}"),
+        )
+    }
+
+    @Test
+    fun timestampIgnoresStringsAndComments() {
+        val parser = parser()
+        assertEquals(20668, parser.extractSignatureTimestamp("""{"STS":20668,"title":"signatureTimestamp:12345"}"""))
+        assertEquals(20668, parser.extractSignatureTimestamp("""{"title":"signatureTimestamp:12345","STS":20668}"""))
+        assertEquals(20668, parser.extractSignatureTimestamp("/* signatureTimestamp:12345 */ {sts:20668}"))
+        assertEquals(20668, parser.extractSignatureTimestamp("// signatureTimestamp:12345\n{sts:20668}"))
+        assertNull(parser.extractSignatureTimestamp("""{"title":"signatureTimestamp:12345"}"""))
+    }
+
     @Test
     fun extractsConfigFieldsAndRejectsUnsafePlayerUrls() {
         val parser = parser()
@@ -238,6 +305,62 @@ class YtConfigParserTest {
                 YtConfigParserImpl(client, InnerTube(client)).fetchConfig("video")
             }
             client.close()
+        }
+
+    @Test
+    fun playerUrlSearchSkipsEmptyKeysAndInvalidLooseBoundaries() {
+        val parser = parser()
+        val expected = "https://www.youtube.com/s/player/abc/base.js"
+        assertEquals(expected, parser.extractPlayerUrl("\"jsUrl\":\"\",\"jsUrl\":\"/s/player/abc/base.js\""))
+        assertEquals(expected, parser.extractPlayerUrl("x/s/player/decoy/base.js /s/player/abc/base.js"))
+    }
+
+    @Test
+    fun scansScriptBoundariesWithoutMatchingPageText() {
+        val parser = parser()
+        assertEquals(20668, parser.extractSignatureTimestamp("<script>/* STS:12345 */</script><SCRIPT data-x='y'>{STS:20668}</SCRIPT >"))
+        assertEquals(20668, parser.extractSignatureTimestamp("<scripture>{STS:12345}</scripture><script src='x'>{STS:20668}"))
+        assertNull(parser.extractSignatureTimestamp("<p>{STS:12345}</p>"))
+        assertEquals(20668, parser.extractSignatureTimestamp("{STS:20668}"))
+        assertEquals(20668, parser.extractSignatureTimestamp("<script>{STS:20668}</scriptx>"))
+    }
+
+    @Test
+    fun streamedTimestampWaitsForCompleteScripts() {
+        val parser = parser()
+        val page = "<p>STS:12345</p><script>/* STS:12345 */</script><SCRIPT x='y'>{signatureTimestamp:20668}</SCRIPT   >"
+        val scan = parser.SignatureTimestampScan()
+        for (length in 1 until page.length) assertNull(scan.scan(page.take(length)), "prefix $length")
+        assertEquals(20668, scan.scan(page))
+        val trailing = parser.SignatureTimestampScan()
+        assertNull(trailing.scan("<script>{STS:206"))
+        assertNull(trailing.scan("<script>{STS:20668}"))
+        assertEquals(20668, trailing.scan("<script>{STS:20668}", final = true))
+    }
+
+    @Test
+    fun stopsAfterTimestampArrivesInSplitScript() =
+        runBlocking {
+            val page = ByteChannel()
+            val writer =
+                launch {
+                    page.writeStringUtf8(
+                        "<script>{\"jsUrl\":\"/s/player/abc123/base.js\",\"visitorData\":\"visitor\"," +
+                            "\"INNERTUBE_CLIENT_VERSION\":\"2.0\"}</script>" + " ".repeat(40 * 1024) + "<script>{STS:206",
+                    )
+                    page.flush()
+                    delay(100)
+                    page.writeStringUtf8("68}</script>" + " ".repeat(80 * 1024))
+                    page.flush()
+                }
+            val client = HttpClient(MockEngine { respond(page, HttpStatusCode.OK) })
+            try {
+                val config = withTimeout(5_000) { YtConfigParserImpl(client, InnerTube(client)).fetchConfig("video") }
+                assertEquals(20668, config.signatureTimestamp)
+            } finally {
+                writer.cancel()
+                client.close()
+            }
         }
 
     private fun parser() = YtConfigParserImpl(HttpClient(MockEngine { respond("{}") }), InnerTube(HttpClient(MockEngine { respond("{}") })))

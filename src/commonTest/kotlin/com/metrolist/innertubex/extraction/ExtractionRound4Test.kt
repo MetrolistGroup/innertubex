@@ -36,9 +36,9 @@ class ExtractionRound4Test {
             )
         val ids = strategy.selectClients(request).candidates.map { it.manifest!!.id }
         for (direct in listOf("WEB_REMIX", "WEB_CREATOR")) {
-            for (sabr in SABR_ORDER) assertTrue(ids.indexOf(direct) < ids.indexOf(sabr))
+            for (sabr in listOf("WEB_REMIX_SABR", "WEB_SABR")) assertTrue(ids.indexOf(direct) < ids.indexOf(sabr))
         }
-        assertTrue("WEB_SAFARI" !in ids && "MWEB" !in ids)
+        assertTrue(listOf("WEB_SAFARI", "MWEB", "WEB_SAFARI_SABR", "MWEB_SABR").none { it in ids })
         val premium = strategy.selectClients(request.copy(hints = request.hints.withPremium(), premium = true)).candidates
         assertTrue(premium.indexOfFirst { it.manifest!!.id == "WEB_REMIX" } < premium.indexOfFirst { it.manifest!!.id == "WEB_REMIX_SABR" })
     }
@@ -60,21 +60,21 @@ class ExtractionRound4Test {
         }
 
     @Test
-    fun remixSuccessMintsNothingAndWebFallbackMintsOnceOnlyWhenAttempted() =
+    fun remixAndWebSuccessMintOnceOnlyForThePlayableClient() =
         runBlocking {
             for (hinted in listOf(false, true)) {
                 for (success in listOf("WEB_REMIX_SABR", "WEB_SABR")) {
                     val fixture = Fixture(hinted, success)
                     try {
                         val batch = fixture.director().fetchPlayerResponses("video", CONFIG, ContentHints(isAgeRestricted = hinted))
-                        val tokenized = success == "WEB_SABR"
-                        assertEquals("${success}__${if (tokenized) "po" else "nopo"}", batch.playableResponses.single().profileId)
-                        assertEquals(if (tokenized) 1 else 0, fixture.tokens.calls)
+                        val webFallback = success == "WEB_SABR"
+                        assertEquals("${success}__po", batch.playableResponses.single().profileId)
+                        assertEquals(1, fixture.tokens.calls)
                         assertEquals(
-                            (if (hinted) emptyList() else listOf("VISIONOS")) + SABR_ORDER.take(if (tokenized) 2 else 1),
+                            (if (hinted) emptyList() else listOf("VISIONOS")) + SABR_ORDER.take(if (webFallback) 2 else 1),
                             fixture.requests,
                         )
-                        if (tokenized) assertEquals("AQID", batch.playableResponses.single().streamingDataPoToken)
+                        assertEquals("AQID", batch.playableResponses.single().streamingDataPoToken)
                     } finally {
                         fixture.client.close()
                     }

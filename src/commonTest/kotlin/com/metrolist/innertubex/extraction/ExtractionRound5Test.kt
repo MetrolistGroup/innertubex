@@ -32,7 +32,7 @@ class ExtractionRound5Test {
                     val result = fixture.fetch().playableResponses.single()
                     assertEquals("WEB_REMIX__po", result.profileId)
                     assertFalse(result.useSabr)
-                    assertEquals(listOf("VISIONOS", "WEB_EMBEDDED_PLAYER", "WEB_REMIX"), fixture.requests)
+                    assertEquals(listOf("VISIONOS", "WEB_REMIX"), fixture.requests)
                     assertEquals(1, fixture.tokens.calls)
                 } finally {
                     fixture.client.close()
@@ -53,7 +53,7 @@ class ExtractionRound5Test {
                     val result = fixture.fetch().playableResponses.single()
                     assertEquals("WEB_REMIX__po", result.profileId)
                     assertFalse(result.useSabr)
-                    assertEquals(listOf("VISIONOS", "WEB_EMBEDDED_PLAYER", "WEB_REMIX"), fixture.requests)
+                    assertEquals(listOf("VISIONOS", "WEB_REMIX"), fixture.requests)
                     assertEquals(1, fixture.tokens.calls)
                 } finally {
                     fixture.client.close()
@@ -69,7 +69,7 @@ class ExtractionRound5Test {
                 val result = fixture.fetch(ContentHints().withPremium()).playableResponses.single()
                 assertEquals("WEB_REMIX__nopo", result.profileId)
                 assertFalse(result.useSabr)
-                assertEquals(listOf("VISIONOS", "WEB_EMBEDDED_PLAYER", "WEB_REMIX"), fixture.requests)
+                assertEquals(listOf("VISIONOS", "WEB_REMIX"), fixture.requests)
                 assertEquals(0, fixture.tokens.calls)
             } finally {
                 fixture.client.close()

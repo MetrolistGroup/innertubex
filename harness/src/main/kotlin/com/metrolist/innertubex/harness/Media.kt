@@ -60,6 +60,22 @@ internal fun allowedMedia(url: String): Boolean =
             value.encodedPath == "/videoplayback"
     }.getOrDefault(false)
 
+/** Follows CDN redirects between media endpoints only, as every app media reader does; other requests keep no-redirect. */
+internal object MediaRedirects : okhttp3.Interceptor {
+    override fun intercept(chain: okhttp3.Interceptor.Chain): okhttp3.Response {
+        var request = chain.request()
+        if (!allowedMedia(request.url.toString())) return chain.proceed(request)
+        repeat(6) {
+            val response = chain.proceed(request)
+            val target = response.header("Location")?.let(request.url::resolve)
+            if (!response.isRedirect || target == null || !allowedMedia(target.toString())) return response
+            response.close()
+            request = request.newBuilder().url(target).build()
+        }
+        throw java.io.IOException("Media exceeded the redirect limit")
+    }
+}
+
 private fun ms(start: Long): Long = (System.nanoTime() - start) / 1_000_000
 
 internal fun sabrHttpStatus(status: Int?): String = status?.toString() ?: "unknown"
@@ -381,7 +397,7 @@ internal suspend fun probe(
     val format =
         when (stream.mimeType) {
             "audio/webm" -> "matroska"
-            "audio/mp4" -> "mp4"
+            "audio/mp4", "video/mp4" -> "mp4"
             else -> return base.copy(status = "unsupported", reason = "decoder_format")
         }
     val file = Files.createTempFile("harness-audio-", ".bin").toFile()

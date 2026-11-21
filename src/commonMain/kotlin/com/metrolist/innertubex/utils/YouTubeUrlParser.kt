@@ -86,7 +86,14 @@ object YouTubeUrlParser {
     private fun parseUrl(value: String): Url? {
         val input = value.trim()
         if (input.isEmpty() || input.any(Char::isWhitespace)) return null
-        val candidate = if (input.startsWith("https://") || input.startsWith("http://")) input else "https://$input"
+        val candidate =
+            if (input.startsWith("https://", ignoreCase = true) ||
+                input.startsWith("http://", ignoreCase = true)
+            ) {
+                input
+            } else {
+                "https://$input"
+            }
         return runCatching { Url(candidate) }
             .getOrNull()
             ?.takeIf { it.protocol.name in setOf("http", "https") && !it.hasUserInfo() }

@@ -99,7 +99,10 @@ class ContentAwareFallbackStrategy(
                         PlaybackTransportPreference.AUTO -> {
                             when {
                                 // Repeatedly failing clients go behind every healthy transport instead of only losing points.
-                                it.manifest?.id in healthDemoted -> 3
+                                it.manifest?.id in healthDemoted -> 4
+
+                                // Muxed progressive audio is the lowest quality; keep it as the last healthy fallback.
+                                it.manifest?.isProgressiveOnly() == true -> 3
 
                                 // Tokenless gated SABR stops at ~50s with ATTESTATION_REQUIRED (live 2026-10-21); keep token-backed direct audio first.
                                 it.client.useSabr -> 2
@@ -111,7 +114,11 @@ class ContentAwareFallbackStrategy(
                         }
 
                         PlaybackTransportPreference.SABR -> {
-                            if (it.client.useSabr) 0 else 1
+                            when {
+                                it.client.useSabr -> 0
+                                it.manifest?.isProgressiveOnly() == true -> 2
+                                else -> 1
+                            }
                         }
 
                         else -> {
@@ -185,6 +192,10 @@ class ContentAwareFallbackStrategy(
                         PlaybackTransport.DIRECT, PlaybackTransport.DASH -> {
                             request.hints.allowBoundedRange || !requiresBoundedMediaRange(manifest.client.clientName)
                         }
+
+                        PlaybackTransport.PROGRESSIVE -> {
+                            request.hints.allowProgressive && !request.hints.wantVideo
+                        }
                     }
                 }
             ) {
@@ -213,6 +224,8 @@ class ContentAwareFallbackStrategy(
             }
 
             if (request.fastPathOnly) {
+                // Otherwise the only config- and token-free client would win every fast path.
+                if (manifest.isProgressiveOnly()) add("progressive fallback excluded from fast path")
                 if (manifest.request.signatureTimestamp) add("watch config excluded from fast path")
                 val requiresToken =
                     listOf(manifest.poTokens.player, manifest.poTokens.gvs).any {
@@ -288,6 +301,11 @@ class ContentAwareFallbackStrategy(
         // Keep the existing video ordering: these probes only decoded audio.
         if (manifest.id == "VISIONOS_SABR" && !request.hints.wantVideo) {
             adjust(80, "sabr-audio-playback")
+        }
+
+        // Sustained Remix audio passed the explicit probes; keep video scoring unchanged.
+        if (manifest.id == "WEB_REMIX_SABR" && !request.hints.wantVideo) {
+            adjust(30, "remix-sabr-audio-playback")
         }
 
         val restrictedContent =

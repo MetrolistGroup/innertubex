@@ -18,6 +18,25 @@ public fun appendClientPlaybackNonce(
     return addQueryBeforeFragment(url, "cpn=$clientPlaybackNonce")
 }
 
+internal fun appendHlsClientPlaybackNonce(
+    url: String,
+    clientPlaybackNonce: String,
+): String {
+    if (!validNonce(clientPlaybackNonce) || !isAllowedHlsUrl(url)) return url
+    if (Url(url).parameters.contains("cpn")) return url
+    return addQueryBeforeFragment(url, "cpn=$clientPlaybackNonce")
+}
+
+internal fun isAllowedHlsUrl(value: String): Boolean =
+    runCatching { Url(value) }.getOrNull()?.let {
+        it.protocol.name == "https" && it.port == 443 && it.user == null && it.password == null &&
+            (
+                it.host == "googlevideo.com" || it.host.endsWith(".googlevideo.com") ||
+                    it.host == "youtube.com" || it.host.endsWith(".youtube.com")
+            ) &&
+            (it.encodedPath.startsWith("/manifest/") || it.encodedPath.startsWith("/api/manifest/"))
+    } == true
+
 public fun replaceClientPlaybackNonce(
     url: String,
     clientPlaybackNonce: String,

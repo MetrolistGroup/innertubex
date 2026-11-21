@@ -37,6 +37,8 @@ data class SabrBootstrap(
     val requestOrigin: String? = null,
     /** Video renditions this session can also stream, one per height, lowest first. */
     val videoVariants: List<SabrVideoVariant> = emptyList(),
+    /** Visitor used by the player request, retained for late streaming-token binding. Never log it. */
+    val tokenVisitorData: String? = null,
 ) {
     override fun toString(): String =
         "SabrBootstrap(audioItag=${audioFormat.itag}, videoItag=${selectedVideoFormat?.itag}, " +
@@ -80,6 +82,7 @@ data class SabrBootstrap(
             requestUserAgent == other.requestUserAgent &&
             requestOrigin == other.requestOrigin &&
             videoVariants == other.videoVariants &&
+            tokenVisitorData == other.tokenVisitorData &&
             if (poToken == null) other.poToken == null else other.poToken != null && poToken.contentEquals(other.poToken)
 
     override fun hashCode(): Int =
@@ -106,6 +109,7 @@ data class SabrBootstrap(
             requestUserAgent,
             requestOrigin,
             videoVariants,
+            tokenVisitorData,
         ).hashCode()
 }
 

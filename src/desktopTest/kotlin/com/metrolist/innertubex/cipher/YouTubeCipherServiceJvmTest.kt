@@ -8,7 +8,9 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
@@ -28,13 +30,14 @@ class YouTubeCipherServiceJvmTest {
     fun failedCompilationRetriesAfterConfigChange() =
         runBlocking {
             val repository = YouTubeCipherServiceTest().configRepository()
+            var supported = false
             val client =
                 HttpClient(
                     MockEngine { request ->
                         if (request.url.encodedPath.endsWith("player_configs.json")) {
                             respond(repository.cachedJson.replace("20613", "20614"))
                         } else {
-                            respond("unsupported player")
+                            respond(if (supported) PLAYER_CODE else "unsupported player")
                         }
                     },
                 )
@@ -59,6 +62,9 @@ class YouTubeCipherServiceJvmTest {
                 assertTrue(service.refreshAfterStreamRejection())
                 assertNull(service.processNParameter(PLAYER_URL, "$MEDIA_URL?n=challenge"))
                 assertEquals(8, failures)
+                supported = true
+                privateField<MutableMap<*, *>>(service, "playerCodeCache").clear()
+                assertNull(service.processNParameter(PLAYER_URL, "$MEDIA_URL?n=cooling"))
                 val failedPrograms = privateField<Map<*, Any>>(service, "compileFailures")
                 assertEquals(3, failedPrograms.size)
                 for (failed in failedPrograms.values) {
@@ -66,10 +72,8 @@ class YouTubeCipherServiceJvmTest {
                     val field = failed.javaClass.getDeclaredField("failedAt").apply { isAccessible = true }
                     field.setLong(failed, field.getLong(failed) - 61.seconds.inWholeNanoseconds)
                 }
-                assertNull(service.processNParameter(PLAYER_URL, "$MEDIA_URL?n=expired"))
-                assertEquals(10, failures)
-                assertNull(service.processNParameter(PLAYER_URL, "$MEDIA_URL?n=cooling"))
-                assertEquals(12, failures)
+                assertEquals("$MEDIA_URL?n=expired_done", service.processNParameter(PLAYER_URL, "$MEDIA_URL?n=expired"))
+                assertEquals("$MEDIA_URL?n=warm_done", service.processNParameter(PLAYER_URL, "$MEDIA_URL?n=warm"))
             } finally {
                 service.dispose()
                 client.close()
@@ -77,8 +81,48 @@ class YouTubeCipherServiceJvmTest {
         }
 
     @Test
+    fun configTableLookupsHoldTheSourcePublicationLock() =
+        runBlocking {
+            val repository = YouTubeCipherServiceTest().configRepository()
+            var now = repository.cachedAtMs
+            val client = HttpClient(MockEngine { respond(repository.cachedJson) })
+            val store = RemotePlayerConfigStore(client, repository) { now }
+            try {
+                assertEquals(20613, store.getCachedSignatureTimestamp(PLAYER_URL))
+                val mutex = privateField<Mutex>(store, "mutex")
+                val configs = privateField<Map<String, RemotePlayerConfigParser.HardcodedPlayerConfig>>(store, "configs")
+                val guarded =
+                    object : Map<String, RemotePlayerConfigParser.HardcodedPlayerConfig> by configs {
+                        override fun get(key: String): RemotePlayerConfigParser.HardcodedPlayerConfig? {
+                            assertTrue(mutex.isLocked, "Config and source must be read under the publication lock")
+                            return configs[key]
+                        }
+
+                        override fun containsKey(key: String): Boolean {
+                            assertTrue(mutex.isLocked, "Known-hash lookup must hold the publication lock")
+                            return configs.containsKey(key)
+                        }
+                    }
+                store.javaClass
+                    .getDeclaredField("configs")
+                    .apply { isAccessible = true }
+                    .set(store, guarded)
+                assertEquals(20613, store.getConfig(PLAYER_URL)?.signatureTimestamp)
+                assertTrue(!store.forceRefresh(missingHash = "12345678"))
+                now += 6 * 60 * 60 * 1000L
+                assertEquals(20613, store.getConfig(PLAYER_URL)?.signatureTimestamp)
+            } finally {
+                privateField<CoroutineScope>(store, "backgroundScope").coroutineContext[Job]?.cancelAndJoin()
+                client.close()
+            }
+        }
+
+    @Test
     fun failingBatchTransformsExecuteOncePerDistinctChallenge() =
         runBlocking {
+            // Over QuackJS's 200-unit plan limit, so every execution goes through the counted interpreter.
+            val badN = "b".repeat(201)
+            val goodN = "g".repeat(201)
             for ((signatureFailure, nFailure) in listOf(
                 "throw 'unsupported';" to "throw 'unsupported';",
                 "return '';" to "o.set('n','');return;",
@@ -87,7 +131,7 @@ class YouTubeCipherServiceJvmTest {
                 val code =
                     PLAYER_CODE
                         .replace("return input.split", "if(input=='badSig'){$signatureFailure}return input.split")
-                        .replace("o.set('n',o.V.n + '_done');", "if(o.V.n=='badN'){$nFailure}o.set('n',o.V.n + '_done');")
+                        .replace("o.set('n',o.V.n + '_done');", "if(o.V.n=='$badN'){$nFailure}o.set('n',o.V.n + '_done');")
                 val client = HttpClient(MockEngine { respond(code) })
                 val service = YouTubeCipherService(client)
                 try {
@@ -111,9 +155,9 @@ class YouTubeCipherServiceJvmTest {
                         List(50) {
                             listOf(
                                 YouTubeCipherServiceTest().format(MEDIA_URL).copy(signatureCipher = "s=badSig&url=$MEDIA_URL"),
-                                YouTubeCipherServiceTest().format("$MEDIA_URL?n=badN"),
-                                YouTubeCipherServiceTest().format(MEDIA_URL).copy(signatureCipher = "s=abc&url=$MEDIA_URL?n=good"),
-                                YouTubeCipherServiceTest().format("$MEDIA_URL?n=good"),
+                                YouTubeCipherServiceTest().format("$MEDIA_URL?n=$badN"),
+                                YouTubeCipherServiceTest().format(MEDIA_URL).copy(signatureCipher = "s=abc&url=$MEDIA_URL?n=$goodN"),
+                                YouTubeCipherServiceTest().format("$MEDIA_URL?n=$goodN"),
                             )
                         }.flatten()
                     repeat(2) {
@@ -122,8 +166,8 @@ class YouTubeCipherServiceJvmTest {
                         for (group in result.chunked(4)) {
                             assertNull(group[0].url)
                             assertNull(group[1].url)
-                            assertEquals("$MEDIA_URL?n=good_done&signature=cba", group[2].url)
-                            assertEquals("$MEDIA_URL?n=good_done", group[3].url)
+                            assertEquals("$MEDIA_URL?n=${goodN}_done&signature=cba", group[2].url)
+                            assertEquals("$MEDIA_URL?n=${goodN}_done", group[3].url)
                         }
                         assertEquals(4, executions, "One execution per distinct signature/n per batch, including null results")
                     }

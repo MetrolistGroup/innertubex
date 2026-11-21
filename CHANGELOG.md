@@ -6,6 +6,124 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-20
+
+### Added
+
+- `IOS_PRODUCER` (client ID 92) plays normal, explicit and made-for-kids media without a PO token,
+  login or signature work. YouTube only returns muxed progressive itag 18 (360p video with
+  low-quality AAC) for it, so automatic selection tries it after every other healthy client.
+- `PlaybackTransport.PROGRESSIVE` and `ContentHints.allowProgressive`. Hosts opt in through the new
+  `allowProgressive` parameter of `withStreamCapabilities` once their player can play audio from a
+  file that also carries a video track. It is off by default, and video requests never select it.
+
+### Changed
+
+- `withStreamCapabilities` takes a fourth parameter. Callers recompile unchanged; previously compiled
+  binaries need a rebuild.
+- `MWEB_SABR` and `WEB_SAFARI_SABR` are probe-only and no longer part of automatic selection. On a
+  signed-in Android device their SABR media requests now fail with HTTP 4xx and playback does not
+  advance, and they were the two most common final profiles of exhausted stream retries in Metrolist
+  14.0.1. Both remain available for benchmarks.
+
+## [0.11.9] - 2026-11-17
+
+### Fixed
+
+- A track YouTube reports as unavailable to every client is looked up through YouTube Music's
+  `navigation/resolve_url`. When YouTube Music now serves the song under a new video ID, as it does
+  for re-released catalogue tracks, extraction plays that ID instead of failing.
+
+## [0.11.8] - 2026-11-17
+
+### Fixed
+
+- Every script variant of a player build (`player_es6`, `player_embed_es6`, `tv-player-ias` and
+  others) now resolves to its `player_ias` script for signature and n transforms. QuackJS cannot
+  parse those variants, so embed and TV player URLs left ciphered formats without a URL and web
+  clients fell back to HLS streams the CDN refused.
+
+## [0.11.7] - 2026-11-13
+
+### Fixed
+
+- Audio-only extraction prefers YouTube Music SABR profiles, minting a PO token for
+  them first. A WEB SABR session whose token YouTube kept attestation-pending stopped
+  after about 60 seconds of audio.
+
+## [0.11.6] - 2026-11-07
+
+### Fixed
+
+- iOS cipher work now runs on threads with 16 MB stacks. On the 512 KB GCD worker
+  stacks, QuackJS overflowed and ended the process on a debug build.
+
+## [0.11.5] - 2026-11-06
+
+### Added
+
+- `SabrAudioStream` accepts an optional suspend token supplier. Tokenless audio
+  starts immediately and attaches the result on later requests. It waits up to
+  30 seconds when attestation is pending or before reaching 80 seconds of media. Existing tokenized streams and
+  calls without a supplier retain their behavior. `SabrBootstrap.tokenVisitorData`
+  retains the player visitor for the supplier's token binding.
+- `TVHTML5_SAMSUNG`, a manually selected tokenless TV client for direct audio.
+  YouTube forbids its media until pre-roll ads would end, so extraction waits
+  up to 35 seconds.
+
+### Changed
+
+- `ClientFallbackStrategy.selectClients` now attaches catalog manifests when an
+  implementation overrides only `resolveClients`. Catalog age filters, cipher
+  preparation, token policies, health keys and `manifestId__po` or
+  `manifestId__nopo` profile IDs now apply to those implementations. Legacy
+  profile aliases still work for exclusions.
+- `SabrAudioStream` and `SabrBootstrap` constructors and `SabrBootstrap.copy`,
+  including `copy$default`, changed JVM binary signatures. Consumers compiled
+  against an earlier release must recompile.
+
+### Fixed
+
+- Web Embedded is probe-only after anonymous normal and made-for-kids probes
+  returned `NO_PLAYABLE_STREAM`. It leaves automatic selection and remains
+  only as the last-resort embedded fallback.
+- Android VR 1.65.10 is marked broken after normal audio returned HTTP 403
+  on the second media range. It remains probe-only.
+
+## [0.11.4] - 2026-11-06
+
+### Changed
+
+- Depends on QuackJS 0.1.4, which compiles players about 11% faster with 22%
+  less allocation and rejects constructs it cannot run faithfully.
+- Native video skips the watch-page fetch when visitor data is available and
+  the response needs no cipher work.
+- Cold cipher preparation overlaps token and player requests, and prewarming
+  also warms the public player.
+- Player script downloads have a 15-second stage budget, leaving time for
+  variant and client fallbacks.
+
+### Fixed
+
+- SABR requests keep their retries and typed errors when the host client sets
+  `expectSuccess`, and transport errors no longer expose signed URLs.
+- Authenticated requests reject redirects, and isolated clients have finite
+  timeouts.
+- Cookie-authenticated responses now reject DRM formats.
+- Remote config recovers from unusable cached bodies, and n parameter matching
+  honors query boundaries.
+- Client health ignores removed videos, caller timeouts, and failures from a
+  previous account.
+
+## [0.11.3] - 2026-11-05
+
+### Changed
+
+- Depends on QuackJS 0.1.3, which is about 65x faster on warm `n` transforms,
+  1.5x faster on player compilation and first call, and retains about half the
+  heap per compiled player on the JVM. The cipher API and failure behavior are
+  unchanged.
+
 ## [0.11.2] - 2026-10-22
 
 ### Changed

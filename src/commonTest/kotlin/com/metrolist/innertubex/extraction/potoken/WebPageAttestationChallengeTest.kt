@@ -9,6 +9,15 @@ import kotlin.test.assertTrue
 
 class WebPageAttestationChallengeTest {
     @Test
+    fun skipsDecodedCandidatesWithoutChallenge() {
+        val invalid = "window.ytAtN({R:'{}'});"
+        val valid = "window.ytAtN({R:'{\"bgChallenge\":{\"program\":\"valid\"}}'});"
+        assertContains(requireNotNull(extractWebPageAttestationChallenge(invalid + valid)), "valid")
+        val legacy = "window.ytAtR = '{\"bgChallenge\":{\"program\":\"legacy\"}}';"
+        assertContains(requireNotNull(extractWebPageAttestationChallenge(invalid + legacy)), "legacy")
+    }
+
+    @Test
     fun malformedPrefixesHaveLinearScanCost() {
         for (prefix in listOf("window.ytAtN(", "window.ytAtN({", "window.ytAtN('")) {
             val page = CountingCharacters(prefix.repeat(10_000))

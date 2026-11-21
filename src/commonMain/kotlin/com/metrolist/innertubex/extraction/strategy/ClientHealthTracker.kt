@@ -127,9 +127,16 @@ internal class InMemoryClientHealthMonitor(
         clientId: String,
         kind: ClientFailureKind,
         scope: ClientHealthScope?,
+    ) = recordFailure(clientId, kind, scope, sessionGeneration())
+
+    internal fun recordFailure(
+        clientId: String,
+        kind: ClientFailureKind,
+        scope: ClientHealthScope?,
+        generation: Long,
     ) {
         val now = nowMs()
-        update { health ->
+        update(expectedGeneration = generation) { health ->
             val key = Key(clientId, scope)
             val previous = health[key]?.takeIf { now - it.lastFailureAtMs < FAILURE_MEMORY_MS }
             val consecutive = (previous?.consecutiveFailures ?: 0) + 1
@@ -148,10 +155,14 @@ internal class InMemoryClientHealthMonitor(
         }
     }
 
-    private inline fun update(transform: (Map<Key, Health>) -> Map<Key, Health>) {
+    private inline fun update(
+        expectedGeneration: Long? = null,
+        transform: (Map<Key, Health>) -> Map<Key, Health>,
+    ) {
         while (true) {
             val current = state.load()
             val generation = sessionGeneration()
+            if (expectedGeneration != null && expectedGeneration != generation) return
             // Generation also changes for visitor/locale updates: conservatively forget authenticated learning.
             val health =
                 if (current.generation == generation) current.health else current.health.filterKeys { it.scope?.authenticated != true }

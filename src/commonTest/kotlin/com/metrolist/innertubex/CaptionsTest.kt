@@ -13,6 +13,37 @@ import kotlin.test.assertFailsWith
 
 class CaptionsTest {
     @Test
+    fun captionTransportCancellationRemainsCancellation() =
+        runBlocking {
+            val engine = MockEngine { throw kotlinx.coroutines.CancellationException("Request cancelled") }
+            val client = HttpClient(engine)
+            try {
+                assertFailsWith<kotlinx.coroutines.CancellationException> {
+                    InnerTube(client).fetchCaptionText("https://www.youtube.com/api/timedtext?v=abcdefghijk")
+                }
+            } finally {
+                client.close()
+            }
+            Unit
+        }
+
+    @Test
+    fun captionTransportFailureDoesNotExposeUrl() =
+        runBlocking {
+            val engine =
+                MockEngine { request ->
+                    throw io.ktor.client.plugins
+                        .HttpRequestTimeoutException(request)
+                }
+            val error =
+                assertFailsWith<IllegalStateException> {
+                    InnerTube(HttpClient(engine)).fetchCaptionText("https://www.youtube.com/api/timedtext?v=abcdefghijk")
+                }
+            assertEquals("Caption request failed", error.message)
+            assertEquals(null, error.cause)
+        }
+
+    @Test
     fun captionFetchAcceptsOnlyBoundedApprovedEndpoints() {
         runBlocking {
             val engine =
