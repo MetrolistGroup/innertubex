@@ -73,15 +73,12 @@ public class YtConfigParserImpl(
         suspend fun fetchHtml(requestCookie: String?): String {
             // Scan completed scripts once; a trailing open script is handled by the final parse.
             val timestampScan = SignatureTimestampScan()
-            var playerUrl: String? = null
             var visitorData: String? = null
             var clientVersion: String? = null
             var encryptedHostFlags: String? = null
             var storeStsPlayerUrl: String? = null
             var storeSts: Int? = null
             val hasConfig: suspend (String) -> Boolean = hasConfig@{ html ->
-                playerUrl = playerUrl ?: extractPlayerUrl(html)
-                val url = playerUrl ?: return@hasConfig false
                 visitorData = visitorData ?: extractVisitorData(html)
                 clientVersion = clientVersion ?: extractClientVersion(html)
                 if (visitorData == null || clientVersion == null) return@hasConfig false
@@ -89,6 +86,8 @@ public class YtConfigParserImpl(
                     encryptedHostFlags = encryptedHostFlags ?: extractEncryptedHostFlags(html)
                     if (encryptedHostFlags == null) return@hasConfig false
                 }
+                // A later prefix can contain a higher-priority player URL. Match the final parse.
+                val url = extractPlayerUrl(html) ?: return@hasConfig false
                 if (timestampScan.scan(html) != null) return@hasConfig true
                 if (storeStsPlayerUrl != url) {
                     storeStsPlayerUrl = url
