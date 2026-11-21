@@ -70,36 +70,55 @@ public class YtConfigParserImpl(
                 ?.joinToString("; ")
                 ?.takeIf { it.isNotEmpty() }
 
-        // The fields sit in the first ~60 KB of a ~1.4 MB streamed page; STS often only near its middle,
-        // so stop once it is either on the page or already known from the remote player config.
-        var storeStsPlayerUrl: String? = null
-        var storeSts: Int? = null
-        val hasConfig: suspend (String) -> Boolean = hasConfig@{ html ->
-            val playerUrl = extractPlayerUrl(html) ?: return@hasConfig false
-            if (extractVisitorData(html) == null || extractClientVersion(html) == null) return@hasConfig false
-            if (pageKind == "embed" && extractEncryptedHostFlags(html) == null) return@hasConfig false
-            if (extractSignatureTimestamp(html) != null) return@hasConfig true
-            if (storeStsPlayerUrl != playerUrl) {
-                storeStsPlayerUrl = playerUrl
-                storeSts = remotePlayerConfigStore?.getCachedSignatureTimestamp(playerUrl)
-            }
-            storeSts != null
-        }
-
-        suspend fun fetchHtml(requestCookie: String?) =
-            getText(Url(pageUrl), PAGE_MAX_BYTES, hasConfig) {
-                header(HttpHeaders.UserAgent, YouTubeClient.USER_AGENT_WEB)
-                header(HttpHeaders.Accept, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-                referer?.let { header("Referer", it) }
-                requestCookie?.let { header(HttpHeaders.Cookie, it) }
-                header(HttpHeaders.AcceptLanguage, innerTube.locale.acceptLanguageHeader())
-                timeout {
-                    requestTimeoutMillis = PAGE_TIMEOUT_MS
-                    connectTimeoutMillis = PAGE_TIMEOUT_MS
-                    socketTimeoutMillis = PAGE_TIMEOUT_MS
+        suspend fun fetchHtml(requestCookie: String?): Pair<String, Int?> {
+            // Reuse completed-script progress, and accept only delimited timestamps from an unfinished script.
+            val timestampScan = SignatureTimestampScan()
+            var visitorData: String? = null
+            var clientVersion: String? = null
+            var encryptedHostFlags: String? = null
+            var storeStsPlayerUrl: String? = null
+            var storeSts: Int? = null
+            var prefixTimestamp: Int? = null
+            var stoppedEarly = false
+            val hasConfig: suspend (String) -> Boolean = hasConfig@{ html ->
+                visitorData = visitorData ?: extractVisitorData(html)
+                clientVersion = clientVersion ?: extractClientVersion(html)
+                if (visitorData == null || clientVersion == null) return@hasConfig false
+                if (pageKind == "embed") {
+                    encryptedHostFlags = encryptedHostFlags ?: extractEncryptedHostFlags(html)
+                    if (encryptedHostFlags == null) return@hasConfig false
                 }
+                // A later prefix can contain a higher-priority player URL. Match the final parse.
+                val url = extractPlayerUrl(html) ?: return@hasConfig false
+                prefixTimestamp = timestampScan.scanPrefix(html)
+                if (prefixTimestamp != null) {
+                    stoppedEarly = true
+                    return@hasConfig true
+                }
+                if (storeStsPlayerUrl != url) {
+                    storeStsPlayerUrl = url
+                    storeSts = remotePlayerConfigStore?.getCachedSignatureTimestamp(url)
+                }
+                (storeSts != null).also { stoppedEarly = it }
             }
-        val html =
+            val html =
+                getText(Url(pageUrl), PAGE_MAX_BYTES, hasConfig) {
+                    header(HttpHeaders.UserAgent, YouTubeClient.USER_AGENT_WEB)
+                    header(HttpHeaders.Accept, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                    referer?.let { header("Referer", it) }
+                    requestCookie?.let { header(HttpHeaders.Cookie, it) }
+                    header(HttpHeaders.AcceptLanguage, innerTube.locale.acceptLanguageHeader())
+                    timeout {
+                        requestTimeoutMillis = PAGE_TIMEOUT_MS
+                        connectTimeoutMillis = PAGE_TIMEOUT_MS
+                        socketTimeoutMillis = PAGE_TIMEOUT_MS
+                    }
+                }
+            // A prefix accepted via cache may end in a partial number. Only natural EOF delimits it.
+            val timestamp = if (stoppedEarly) prefixTimestamp else timestampScan.scan(html, final = true)
+            return html to timestamp
+        }
+        val (html, sts) =
             try {
                 fetchHtml(cookie)
             } catch (error: CancellationException) {
@@ -116,7 +135,6 @@ public class YtConfigParserImpl(
         val playerUrl =
             extractPlayerUrl(html) ?: fetchIframePlayerUrl()
                 ?: error("Unable to parse YouTube player JavaScript URL")
-        val sts = extractSignatureTimestamp(html)
         val resolvedSts = sts ?: remotePlayerConfigStore?.getSignatureTimestamp(playerUrl) ?: fetchPlayerSignatureTimestamp(playerUrl)
         val visitorData = extractVisitorData(html)
         val encryptedHostFlags = extractEncryptedHostFlags(html).takeIf { pageKind == "embed" }
@@ -168,43 +186,115 @@ public class YtConfigParserImpl(
         }
 
     internal fun extractPlayerUrl(html: String): String? {
-        // Only the loose path pattern needs the whole page unescaped; the keyed patterns unescape their match.
-        val keyed =
-            KEYED_PLAYER_URL_PATTERNS.asSequence().mapNotNull {
-                it
-                    .find(html)
-                    ?.groupValues
-                    ?.get(1)
-                    ?.unescapeJs()
+        for (key in listOf("\"PLAYER_JS_URL\":\"", "\"jsUrl\":\"")) {
+            var match = html.indexOf(key)
+            while (match >= 0) {
+                val start = match + key.length
+                val end = html.indexOf('"', start)
+                if (end < 0) break
+                if (end > start) playerUrlFromPath(html.substring(start, end).unescapeJs())?.let { return it }
+                match = html.indexOf(key, end)
             }
-        val loose =
-            sequence {
-                LOOSE_PLAYER_URL_PATTERN
-                    .find(html.unescapeJs())
-                    ?.groupValues
-                    ?.get(1)
-                    ?.let { yield(it) }
+        }
+        val unescaped = html.unescapeJs()
+        var position = 0
+        while (true) {
+            val start = unescaped.indexOf("/s/player/", position)
+            if (start < 0) return null
+            if (start > 0 && unescaped[start - 1] in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789:/") {
+                position = start + 1
+                continue
             }
-        return (keyed + loose)
-            .mapNotNull { path ->
-                validatePlayerUrl(
-                    if (path.startsWith("http")) path else "https://www.youtube.com${if (path.startsWith('/')) path else "/$path"}",
-                )
-            }.firstOrNull()
+            var end = start
+            while (end < unescaped.length && unescaped[end] !in "\"'\\") end++
+            LOOSE_PLAYER_URL_PATTERN
+                .find(unescaped.substring(start, end))
+                ?.groupValues
+                ?.get(1)
+                ?.let(::playerUrlFromPath)
+                ?.let { return it }
+            position = end.coerceAtLeast(start + 1)
+        }
     }
+
+    private fun playerUrlFromPath(path: String): String? =
+        validatePlayerUrl(if (path.startsWith("http")) path else "https://www.youtube.com${if (path.startsWith('/')) path else "/$path"}")
 
     private fun String.unescapeJs(): String = replace("\\/", "/").replace("\\u0026", "&")
 
     internal fun extractPlayerId(script: String): String? = PLAYER_ID_REGEX.find(script.replace("\\/", "/"))?.groupValues?.get(1)
 
-    internal fun extractSignatureTimestamp(html: String): Int? {
-        if (html.trimStart().startsWith('<')) {
-            return SCRIPT_CONTENT.findAll(html).firstNotNullOfOrNull { scanSignatureTimestamp(it.groupValues[1]) }
+    internal fun extractSignatureTimestamp(html: String): Int? = SignatureTimestampScan().scan(html, final = true)
+
+    internal inner class SignatureTimestampScan {
+        private var position = 0
+        private var bodyStart = -1
+        private var closingPosition = 0
+        private var timestamp: Int? = null
+
+        fun scanPrefix(html: String): Int? =
+            scan(html) ?: if (bodyStart >= 0) {
+                scanSignatureTimestamp(html.substring(bodyStart), allowEndOfInput = false)
+            } else {
+                null
+            }
+
+        fun scan(
+            html: String,
+            final: Boolean = false,
+        ): Int? {
+            timestamp?.let { return it }
+            if (!html.trimStart().startsWith('<')) return scanSignatureTimestamp(html, allowEndOfInput = final)
+            while (true) {
+                if (bodyStart < 0) {
+                    val start = html.indexOf("<script", position, ignoreCase = true)
+                    if (start < 0) {
+                        position = maxOf(position, html.length - 6)
+                        return null
+                    }
+                    val boundary = html.getOrNull(start + 7) ?: return null
+                    if (boundary.isLetterOrDigit() || boundary == '_') {
+                        position = start + 7
+                        continue
+                    }
+                    val end = html.indexOf('>', start + 7)
+                    if (end < 0) {
+                        position = start
+                        return null
+                    }
+                    bodyStart = end + 1
+                    closingPosition = bodyStart
+                }
+                var close = html.indexOf("</script", closingPosition, ignoreCase = true)
+                var end = -1
+                while (close >= 0) {
+                    end = close + 8
+                    while (html.getOrNull(end)?.let { it in " \t\r\n\u000B\u000C" } == true) end++
+                    if (html.getOrNull(end) == '>') break
+                    if (end == html.length) {
+                        closingPosition = close
+                        if (!final) return null
+                        close = -1
+                        break
+                    }
+                    close = html.indexOf("</script", close + 8, ignoreCase = true)
+                }
+                if (close < 0 && !final) {
+                    closingPosition = maxOf(closingPosition, html.length - 8)
+                    return null
+                }
+                timestamp = scanSignatureTimestamp(html.substring(bodyStart, if (close < 0) html.length else close))
+                if (timestamp != null || close < 0) return timestamp
+                position = end + 1
+                bodyStart = -1
+            }
         }
-        return scanSignatureTimestamp(html)
     }
 
-    private fun scanSignatureTimestamp(html: String): Int? {
+    private fun scanSignatureTimestamp(
+        html: String,
+        allowEndOfInput: Boolean = true,
+    ): Int? {
         var position = 0
         while (position < html.length) {
             val start = position
@@ -269,25 +359,38 @@ public class YtConfigParserImpl(
             while (position < html.length && html[position].isWhitespace()) position++
             val numberStart = position
             while (position < html.length && html[position] in '0'..'9') position++
-            if (position - numberStart == 5 && html.getOrNull(position)?.let { it.isLetterOrDigit() || it == '.' || it == '_' } != true) {
+            val next = html.getOrNull(position)
+            // A streamed chunk can split a UTF-8 character and decode its partial bytes as replacement text.
+            val hasBoundary =
+                when (next) {
+                    null, '\uFFFD', '$' -> allowEndOfInput
+                    else -> !next.isLetterOrDigit() && next != '.' && next != '_'
+                }
+            if (position - numberStart == 5 && hasBoundary) {
                 return html.substring(numberStart, position).toIntOrNull()
             }
         }
         return null
     }
 
-    internal fun extractClientVersion(html: String): String? = extractConfigString(html, CLIENT_VERSION_REGEX)
+    internal fun extractClientVersion(html: String): String? = extractConfigString(html, CLIENT_VERSION_KEYS)
 
-    internal fun extractEncryptedHostFlags(html: String): String? = extractConfigString(html, ENCRYPTED_HOST_FLAGS_REGEX)
+    internal fun extractEncryptedHostFlags(html: String): String? = extractConfigString(html, ENCRYPTED_HOST_FLAGS_KEYS)
 
-    private fun extractVisitorData(html: String): String? = extractConfigString(html, VISITOR_DATA_REGEX)
+    private fun extractVisitorData(html: String): String? = extractConfigString(html, VISITOR_DATA_KEYS)
 
     private fun extractConfigString(
         html: String,
-        key: Regex,
+        keys: List<String>,
     ): String? {
-        for (match in key.findAll(html)) {
-            val start = match.range.last + 1
+        var searchStart = 0
+        while (searchStart < html.length) {
+            val match = keys.map { html.indexOf(it, searchStart) to it }.filter { it.first >= 0 }.minByOrNull { it.first } ?: break
+            var start = match.first + match.second.length
+            searchStart = start
+            while (html.getOrNull(start)?.let { it in " \t\r\n\u000B\u000C" } == true) start++
+            if (html.getOrNull(start++) != ':') continue
+            while (html.getOrNull(start)?.let { it in " \t\r\n\u000B\u000C" } == true) start++
             if (html.getOrNull(start) != '"') continue
             var position = start + 1
             val limit = minOf(html.length, start + MAX_CONFIG_STRING_LENGTH)
@@ -366,21 +469,15 @@ public class YtConfigParserImpl(
         private val SAFE_VIDEO_ID = Regex("[A-Za-z0-9_-]{1,64}")
         private val EMBED_PATH = Regex("/embed/[A-Za-z0-9_-]{1,64}")
         private val PLAYER_PATH = Regex("/s/player/[A-Za-z0-9_-]+/.+\\.js")
-        private val KEYED_PLAYER_URL_PATTERNS =
-            listOf(
-                Regex("\"PLAYER_JS_URL\":\"([^\"]+)\""),
-                Regex("\"jsUrl\":\"([^\"]+)\""),
-            )
         private val LOOSE_PLAYER_URL_PATTERN = Regex("""(?<![A-Za-z0-9:/])(/s/player/[A-Za-z0-9_-]+/[^"'\\]*\.js[^"'\\]*)""")
         private val PLAYER_ID_REGEX = Regex("/s/player/([a-zA-Z0-9_-]+)/")
         private val TIMESTAMP_KEYS = setOf("signatureTimestamp", "sts", "STS")
-        private val SCRIPT_CONTENT = Regex("""<script\b[^>]*>([\s\S]*?)(?:</script\s*>|$)""", RegexOption.IGNORE_CASE)
         private const val MAX_CONFIG_STRING_LENGTH = 64 * 1024
 
         @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
         private val CONFIG_JSON = Json { exceptionsWithDebugInfo = false }
-        private val CLIENT_VERSION_REGEX = Regex(""""INNERTUBE_CLIENT_VERSION"\s*:\s*""")
-        private val ENCRYPTED_HOST_FLAGS_REGEX = Regex(""""encryptedHostFlags"\s*:\s*""")
-        private val VISITOR_DATA_REGEX = Regex(""""(?:VISITOR_DATA|visitorData)"\s*:\s*""")
+        private val CLIENT_VERSION_KEYS = listOf("\"INNERTUBE_CLIENT_VERSION\"")
+        private val ENCRYPTED_HOST_FLAGS_KEYS = listOf("\"encryptedHostFlags\"")
+        private val VISITOR_DATA_KEYS = listOf("\"VISITOR_DATA\"", "\"visitorData\"")
     }
 }
