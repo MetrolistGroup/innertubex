@@ -18,6 +18,40 @@ internal data class RestrictedTextResponse(
 )
 
 /**
+ * Creates a redirect-disabled client sharing this client's engine without taking engine ownership or
+ * inheriting caller plugins (redirects, cookies, auth interceptors).
+ */
+internal fun HttpClient.createNoRedirectClient(): HttpClient =
+    HttpClient(engine) {
+        expectSuccess = false
+        followRedirects = false
+        // A fresh client does not inherit the caller's timeouts; per-request timeout {} blocks override these.
+        install(HttpTimeout) {
+            requestTimeoutMillis = DEFAULT_REQUEST_TIMEOUT_MS
+            connectTimeoutMillis = DEFAULT_CONNECT_TIMEOUT_MS
+            socketTimeoutMillis = DEFAULT_SOCKET_TIMEOUT_MS
+        }
+    }
+
+/**
+ * Executes a bounded GET on an already-isolated no-redirect [HttpClient].
+ */
+internal suspend fun HttpClient.getTextOnDirectClient(
+    url: Url,
+    maxBytes: Int,
+    stopWhen: (suspend (String) -> Boolean)? = null,
+    configure: HttpRequestBuilder.() -> Unit = {},
+): RestrictedTextResponse =
+    prepareGet(url, configure).execute { response ->
+        if (response.status.isSuccess()) {
+            RestrictedTextResponse(response.status, response.headers, response.bodyAsTextLimited(maxBytes, stopWhen))
+        } else {
+            response.bodyAsChannel().cancel(null)
+            RestrictedTextResponse(response.status, response.headers, null)
+        }
+    }
+
+/**
  * Uses the caller's engine without inheriting its redirect policy or taking engine ownership.
  * The body is streamed, so [maxBytes] bounds memory and [stopWhen] can end the download early.
  */
@@ -27,26 +61,9 @@ internal suspend fun HttpClient.getTextWithoutRedirects(
     stopWhen: (suspend (String) -> Boolean)? = null,
     configure: HttpRequestBuilder.() -> Unit = {},
 ): RestrictedTextResponse {
-    val directClient =
-        HttpClient(engine) {
-            expectSuccess = false
-            followRedirects = false
-            // A fresh client does not inherit the caller's timeouts; per-request timeout {} blocks override these.
-            install(HttpTimeout) {
-                requestTimeoutMillis = DEFAULT_REQUEST_TIMEOUT_MS
-                connectTimeoutMillis = DEFAULT_CONNECT_TIMEOUT_MS
-                socketTimeoutMillis = DEFAULT_SOCKET_TIMEOUT_MS
-            }
-        }
+    val directClient = createNoRedirectClient()
     return try {
-        directClient.prepareGet(url, configure).execute { response ->
-            if (response.status.isSuccess()) {
-                RestrictedTextResponse(response.status, response.headers, response.bodyAsTextLimited(maxBytes, stopWhen))
-            } else {
-                response.bodyAsChannel().cancel(null)
-                RestrictedTextResponse(response.status, response.headers, null)
-            }
-        }
+        directClient.getTextOnDirectClient(url, maxBytes, stopWhen, configure)
     } finally {
         directClient.close()
     }

@@ -57,18 +57,22 @@ private fun Format.audioContent(): String? {
                 reader.skip(tag)
                 continue
             }
-            val entry = ProtoReader(reader.bytes())
+            val entry = reader.slice()
             var key: String? = null
-            var value: String? = null
+            var valueSlice: ProtoReader? = null
             while (entry.hasRemaining) {
                 val entryTag = entry.tag()
                 when {
                     entryTag.field == 1 && entryTag.wireType == 2 -> key = entry.string()
-                    entryTag.field == 2 && entryTag.wireType == 2 -> value = entry.string()
+                    entryTag.field == 2 && entryTag.wireType == 2 -> valueSlice = entry.slice()
                     else -> entry.skip(entryTag)
                 }
             }
-            if (key == "acont") return@runCatching value
+            if (key == "acont") {
+                return@runCatching valueSlice?.let { slice ->
+                    slice.readRemainingUtf8()
+                }
+            }
         }
         null
     }.getOrNull()

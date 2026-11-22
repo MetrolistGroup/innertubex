@@ -17,6 +17,18 @@ internal class UmpReader(
     private var buffer = ByteArray(0)
     private var start = 0
     private var end = 0
+    private var streamingPartType = -1
+    private var streamingRemainingBytes = 0
+
+    fun reset() {
+        start = 0
+        end = 0
+        streamingPartType = -1
+        streamingRemainingBytes = 0
+        if (buffer.size > MAX_RETAINED_BUFFER_SIZE) {
+            buffer = ByteArray(0)
+        }
+    }
 
     fun feed(chunk: ByteArray): List<UmpPart> = feed(chunk, offset = 0, length = chunk.size)
 
@@ -43,44 +55,200 @@ internal class UmpReader(
         length: Int,
         onPart: (type: Int, data: ByteArray, from: Int, to: Int) -> Boolean,
     ) {
+        feedStreaming(
+            chunk = chunk,
+            offset = offset,
+            length = length,
+            streamPartType = -1,
+            onStreamStart = { _, _ -> true },
+            onStreamChunk = { _, _, _ -> true },
+            onStreamEnd = { true },
+            onPart = onPart,
+        )
+    }
+
+    /**
+     * Parses UMP parts from `chunk[offset, offset + length)`, streaming parts of [streamPartType]
+     * directly from input chunks without staging their full payload in [buffer].
+     */
+    internal fun feedStreaming(
+        chunk: ByteArray,
+        offset: Int,
+        length: Int,
+        streamPartType: Int,
+        onStreamStart: (type: Int, size: Int) -> Boolean,
+        onStreamChunk: (data: ByteArray, from: Int, to: Int) -> Boolean,
+        onStreamEnd: () -> Boolean,
+        onPart: (type: Int, data: ByteArray, from: Int, to: Int) -> Boolean,
+    ) {
         require(offset >= 0 && length >= 0 && offset <= chunk.size - length) { "Invalid UMP input range" }
-        if (pendingSize.toLong() + length > MAX_PENDING_BYTES) {
-            throw SabrProtocolException("Incomplete UMP part exceeded the pending byte limit")
-        }
-        if (length > 0) {
-            ensureCapacity(length)
-            chunk.copyInto(buffer, destinationOffset = end, startIndex = offset, endIndex = offset + length)
-            end += length
-        }
-        if (pendingSize == 0) return
+        var chunkPos = offset
+        val chunkEnd = offset + length
 
-        var parseOffset = start
-        while (parseOffset < end) {
-            val type = readUmpVarint(buffer, parseOffset, end) ?: break
-            val size = readUmpVarint(buffer, type.nextOffset, end) ?: break
-            if (size.value > minOf(maxPartSize, maxPartSizeForType(type.value))) {
-                throw SabrProtocolException("UMP part is too large: ${size.value} bytes")
+        while (true) {
+            // Drain an active streamed part from pending buffer bytes first, then directly from chunk.
+            if (streamingPartType >= 0) {
+                if (streamingRemainingBytes == 0) {
+                    streamingPartType = -1
+                    if (!onStreamEnd()) return
+                    continue
+                }
+                if (pendingSize > 0) {
+                    val take = minOf(streamingRemainingBytes, pendingSize)
+                    val payloadStart = start
+                    start += take
+                    if (start == end) {
+                        start = 0
+                        end = 0
+                    }
+                    streamingRemainingBytes -= take
+                    if (!onStreamChunk(buffer, payloadStart, payloadStart + take)) return
+                    if (streamingRemainingBytes == 0) {
+                        streamingPartType = -1
+                        if (!onStreamEnd()) return
+                    }
+                    continue
+                }
+                val available = chunkEnd - chunkPos
+                if (available == 0) return
+                val take = minOf(streamingRemainingBytes, available)
+                val payloadStart = chunkPos
+                chunkPos += take
+                streamingRemainingBytes -= take
+                if (!onStreamChunk(chunk, payloadStart, payloadStart + take)) return
+                if (streamingRemainingBytes == 0) {
+                    streamingPartType = -1
+                    if (!onStreamEnd()) return
+                }
+                continue
             }
-            val partEnd = size.nextOffset.toLong() + size.value
-            if (partEnd > end) break
-            val keepReading = onPart(type.value, buffer, size.nextOffset, partEnd.toInt())
-            parseOffset = partEnd.toInt()
-            if (!keepReading) break
-        }
 
-        start = parseOffset
-        if (start == end) {
-            start = 0
-            end = 0
+            if (pendingSize == 0) {
+                if (chunkPos >= chunkEnd) return
+                val packedType = readUmpVarint(chunk, chunkPos, chunkEnd)
+                if (packedType == INCOMPLETE_VARINT) {
+                    appendToBuffer(chunk, chunkPos, chunkEnd - chunkPos)
+                    return
+                }
+                val type = varintValue(packedType)
+                val typeNext = varintNextOffset(packedType)
+                val packedSize = readUmpVarint(chunk, typeNext, chunkEnd)
+                if (packedSize == INCOMPLETE_VARINT) {
+                    appendToBuffer(chunk, chunkPos, chunkEnd - chunkPos)
+                    return
+                }
+                val size = varintValue(packedSize)
+                val sizeNext = varintNextOffset(packedSize)
+                validatePartSize(type, size)
+                if (type == streamPartType) {
+                    chunkPos = sizeNext
+                    streamingPartType = type
+                    streamingRemainingBytes = size
+                    if (!onStreamStart(type, size)) return
+                    if (size == 0) {
+                        streamingPartType = -1
+                        if (!onStreamEnd()) return
+                    }
+                    continue
+                }
+                val partEnd = sizeNext.toLong() + size
+                if (partEnd <= chunkEnd) {
+                    chunkPos = partEnd.toInt()
+                    if (!onPart(type, chunk, sizeNext, partEnd.toInt())) return
+                    continue
+                }
+                appendToBuffer(chunk, chunkPos, chunkEnd - chunkPos)
+                return
+            }
+
+            // pendingSize > 0: finish parsing the straddling header or buffered part from buffer.
+            val packedType = readUmpVarint(buffer, start, end)
+            if (packedType == INCOMPLETE_VARINT) {
+                if (chunkPos >= chunkEnd) return
+                val copy = minOf(MAX_HEADER_BYTES - pendingSize.coerceAtMost(MAX_HEADER_BYTES - 1), chunkEnd - chunkPos)
+                appendToBuffer(chunk, chunkPos, copy)
+                chunkPos += copy
+                continue
+            }
+            val type = varintValue(packedType)
+            val typeNext = varintNextOffset(packedType)
+            val packedSize = readUmpVarint(buffer, typeNext, end)
+            if (packedSize == INCOMPLETE_VARINT) {
+                if (chunkPos >= chunkEnd) return
+                val copy = minOf(MAX_HEADER_BYTES - pendingSize.coerceAtMost(MAX_HEADER_BYTES - 1), chunkEnd - chunkPos)
+                appendToBuffer(chunk, chunkPos, copy)
+                chunkPos += copy
+                continue
+            }
+            val size = varintValue(packedSize)
+            val sizeNext = varintNextOffset(packedSize)
+            validatePartSize(type, size)
+
+            if (type == streamPartType) {
+                start = sizeNext
+                if (start == end) {
+                    start = 0
+                    end = 0
+                }
+                streamingPartType = type
+                streamingRemainingBytes = size
+                if (!onStreamStart(type, size)) return
+                if (size == 0) {
+                    streamingPartType = -1
+                    if (!onStreamEnd()) return
+                }
+                continue
+            }
+
+            val partEnd = sizeNext.toLong() + size
+            if (partEnd <= end) {
+                val payloadEnd = partEnd.toInt()
+                start = payloadEnd
+                if (start == end) {
+                    start = 0
+                    end = 0
+                }
+                if (!onPart(type, buffer, sizeNext, payloadEnd)) return
+                continue
+            }
+
+            if (chunkPos >= chunkEnd) return
+            val needed = (partEnd - end).toInt()
+            val copy = minOf(needed, chunkEnd - chunkPos)
+            appendToBuffer(chunk, chunkPos, copy)
+            chunkPos += copy
         }
     }
 
     fun finish() {
-        if (pendingSize > 0) throw SabrProtocolException("Truncated UMP response ($pendingSize bytes remain)")
+        val remaining = pendingSize + streamingRemainingBytes
+        if (remaining > 0 || streamingPartType >= 0) {
+            throw SabrProtocolException("Truncated UMP response ($remaining bytes remain)")
+        }
     }
 
     private val pendingSize: Int
         get() = end - start
+
+    private fun validatePartSize(
+        type: Int,
+        size: Int,
+    ) {
+        if (size > minOf(maxPartSize, maxPartSizeForType(type))) {
+            throw SabrProtocolException("UMP part is too large: $size bytes")
+        }
+    }
+
+    private fun appendToBuffer(
+        source: ByteArray,
+        offset: Int,
+        count: Int,
+    ) {
+        if (count <= 0) return
+        ensureCapacity(count)
+        source.copyInto(buffer, destinationOffset = end, startIndex = offset, endIndex = offset + count)
+        end += count
+    }
 
     private fun ensureCapacity(additionalBytes: Int) {
         val required = pendingSize.toLong() + additionalBytes
@@ -108,8 +276,8 @@ internal class UmpReader(
         data: ByteArray,
         offset: Int,
         limit: Int,
-    ): UmpVarint? {
-        if (offset >= limit) return null
+    ): Long {
+        if (offset >= limit) return INCOMPLETE_VARINT
         val first = data[offset].toInt() and 0xff
         val byteLength =
             when {
@@ -119,31 +287,53 @@ internal class UmpReader(
                 first < 0xf0 -> 4
                 else -> 5
             }
-        if (limit - offset < byteLength) return null
-
-        fun byte(index: Int): Int = data[offset + index].toInt() and 0xff
+        if (limit - offset < byteLength) return INCOMPLETE_VARINT
 
         val value =
             when (byteLength) {
-                1 -> first
-                2 -> (first and 0x3f) + 64 * byte(1)
-                3 -> (first and 0x1f) + 32 * (byte(1) + 256 * byte(2))
-                4 -> (first and 0x0f) + 16 * (byte(1) + 256 * (byte(2) + 256 * byte(3)))
-                else -> byte(1) + 256 * (byte(2) + 256 * (byte(3) + 256 * byte(4)))
+                1 -> {
+                    first
+                }
+
+                2 -> {
+                    (first and 0x3f) + 64 * (data[offset + 1].toInt() and 0xff)
+                }
+
+                3 -> {
+                    (first and 0x1f) + 32 * ((data[offset + 1].toInt() and 0xff) + 256 * (data[offset + 2].toInt() and 0xff))
+                }
+
+                4 -> {
+                    (first and 0x0f) +
+                        16 * (
+                            (data[offset + 1].toInt() and 0xff) +
+                                256 * ((data[offset + 2].toInt() and 0xff) + 256 * (data[offset + 3].toInt() and 0xff))
+                        )
+                }
+
+                else -> {
+                    (data[offset + 1].toInt() and 0xff) +
+                        256 * (
+                            (data[offset + 2].toInt() and 0xff) +
+                                256 * ((data[offset + 3].toInt() and 0xff) + 256 * (data[offset + 4].toInt() and 0xff))
+                        )
+                }
             }
         if (value < 0) throw SabrProtocolException("UMP varint exceeds Int.MAX_VALUE")
-        return UmpVarint(value, offset + byteLength)
+        return ((offset + byteLength).toLong() shl 32) or value.toLong()
     }
 
-    private data class UmpVarint(
-        val value: Int,
-        val nextOffset: Int,
-    )
+    private fun varintValue(packed: Long): Int = (packed and 0xffff_ffffL).toInt()
+
+    private fun varintNextOffset(packed: Long): Int = (packed ushr 32).toInt()
 
     companion object {
         const val DEFAULT_MAX_PART_SIZE: Int = 8 * 1024 * 1024
         private const val DEFAULT_BUFFER_SIZE = 8 * 1024
+        private const val MAX_RETAINED_BUFFER_SIZE = 128 * 1024
+        private const val MAX_HEADER_BYTES = 10
         private const val MAX_PENDING_BYTES: Long = 16L * 1024 * 1024
+        private const val INCOMPLETE_VARINT = -1L
     }
 }
 

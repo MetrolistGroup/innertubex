@@ -54,6 +54,7 @@ class YouTubeCipherService(
         private const val MAX_MEDIA_URL_LENGTH = 16 * 1024
         private const val MAX_CHALLENGE_LENGTH = 16 * 1024
         private const val MAX_SOLVER_OUTPUT_LENGTH = 65_536
+        private val RETRYABLE_HTTP_STATUSES = setOf(408, 425, 429, 500, 502, 503, 504)
         private val N_PARAMETER_REGEX = Regex("[&?](?:n|%6[eE])=([^&#]+)")
         private val QUERY_PARAMETER_NAME_REGEX = Regex("[A-Za-z][A-Za-z0-9._~-]*")
         private val LOG_URL_REGEX = Regex("""https?://\S+""", RegexOption.IGNORE_CASE)
@@ -75,6 +76,7 @@ class YouTubeCipherService(
     private val playerCodeCache = LinkedHashMap<String, String>()
     private val playerCodeDownloads = mutableMapOf<String, CompletableDeferred<String>>()
     private val playerCodeFailures = LinkedHashMap<String, TimeSource.Monotonic.ValueTimeMark>()
+    private var directClient: HttpClient? = null
     private val cacheMutex = Mutex()
     private val operationMutex = Mutex()
 
@@ -139,7 +141,7 @@ class YouTubeCipherService(
                 currentCoroutineContext().ensureActive()
                 val signatureField = !format.signatureCipher.isNullOrBlank()
                 val cipher = if (signatureField) format.signatureCipher else format.cipher
-                var resolved = format
+                var current = format
                 if (!cipher.isNullOrBlank()) {
                     val params = parseCipherParams(cipher)
                     val url = params?.get("url")
@@ -152,14 +154,14 @@ class YouTubeCipherService(
                     val newUrl =
                         signatures[signature]?.let { appendQueryParameterToApprovedUrl(url, params["sp"] ?: "signature", it) }
                             ?: return@map format.copy(url = null)
-                    resolved =
+                    current =
                         if (signatureField) format.copy(url = newUrl, signatureCipher = null) else format.copy(url = newUrl, cipher = null)
                 }
-                val url = resolved.url ?: return@map resolved
-                val match = url.nMatch() ?: return@map resolved
-                val challenge = decodeChallenge(match.groupValues[1]) ?: return@map resolved.copy(url = null)
+                val url = current.url ?: return@map current
+                val match = url.nMatch() ?: return@map current
+                val challenge = decodeChallenge(match.groupValues[1]) ?: return@map current.copy(url = null)
                 if (!nValues.containsKey(challenge)) nValues[challenge] = transform(playerUrl, program, challenge, n = true)
-                resolved.copy(url = nValues[challenge]?.let { replaceQueryParameterInApprovedUrl(url, match, it) })
+                current.copy(url = nValues[challenge]?.let { replaceQueryParameterInApprovedUrl(url, match, it) })
             }
         }
     }
@@ -429,6 +431,11 @@ class YouTubeCipherService(
     internal var playerDownloadBudgetMs = 15_000L
     internal var playerAttemptTimeoutMs = 12_000L
 
+    private suspend fun getOrCreateDirectClient(): HttpClient =
+        cacheMutex.withLock {
+            directClient ?: httpClient.createNoRedirectClient().also { directClient = it }
+        }
+
     private suspend fun downloadPlayerScript(playerUrl: String): String {
         val validatedUrl = validatedPlayerScriptUrl(playerUrl)
         return withTimeoutOrNull(playerDownloadBudgetMs) {
@@ -436,7 +443,7 @@ class YouTubeCipherService(
             repeat(3) { attempt ->
                 try {
                     val response =
-                        httpClient.getTextWithoutRedirects(validatedUrl, MAX_PLAYER_SCRIPT_BYTES) {
+                        getOrCreateDirectClient().getTextOnDirectClient(validatedUrl, MAX_PLAYER_SCRIPT_BYTES) {
                             header(HttpHeaders.UserAgent, OKHTTP_USER_AGENT)
                             header(HttpHeaders.Accept, "*/*")
                             header("Referer", "https://www.youtube.com/")
@@ -450,7 +457,7 @@ class YouTubeCipherService(
                     val failure =
                         PlayerScriptHttpException(
                             status = response.status.value,
-                            retryable = response.status.value in setOf(408, 425, 429, 500, 502, 503, 504),
+                            retryable = response.status.value in RETRYABLE_HTTP_STATUSES,
                         )
                     lastFailure = failure
                     if (!failure.retryable || attempt == 2) throw failure
@@ -555,14 +562,17 @@ class YouTubeCipherService(
 
     suspend fun dispose() =
         operationMutex.withLock {
-            cacheMutex.withLock {
-                disposeGeneration++
-                programs.clear()
-                compileFailures.clear()
-                playerCodeCache.clear()
-                playerCodeFailures.clear()
-                playerCodeDownloads.clear()
-            }
+            val clientToClose =
+                cacheMutex.withLock {
+                    disposeGeneration++
+                    programs.clear()
+                    compileFailures.clear()
+                    playerCodeCache.clear()
+                    playerCodeFailures.clear()
+                    playerCodeDownloads.clear()
+                    directClient.also { directClient = null }
+                }
+            clientToClose?.close()
         }
 }
 

@@ -1,5 +1,6 @@
 package com.metrolist.innertubex
 
+import com.metrolist.innertubex.cipher.createNoRedirectClient
 import com.metrolist.innertubex.models.Context
 import com.metrolist.innertubex.models.YouTubeClient
 import com.metrolist.innertubex.models.YouTubeLocale
@@ -154,6 +155,8 @@ class InnerTube(
         private const val FIELD_MASK_HEADER = "X-Goog-FieldMask"
         private val VISITOR_FAILURE_COOLDOWN = 30.seconds
         private const val MAX_VISITOR_RESPONSE_BYTES = 4 * 1024 * 1024
+        private val CLOSED_CLIENT = Any()
+        private val NO_STREAM_RESULT = Any()
     }
 
     // These requests are POSTs. Replace even an explicitly installed caller redirect policy.
@@ -162,6 +165,53 @@ class InnerTube(
             followRedirects = false
             installOrReplace(HttpRedirect) { checkHttpMethod = true }
         }
+
+    private val noRedirectClientState = AtomicReference<Any?>(null)
+    internal val noRedirectClient: HttpClient
+        get() {
+            while (true) {
+                when (val state = noRedirectClientState.load()) {
+                    is HttpClient -> {
+                        return state
+                    }
+
+                    CLOSED_CLIENT -> {
+                        throw CancellationException("InnerTube is closed")
+                    }
+
+                    else -> {
+                        val created = httpClient.createNoRedirectClient()
+                        if (noRedirectClientState.compareAndSet(null, created)) {
+                            return created
+                        }
+                        created.close()
+                    }
+                }
+            }
+        }
+
+    private data class PrefCookieCache(
+        val cookie: String?,
+        val hl: String,
+        val gl: String,
+        val value: String,
+    )
+
+    private val cachedPrefCookie = AtomicReference<PrefCookieCache?>(null)
+
+    private fun effectivePrefCookie(
+        cookie: String?,
+        hl: String,
+        gl: String,
+    ): String {
+        cachedPrefCookie
+            .load()
+            ?.takeIf { it.cookie == cookie && it.hl == hl && it.gl == gl }
+            ?.let { return it.value }
+        val built = injectPrefCookie(cookie, hl, gl)
+        cachedPrefCookie.store(PrefCookieCache(cookie, hl, gl, built))
+        return built
+    }
 
     /** Immutable request identity. Contains credentials and must not be serialized or logged directly. */
     data class SessionSnapshot(
@@ -268,6 +318,14 @@ class InnerTube(
     fun close() {
         visitorDataScope.cancel()
         postClient.close()
+        while (true) {
+            val state = noRedirectClientState.load()
+            if (state === CLOSED_CLIENT) break
+            if (noRedirectClientState.compareAndSet(state, CLOSED_CLIENT)) {
+                (state as? HttpClient)?.close()
+                break
+            }
+        }
         while (true) {
             val requests = sessionBoundRequests.load()
             if (sessionBoundRequests.compareAndSet(requests, emptyList())) {
@@ -435,7 +493,7 @@ class InnerTube(
             append("X-Goog-AuthUser", session.authUser)
             append("Accept-Language", session.locale.acceptLanguageHeader())
             session.visitorData?.let { append("X-Goog-Visitor-Id", it) }
-            val effectiveCookie = injectPrefCookie(session.cookie, session.locale.hl, session.locale.gl)
+            val effectiveCookie = effectivePrefCookie(session.cookie, session.locale.hl, session.locale.gl)
             append(HttpHeaders.Cookie, effectiveCookie)
             sapisidAuthHeader(ORIGIN_MUSIC, session.sapisid)?.let { append(HttpHeaders.Authorization, it) }
         }
@@ -487,7 +545,7 @@ class InnerTube(
             )
             visitorData?.let { append("X-Goog-Visitor-Id", it) }
             if (client.loginSupported && includeAccountCookies) {
-                val effectiveCookie = injectPrefCookie(session.cookie, session.locale.hl, session.locale.gl)
+                val effectiveCookie = effectivePrefCookie(session.cookie, session.locale.hl, session.locale.gl)
                 append(HttpHeaders.Cookie, effectiveCookie)
             }
             if (setLogin && client.loginSupported && !session.cookie.isNullOrBlank()) {
@@ -504,23 +562,7 @@ class InnerTube(
         userAgent(client.userAgent)
     }
 
-    private suspend fun <T> withNoRedirects(block: suspend (HttpClient) -> T): T {
-        val directClient =
-            HttpClient(httpClient.engine) {
-                expectSuccess = false
-                followRedirects = false
-                install(HttpTimeout) {
-                    requestTimeoutMillis = 30_000L
-                    connectTimeoutMillis = 10_000L
-                    socketTimeoutMillis = 10_000L
-                }
-            }
-        return try {
-            block(directClient)
-        } finally {
-            directClient.close()
-        }
-    }
+    private suspend fun <T> withNoRedirects(block: suspend (HttpClient) -> T): T = block(noRedirectClient)
 
     /** [keepErrorBody] = false skips downloading non-2xx bodies; use it only where callers never read them. */
     private suspend fun HttpClient.postBounded(
@@ -571,6 +613,81 @@ class InnerTube(
                 channel.cancel(null)
             }
         }
+
+    private suspend fun <T> executeStreamingRequest(
+        operation: String,
+        retryTransientFailures: Boolean = true,
+        requireSuccess: Boolean = true,
+        maxAttempts: Int = 3,
+        initialDelay: Long = 500L,
+        factor: Double = 2.0,
+        prepare: suspend () -> HttpStatement,
+        onResponse: suspend (HttpResponse) -> T,
+    ): T {
+        var currentDelay = initialDelay
+        var attempt = 0
+        while (true) {
+            try {
+                currentCoroutineContext().ensureActive()
+                var retryAfterMs: Long? = null
+                var shouldRetry = false
+                var resultValue: Any? = NO_STREAM_RESULT
+                prepare().execute { response ->
+                    val statusCode = response.status.value
+                    retryAfterMs =
+                        if (statusCode == 429) {
+                            response.headers[HttpHeaders.RetryAfter]
+                                ?.toLongOrNull()
+                                ?.times(1_000L)
+                                ?.takeIf { it in 0..MAX_RETRY_AFTER_MS }
+                        } else {
+                            null
+                        }
+                    val retryableStatus = statusCode in TRANSIENT_STATUS_CODES && (statusCode != 429 || retryAfterMs != null)
+                    if (!retryTransientFailures || !retryableStatus || attempt + 1 >= maxAttempts) {
+                        if (attempt > 0 && response.status.isSuccess()) {
+                            logger.w(TAG, "$operation succeeded on retry ${attempt + 1}/$maxAttempts")
+                        }
+                        if (requireSuccess && statusCode !in 200..299) {
+                            response.bodyAsChannel().cancel(null)
+                            throw InnerTubeHttpException(operation, response.status)
+                        }
+                        resultValue = onResponse(response)
+                        return@execute
+                    }
+                    response.bodyAsChannel().cancel(null)
+                    shouldRetry = true
+                    attempt++
+                    logger.w(
+                        TAG,
+                        "$operation returned HTTP $statusCode on attempt $attempt/$maxAttempts, retrying in ${retryAfterMs ?: currentDelay}ms",
+                    )
+                }
+                if (!shouldRetry) {
+                    @Suppress("UNCHECKED_CAST")
+                    return resultValue as T
+                }
+                retryDelay((retryAfterMs ?: currentDelay).milliseconds)
+                currentDelay = (currentDelay * factor).toLong()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: InnerTubeHttpException) {
+                throw e
+            } catch (e: Exception) {
+                attempt++
+                if (!retryTransientFailures || (e !is IOException && e !is HttpRequestTimeoutException) || attempt >= maxAttempts) {
+                    logger.w(TAG, "$operation failed after $attempt attempts (${e.logType()})")
+                    throw e
+                }
+                logger.w(
+                    TAG,
+                    "$operation failed on attempt $attempt/$maxAttempts (${e.logType()}), retrying in ${currentDelay}ms",
+                )
+                retryDelay(currentDelay.milliseconds)
+                currentDelay = (currentDelay * factor).toLong()
+            }
+        }
+    }
 
     private suspend fun executeRequest(
         operation: String = "request",
@@ -701,22 +818,28 @@ class InnerTube(
     internal suspend fun currentMusicVideoId(videoId: String): String? {
         if (!VIDEO_ID.matches(videoId)) return null
         val requestSession = sessionSnapshot()
-        val response =
-            executeRequest(operation = "resolve_url", retryTransientFailures = false) {
-                postClient.postBounded("navigation/resolve_url", maxBytes = MAX_RESOLVE_URL_RESPONSE_BYTES, keepErrorBody = false) {
-                    ytClient(YouTubeClient.WEB_REMIX, requestSession, includeAccountCookies = false)
-                    setBody(
-                        ResolveUrlBody(
-                            context = YouTubeClient.WEB_REMIX.toContext(requestSession.locale, requestSession.visitorData, null),
-                            url = "https://music.youtube.com/watch?v=$videoId",
-                        ),
-                    )
-                }
-            }
+        val body =
+            executeStreamingRequest(
+                operation = "resolve_url",
+                retryTransientFailures = false,
+                prepare = {
+                    postClient.preparePost("navigation/resolve_url") {
+                        expectSuccess = false
+                        ytClient(YouTubeClient.WEB_REMIX, requestSession, includeAccountCookies = false)
+                        setBody(
+                            ResolveUrlBody(
+                                context = YouTubeClient.WEB_REMIX.toContext(requestSession.locale, requestSession.visitorData, null),
+                                url = "https://music.youtube.com/watch?v=$videoId",
+                            ),
+                        )
+                    }
+                },
+                onResponse = { response -> response.bodyAsTextLimited(MAX_RESOLVE_URL_RESPONSE_BYTES) },
+            )
         val resolved =
             runCatching {
                 IMAGE_UPLOAD_JSON
-                    .parseToJsonElement(response.bodyAsTextLimited(MAX_RESOLVE_URL_RESPONSE_BYTES))
+                    .parseToJsonElement(body)
                     .jsonObject["endpoint"]
                     ?.jsonObject
                     ?.get("watchEndpoint")
@@ -1023,45 +1146,37 @@ class InnerTube(
                     videoId = videoId,
                     signatureTimestamp = signatureTimestamp,
                 )
-            val directClient =
-                HttpClient(httpClient.engine) {
+            noRedirectClient
+                .preparePost(TV_BEARER_PLAYER_ENDPOINT) {
                     expectSuccess = false
-                    followRedirects = false
-                    install(HttpTimeout)
-                }
-            try {
-                val response =
-                    directClient.postBounded(TV_BEARER_PLAYER_ENDPOINT, keepErrorBody = false) {
-                        contentType(ContentType.Application.Json)
-                        headers {
-                            append("X-Goog-Api-Format-Version", "1")
-                            append("X-YouTube-Client-Name", requestClient.clientId)
-                            append("X-YouTube-Client-Version", requestClient.clientVersion)
-                            append("Origin", ORIGIN_WWW)
-                            append("X-Origin", ORIGIN_WWW)
-                            append("Referer", REFERER_WWW)
-                            append("Accept-Language", requestSession.locale.acceptLanguageHeader())
-                            requestSession.visitorData?.takeIf(String::isNotBlank)?.let { append("X-Goog-Visitor-Id", it) }
-                            append(HttpHeaders.Authorization, "Bearer $bearerToken")
-                        }
-                        parameter("prettyPrint", false)
-                        setBody(Json.encodeToString(PlayerBody.serializer(), body))
-                        userAgent(requestClient.userAgent)
-                        timeout {
-                            requestTimeoutMillis = TV_BEARER_TIMEOUT_MS
-                            connectTimeoutMillis = TV_BEARER_TIMEOUT_MS
-                            socketTimeoutMillis = TV_BEARER_TIMEOUT_MS
-                        }
+                    contentType(ContentType.Application.Json)
+                    headers {
+                        append("X-Goog-Api-Format-Version", "1")
+                        append("X-YouTube-Client-Name", requestClient.clientId)
+                        append("X-YouTube-Client-Version", requestClient.clientVersion)
+                        append("Origin", ORIGIN_WWW)
+                        append("X-Origin", ORIGIN_WWW)
+                        append("Referer", REFERER_WWW)
+                        append("Accept-Language", requestSession.locale.acceptLanguageHeader())
+                        requestSession.visitorData?.takeIf(String::isNotBlank)?.let { append("X-Goog-Visitor-Id", it) }
+                        append(HttpHeaders.Authorization, "Bearer $bearerToken")
                     }
-                if (!response.status.isSuccess()) {
-                    response.bodyAsChannel().cancel(null)
-                    null
-                } else {
-                    response.bodyAsTextLimited(MAX_TV_BEARER_RESPONSE_BYTES)
+                    parameter("prettyPrint", false)
+                    setBody(Json.encodeToString(PlayerBody.serializer(), body))
+                    userAgent(requestClient.userAgent)
+                    timeout {
+                        requestTimeoutMillis = TV_BEARER_TIMEOUT_MS
+                        connectTimeoutMillis = TV_BEARER_TIMEOUT_MS
+                        socketTimeoutMillis = TV_BEARER_TIMEOUT_MS
+                    }
+                }.execute { response ->
+                    if (!response.status.isSuccess()) {
+                        response.bodyAsChannel().cancel(null)
+                        null
+                    } else {
+                        response.bodyAsTextLimited(MAX_TV_BEARER_RESPONSE_BYTES)
+                    }
                 }
-            } finally {
-                directClient.close()
-            }
         }
 
     suspend fun next(
@@ -1388,6 +1503,38 @@ class InnerTube(
                 )
             }
         }
+    }
+
+    @OptIn(ExperimentalEncodingApi::class)
+    internal suspend fun getTranscriptText(
+        client: YouTubeClient,
+        videoId: String,
+        maxBytes: Int,
+    ): String {
+        val requestSession = sessionSnapshot()
+        return executeStreamingRequest(
+            operation = "getTranscript",
+            prepare = {
+                postClient.preparePost("https://music.youtube.com/youtubei/v1/get_transcript") {
+                    expectSuccess = false
+                    // YouTube Music's public web-client key, not an application credential.
+                    parameter("key", TRANSCRIPT_API_KEY)
+                    headers {
+                        append("Content-Type", "application/json")
+                    }
+                    setBody(
+                        GetTranscriptBody(
+                            context = client.toContext(requestSession.locale, null, null),
+                            params =
+                                Base64.encode(
+                                    "\n${11.toChar()}$videoId".encodeToByteArray(),
+                                ),
+                        ),
+                    )
+                }
+            },
+            onResponse = { response -> response.bodyAsTextLimited(maxBytes) },
+        )
     }
 
     @OptIn(ExperimentalEncodingApi::class)
@@ -1993,9 +2140,13 @@ class InnerTube(
             val serviceWorkerData =
                 withTimeoutOrNull(SERVICE_WORKER_VISITOR_TIMEOUT_MS) {
                     try {
-                        val response =
-                            executeRequest(operation = "fetchFreshVisitorData", retryTransientFailures = false, requireSuccess = false) {
-                                httpClient.getBounded(VISITOR_DATA_URL) {
+                        executeStreamingRequest(
+                            operation = "fetchFreshVisitorData",
+                            retryTransientFailures = false,
+                            requireSuccess = false,
+                            prepare = {
+                                httpClient.prepareGet(VISITOR_DATA_URL) {
+                                    expectSuccess = false
                                     header("User-Agent", YouTubeClient.USER_AGENT_WEB)
                                     header(HttpHeaders.Accept, "application/json,text/plain,*/*")
                                     header(
@@ -2003,13 +2154,18 @@ class InnerTube(
                                         requestSession.locale.acceptLanguageHeader(),
                                     )
                                 }
-                            }
-                        if (response.status.value in 200..299) {
-                            sanitizeVisitorData(parseServiceWorkerVisitorData(response.bodyAsTextLimited(MAX_VISITOR_RESPONSE_BYTES)))
-                        } else {
-                            response.bodyAsChannel().cancel(null)
-                            null
-                        }
+                            },
+                            onResponse = { response ->
+                                if (response.status.value in 200..299) {
+                                    sanitizeVisitorData(
+                                        parseServiceWorkerVisitorData(response.bodyAsTextLimited(MAX_VISITOR_RESPONSE_BYTES)),
+                                    )
+                                } else {
+                                    response.bodyAsChannel().cancel(null)
+                                    null
+                                }
+                            },
+                        )
                     } catch (error: CancellationException) {
                         throw error
                     } catch (error: Exception) {
@@ -2036,10 +2192,14 @@ class InnerTube(
             null
         }
 
-    private suspend fun fetchHomepageVisitorData(requestSession: SessionSnapshot): String? {
-        val response =
-            executeRequest(operation = "fetchFreshVisitorData", requireSuccess = false, maxAttempts = 2) {
-                httpClient.getBounded(ORIGIN_MUSIC) {
+    private suspend fun fetchHomepageVisitorData(requestSession: SessionSnapshot): String? =
+        executeStreamingRequest(
+            operation = "fetchFreshVisitorData",
+            requireSuccess = false,
+            maxAttempts = 2,
+            prepare = {
+                httpClient.prepareGet(ORIGIN_MUSIC) {
+                    expectSuccess = false
                     header("User-Agent", YouTubeClient.USER_AGENT_WEB)
                     header(HttpHeaders.Accept, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
                     header(
@@ -2047,16 +2207,25 @@ class InnerTube(
                         requestSession.locale.acceptLanguageHeader(),
                     )
                 }
-            }
-        if (response.status.value !in 200..299) {
-            response.bodyAsChannel().cancel(null)
-            return null
-        }
-        return VISITOR_DATA_REGEX
-            .find(response.bodyAsTextLimited(MAX_VISITOR_RESPONSE_BYTES))
-            ?.groupValues
-            ?.get(1)
-    }
+            },
+            onResponse = { response ->
+                if (response.status.value !in 200..299) {
+                    response.bodyAsChannel().cancel(null)
+                    return@executeStreamingRequest null
+                }
+                if ((response.contentLength() ?: 0L) > MAX_VISITOR_RESPONSE_BYTES) {
+                    response.bodyAsChannel().cancel(null)
+                    throw ResponseTooLargeException(MAX_VISITOR_RESPONSE_BYTES)
+                }
+                var visitor: String? = null
+                val html =
+                    response.bodyAsTextLimited(MAX_VISITOR_RESPONSE_BYTES) { prefix ->
+                        visitor = VISITOR_DATA_REGEX.find(prefix)?.groupValues?.get(1)
+                        visitor != null
+                    }
+                visitor ?: VISITOR_DATA_REGEX.find(html)?.groupValues?.get(1)
+            },
+        )
 
     private fun parseServiceWorkerVisitorData(responseText: String): String? =
         runCatching {

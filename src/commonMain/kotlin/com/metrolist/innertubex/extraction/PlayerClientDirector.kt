@@ -39,13 +39,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.MissingFieldException
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.time.Clock
@@ -79,22 +72,6 @@ internal class PlayerClientDirector(
         private val DYNAMIC_WEB_VERSION_CLIENT_NAMES = setOf("WEB", "WEB_EMBEDDED_PLAYER")
         private val TRANSPORT_PROBE_CLIENT_NAMES =
             setOf("IOS_MUSIC", "ANDROID_KIDS", "ANDROID_PRODUCER", "MEDIA_CONNECT_FRONTEND")
-        private val KNOWN_DRM_KEYS =
-            setOf(
-                "contentprotection",
-                "contentprotectionids",
-                "drmfamilies",
-                "drmfamily",
-                "drmparameters",
-                "drmparams",
-                "drmtracktype",
-                "fairplay",
-                "licenseinfo",
-                "licenseinfos",
-                "licenseurl",
-                "playready",
-                "widevine",
-            )
     }
 
     internal val usesAutomaticCatalog: Boolean = fallbackStrategy is ContentAwareFallbackStrategy
@@ -1096,20 +1073,21 @@ internal class PlayerClientDirector(
         client: YouTubeClient,
         startTime: Long,
     ): PlayerResponse? {
-        if (!hasBoundedJsonStructure(payload)) return null
-        val parsedRoot = runCatching { json.parseToJsonElement(payload).jsonObject }.getOrNull()
-        if (parsedRoot?.let(::containsKnownDrmMarker) == true) {
-            logger.w(TAG, "player response rejected", details = mapOf("client" to client.clientName, "reason" to "drm"))
-            return null
-        }
-        val decoded =
-            runCatching {
-                if (parsedRoot != null) {
-                    json.decodeFromJsonElement(PlayerResponse.serializer(), parsedRoot)
-                } else {
-                    json.decodeFromString<PlayerResponse>(payload)
-                }
+        when (PlayerResponseJsonScanner.inspect(payload)) {
+            PlayerJsonInspection.UNBOUNDED -> {
+                return null
             }
+
+            PlayerJsonInspection.DRM_DETECTED -> {
+                logger.w(TAG, "player response rejected", details = mapOf("client" to client.clientName, "reason" to "drm"))
+                return null
+            }
+
+            PlayerJsonInspection.CLEAN -> {
+                Unit
+            }
+        }
+        val decoded = runCatching { json.decodeFromString(PlayerResponse.serializer(), payload) }
         val response = decoded.getOrNull()
         if (response == null) {
             val elapsed = Clock.System.now().toEpochMilliseconds() - startTime
@@ -1199,82 +1177,6 @@ internal class PlayerClientDirector(
             clientHealthMonitor.recordFailure(clientId, kind, scope)
         }
     }
-
-    // Count collection entries as well as containers without allocating a JSON tree.
-    private fun hasBoundedJsonStructure(payload: String): Boolean {
-        var depth = 0
-        var entries = 0
-        var quoted = false
-        var escaped = false
-        for (character in payload) {
-            if (quoted) {
-                if (escaped) {
-                    escaped = false
-                } else {
-                    when (character) {
-                        '\\' -> escaped = true
-                        '"' -> quoted = false
-                    }
-                }
-            } else {
-                when (character) {
-                    '"' -> {
-                        quoted = true
-                    }
-
-                    '{', '[' -> {
-                        if (++depth > 64 || ++entries > 65_536) return false
-                    }
-
-                    '}', ']' -> {
-                        depth--
-                    }
-
-                    ',', ':' -> {
-                        if (++entries > 65_536) return false
-                    }
-                }
-            }
-        }
-        return true
-    }
-
-    private fun containsKnownDrmMarker(root: JsonObject): Boolean {
-        val streamingData = root["streamingData"] as? JsonObject ?: return false
-        if (KNOWN_DRM_KEYS.any { key -> knownDrmValue(streamingData, key)?.let(::hasDrmValue) == true }) return true
-        return listOf("formats", "adaptiveFormats").any { key ->
-            (streamingData[key] as? JsonArray).orEmpty().any { format ->
-                (format as? JsonObject)?.let { item ->
-                    KNOWN_DRM_KEYS.any { marker -> knownDrmValue(item, marker)?.let(::hasDrmValue) == true }
-                } == true
-            }
-        }
-    }
-
-    private fun knownDrmValue(
-        objectValue: JsonObject,
-        key: String,
-    ): JsonElement? = objectValue.entries.firstOrNull { it.key.lowercase() == key }?.value
-
-    private fun hasDrmValue(element: JsonElement): Boolean =
-        when (element) {
-            is JsonObject -> {
-                element.isNotEmpty()
-            }
-
-            is JsonArray -> {
-                element.any { value ->
-                    when (value) {
-                        is JsonObject, is JsonArray -> true
-                        is JsonPrimitive -> value.contentOrNull?.let { it.isNotBlank() && it != "false" && it != "0" } == true
-                    }
-                }
-            }
-
-            is JsonPrimitive -> {
-                element.contentOrNull?.let { it.isNotBlank() && it != "false" && it != "0" } == true
-            }
-        }
 
     private fun PlayerResponse.matchesRequestedVideo(videoId: String): Boolean =
         videoDetails?.videoId?.takeIf(String::isNotBlank)?.let { it == videoId } ?: true

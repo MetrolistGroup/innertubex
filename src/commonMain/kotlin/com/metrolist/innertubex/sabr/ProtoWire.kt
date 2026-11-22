@@ -1,5 +1,7 @@
 package com.metrolist.innertubex.sabr
 
+import kotlin.jvm.JvmInline
+
 private const val MAX_PROTOBUF_FIELD_NUMBER = 536_870_911
 private const val FIRST_RESERVED_FIELD_NUMBER = 19_000
 private const val LAST_RESERVED_FIELD_NUMBER = 19_999
@@ -78,6 +80,15 @@ internal class ProtoWriter(
     ) {
         val packed = child()
         values.forEach { packed.varint(it.toLong()) }
+        messageBytes(field, packed)
+    }
+
+    fun packedInt32(
+        field: Int,
+        emit: ((Int) -> Unit) -> Unit,
+    ) {
+        val packed = child()
+        emit { packed.varint(it.toLong()) }
         messageBytes(field, packed)
     }
 
@@ -165,7 +176,7 @@ internal class ProtoReader(
         val raw = varint()
         val field = raw ushr 3
         if (!isValidProtobufFieldNumber(field)) throw SabrProtocolException("Invalid protobuf field number $field")
-        return ProtoTag(field = field.toInt(), wireType = (raw and 7).toInt())
+        return ProtoTag(raw)
     }
 
     fun varint(): Long {
@@ -191,15 +202,35 @@ internal class ProtoReader(
     }
 
     fun bytes(maxSize: Int = Int.MAX_VALUE): ByteArray {
+        val length = readLength(maxSize)
+        val end = position + length
+        return data.copyOfRange(position, end).also { position = end }
+    }
+
+    fun slice(maxSize: Int = Int.MAX_VALUE): ProtoReader {
+        val length = readLength(maxSize)
+        val start = position
+        val end = start + length
+        position = end
+        return ProtoReader(data, start, end)
+    }
+
+    fun string(maxSize: Int = Int.MAX_VALUE): String {
+        val length = readLength(maxSize)
+        val end = position + length
+        return data.decodeToString(startIndex = position, endIndex = end).also { position = end }
+    }
+
+    fun readRemainingUtf8(): String = data.decodeToString(startIndex = position, endIndex = limit).also { position = limit }
+
+    private fun readLength(maxSize: Int): Int {
         val length = varint()
         if (length < 0 || length > Int.MAX_VALUE) throw SabrProtocolException("Invalid protobuf length $length")
         if (length > maxSize) throw SabrProtocolException("Protobuf field exceeded $maxSize bytes")
         val end = position + length.toInt()
         if (end < position || end > limit) throw SabrProtocolException("Truncated protobuf field")
-        return data.copyOfRange(position, end).also { position = end }
+        return length.toInt()
     }
-
-    fun string(): String = bytes().decodeToString()
 
     fun skip(tag: ProtoTag) {
         when (tag.wireType) {
@@ -224,7 +255,13 @@ internal class ProtoReader(
     }
 }
 
-internal data class ProtoTag(
-    val field: Int,
-    val wireType: Int,
-)
+@JvmInline
+internal value class ProtoTag(
+    val raw: Long,
+) {
+    val field: Int
+        get() = (raw ushr 3).toInt()
+
+    val wireType: Int
+        get() = (raw and 7L).toInt()
+}

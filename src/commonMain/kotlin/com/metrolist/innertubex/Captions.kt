@@ -1,6 +1,6 @@
 package com.metrolist.innertubex
 
-import com.metrolist.innertubex.cipher.getTextWithoutRedirects
+import com.metrolist.innertubex.cipher.getTextOnDirectClient
 import com.metrolist.innertubex.models.YouTubeClient
 import com.metrolist.innertubex.models.response.GetTranscriptResponse
 import io.ktor.client.statement.HttpResponse
@@ -32,9 +32,9 @@ public suspend fun InnerTube.transcriptCues(
     videoId: String,
 ): List<TranscriptCue> {
     require(SAFE_VIDEO_ID.matches(videoId)) { "Invalid video ID" }
-    val response = getTranscript(client, videoId)
+    val body = getTranscriptText(client, videoId, MAX_TRANSCRIPT_BYTES)
     // Decoding and mapping a long transcript is CPU work; keep it off the caller's (possibly main) dispatcher.
-    return withContext(Dispatchers.Default) { parseTranscriptCues(response.bodyAsTextLimited(MAX_TRANSCRIPT_BYTES)) }
+    return withContext(Dispatchers.Default) { parseTranscriptCues(body) }
 }
 
 private fun parseTranscriptCues(body: String): List<TranscriptCue> {
@@ -74,7 +74,7 @@ public suspend fun InnerTube.fetchCaptionText(url: String): String {
     val captionUrl = validatedCaptionUrl(url)
     val response =
         try {
-            httpClient.getTextWithoutRedirects(captionUrl, MAX_CAPTION_BYTES)
+            noRedirectClient.getTextOnDirectClient(captionUrl, MAX_CAPTION_BYTES)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {

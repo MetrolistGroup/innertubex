@@ -40,6 +40,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.concurrent.atomics.AtomicReference
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.time.Clock
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -117,13 +119,22 @@ class InnerTubeExtractor internal constructor(
         val cookieFingerprint: String?,
     )
 
+    @OptIn(ExperimentalAtomicApi::class)
+    private val cachedCookieFingerprint = AtomicReference<Pair<String, String>?>(null)
+
+    @OptIn(ExperimentalAtomicApi::class)
+    private fun cookieFingerprint(cookie: String): String {
+        cachedCookieFingerprint.load()?.takeIf { it.first == cookie }?.let { return it.second }
+        val hash = sha256(cookie.encodeToByteArray()).toHexString()
+        cachedCookieFingerprint.store(cookie to hash)
+        return hash
+    }
+
     private fun configIdentity(useLoginCookies: Boolean): ConfigIdentity =
         innerTube.sessionSnapshot().let {
             ConfigIdentity(
                 it.locale,
-                it.cookie?.takeIf { useLoginCookies }?.let { cookie ->
-                    sha256(cookie.encodeToByteArray()).toHexString()
-                },
+                it.cookie?.takeIf { useLoginCookies }?.let(::cookieFingerprint),
             )
         }
 
@@ -1485,30 +1496,20 @@ class InnerTubeExtractor internal constructor(
                             directUrl,
                             hints.isUploaded == true && !result.bearerAuthenticated,
                         )
-                    val contentLength =
-                        resolveBoundedContentLength(
-                            directFastPathCandidate.contentLength,
-                            directUrl,
-                            directHeaders,
-                            requireBoundedRange,
-                            diagnostics.requestBudget,
+                    val (contentLength, videoContentLength) =
+                        resolveAudioAndVideoContentLengths(
+                            audioContentLength = directFastPathCandidate.contentLength,
+                            audioUrl = directUrl,
+                            videoContentLength = if (wantVideo) directFastPathVideo?.contentLength else null,
+                            videoUrl = if (wantVideo) checkNotNull(directVideoUrl) else null,
+                            headers = directHeaders,
+                            requireBoundedRange = requireBoundedRange,
+                            requestBudget = diagnostics.requestBudget,
                         )
                     if (requireBoundedRange && contentLength == null) {
                         logger.d(TAG, "bounded media skipped", details = mapOf("client" to result.clientName))
                         continue
                     }
-                    val videoContentLength =
-                        if (wantVideo) {
-                            resolveBoundedContentLength(
-                                directFastPathVideo?.contentLength,
-                                checkNotNull(directVideoUrl),
-                                directHeaders,
-                                requireBoundedRange,
-                                diagnostics.requestBudget,
-                            )
-                        } else {
-                            null
-                        }
                     if (requireBoundedRange && wantVideo && videoContentLength == null) {
                         logger.d(TAG, "bounded video skipped", details = mapOf("client" to result.clientName))
                         continue
@@ -1694,30 +1695,20 @@ class InnerTubeExtractor internal constructor(
                     url,
                     hints.isUploaded == true && !result.bearerAuthenticated,
                 )
-            val contentLength =
-                resolveBoundedContentLength(
-                    audioFormat.contentLength,
-                    url,
-                    directHeaders,
-                    requireBoundedRange,
-                    diagnostics.requestBudget,
+            val (contentLength, videoContentLength) =
+                resolveAudioAndVideoContentLengths(
+                    audioContentLength = audioFormat.contentLength,
+                    audioUrl = url,
+                    videoContentLength = if (hints.wantVideo) processedVideoFormat?.contentLength else null,
+                    videoUrl = if (hints.wantVideo) checkNotNull(videoUrl) else null,
+                    headers = directHeaders,
+                    requireBoundedRange = requireBoundedRange,
+                    requestBudget = diagnostics.requestBudget,
                 )
             if (requireBoundedRange && contentLength == null) {
                 logger.d(TAG, "bounded media skipped", details = mapOf("client" to result.clientName))
                 continue
             }
-            val videoContentLength =
-                if (hints.wantVideo) {
-                    resolveBoundedContentLength(
-                        processedVideoFormat?.contentLength,
-                        checkNotNull(videoUrl),
-                        directHeaders,
-                        requireBoundedRange,
-                        diagnostics.requestBudget,
-                    )
-                } else {
-                    null
-                }
             if (requireBoundedRange && hints.wantVideo && videoContentLength == null) {
                 logger.d(TAG, "bounded video skipped", details = mapOf("client" to result.clientName))
                 continue
@@ -1903,6 +1894,41 @@ class InnerTubeExtractor internal constructor(
     }
 
     private fun String.hasNParameter(): Boolean = N_PARAMETER_REGEX.containsMatchIn(this)
+
+    private suspend fun resolveAudioAndVideoContentLengths(
+        audioContentLength: Long?,
+        audioUrl: String,
+        videoContentLength: Long?,
+        videoUrl: String?,
+        headers: Map<String, String>,
+        requireBoundedRange: Boolean,
+        requestBudget: PlayerRequestBudget,
+    ): Pair<Long?, Long?> {
+        val knownAudio = audioContentLength?.takeIf { it > 0L }
+        val knownVideo = videoContentLength?.takeIf { it > 0L }
+        if (!requireBoundedRange) return knownAudio to knownVideo
+        val needAudioProbe = knownAudio == null
+        val needVideoProbe = videoUrl != null && knownVideo == null
+        if (needAudioProbe && needVideoProbe) {
+            return coroutineScope {
+                val videoDeferred = async { resolveBoundedContentLength(null, checkNotNull(videoUrl), headers, true, requestBudget) }
+                val resolvedAudio = resolveBoundedContentLength(null, audioUrl, headers, true, requestBudget)
+                if (resolvedAudio == null) {
+                    videoDeferred.cancel()
+                    videoDeferred.join()
+                    null to null
+                } else {
+                    resolvedAudio to videoDeferred.await()
+                }
+            }
+        }
+        val resolvedAudio =
+            if (needAudioProbe) resolveBoundedContentLength(null, audioUrl, headers, true, requestBudget) else knownAudio
+        if (resolvedAudio == null) return null to knownVideo
+        val resolvedVideo =
+            if (needVideoProbe) resolveBoundedContentLength(null, checkNotNull(videoUrl), headers, true, requestBudget) else knownVideo
+        return resolvedAudio to resolvedVideo
+    }
 
     private suspend fun resolveBoundedContentLength(
         contentLength: Long?,

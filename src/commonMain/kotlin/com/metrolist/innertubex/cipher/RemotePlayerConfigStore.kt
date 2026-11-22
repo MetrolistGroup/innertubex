@@ -380,7 +380,8 @@ class RemotePlayerConfigStore private constructor(
     ): Boolean =
         mutex.withLock {
             ensureLoadedFromCache(sourceUrl)
-            configSourceUrl == sourceUrl && repository.cachedJson.isNotBlank() &&
+            configSourceUrl == sourceUrl &&
+                (configs.isNotEmpty() || repository.cachedJson.isNotBlank()) &&
                 repository.cachedSourceUrl == sourceUrl && now - repository.cachedAtMs < REFRESH_TTL_MS
         }
 

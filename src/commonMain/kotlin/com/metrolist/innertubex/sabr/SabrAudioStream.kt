@@ -195,58 +195,67 @@ private class SabrMediaStream(
             val activeContextTypes = mutableSetOf<Int>()
             var retainedContextBytes = 0L
             val requestWriter = ProtoWriter()
-
-            while (
-                retryWithToken || (
-                    !ended &&
-                        initialization?.endSegmentNumber?.let { end ->
-                            lastSequenceNumber?.let { sequence -> sequence >= end } == true
-                        } != true &&
-                        playerTimeMs < expectedDurationMs(initialization)
+            val readBuffer = ByteArray(64 * 1024)
+            val chunkEvents = ArrayList<SabrEvent>(8)
+            val processor =
+                SabrUmpProcessor(
+                    shouldCollectMedia = { header ->
+                        header.formatId.matches(selectedFormat) &&
+                            (header.videoId == null || header.videoId == bootstrap.videoId)
+                    },
                 )
-            ) {
-                retryWithToken = false
-                if (poToken == null && pendingToken != null &&
-                    (pendingToken.isCompleted || playerTimeMs >= LATE_TOKEN_MEDIA_LIMIT_MS)
+
+            httpClient.withRedirectsDisabled {
+                while (
+                    retryWithToken || (
+                        !ended &&
+                            initialization?.endSegmentNumber?.let { end ->
+                                lastSequenceNumber?.let { sequence -> sequence >= end } == true
+                            } != true &&
+                            playerTimeMs < expectedDurationMs(initialization)
+                    )
                 ) {
-                    poToken = pendingToken.await()
-                }
-                if (requestNumber >= MAX_REQUEST_COUNT) {
-                    throw SabrProtocolException("SABR exceeded $MAX_REQUEST_COUNT requests")
-                }
-                if (playbackPositionMs != null && targetAudioReadaheadMs > 0 && playerTimeMs > 0) {
-                    awaitReadaheadCapacity(
-                        downloadedPositionMs = playerTimeMs,
-                        targetAudioReadaheadMs = targetAudioReadaheadMs,
-                        deadline = heartbeatDeadline(lastRequestStarted, maxTimeSinceLastRequestMs),
-                    )
-                }
-                if (backoffTimeMs > 0) {
-                    val backoff = backoffTimeMs.coerceAtMost(MAX_BACKOFF_MS)
-                    val remaining = remainingWaitMs(heartbeatDeadline(lastRequestStarted, maxTimeSinceLastRequestMs))
-                    delay(if (maxTimeSinceLastRequestMs > 0) minOf(backoff, remaining) else backoff)
-                }
-                val currentRequestNumber = requestNumber
-                val observedPlaybackPositionMs = playbackPositionMs?.invoke()?.coerceAtLeast(0L)
-                val requestPlayerTimeMs = playerTimeMs
-                lastRequestPlayerTimeMs = requestPlayerTimeMs
-                lastObservedPlaybackPositionMs = observedPlaybackPositionMs
-                val request =
-                    SabrProtoCodec.encodeRequest(
-                        bootstrap = bootstrap,
-                        playerTimeMs = requestPlayerTimeMs,
-                        initialized = initialized,
-                        bufferedRanges = bufferedRanges,
-                        playbackCookie = playbackCookie,
-                        contexts = contexts.values,
-                        activeContextTypes = activeContextTypes,
-                        mediaType = mediaType,
-                        writer = requestWriter,
-                        poToken = poToken,
-                    )
-                val retryResponse =
-                    httpClient.withRedirectsDisabled {
-                        lastRequestStarted = TimeSource.Monotonic.markNow()
+                    retryWithToken = false
+                    if (poToken == null && pendingToken != null &&
+                        (pendingToken.isCompleted || playerTimeMs >= LATE_TOKEN_MEDIA_LIMIT_MS)
+                    ) {
+                        poToken = pendingToken.await()
+                    }
+                    if (requestNumber >= MAX_REQUEST_COUNT) {
+                        throw SabrProtocolException("SABR exceeded $MAX_REQUEST_COUNT requests")
+                    }
+                    if (playbackPositionMs != null && targetAudioReadaheadMs > 0 && playerTimeMs > 0) {
+                        awaitReadaheadCapacity(
+                            downloadedPositionMs = playerTimeMs,
+                            targetAudioReadaheadMs = targetAudioReadaheadMs,
+                            deadline = heartbeatDeadline(lastRequestStarted, maxTimeSinceLastRequestMs),
+                        )
+                    }
+                    if (backoffTimeMs > 0) {
+                        val backoff = backoffTimeMs.coerceAtMost(MAX_BACKOFF_MS)
+                        val remaining = remainingWaitMs(heartbeatDeadline(lastRequestStarted, maxTimeSinceLastRequestMs))
+                        delay(if (maxTimeSinceLastRequestMs > 0) minOf(backoff, remaining) else backoff)
+                    }
+                    val currentRequestNumber = requestNumber
+                    val observedPlaybackPositionMs = playbackPositionMs?.invoke()?.coerceAtLeast(0L)
+                    val requestPlayerTimeMs = playerTimeMs
+                    lastRequestPlayerTimeMs = requestPlayerTimeMs
+                    lastObservedPlaybackPositionMs = observedPlaybackPositionMs
+                    val request =
+                        SabrProtoCodec.encodeRequest(
+                            bootstrap = bootstrap,
+                            playerTimeMs = requestPlayerTimeMs,
+                            initialized = initialized,
+                            bufferedRanges = bufferedRanges,
+                            playbackCookie = playbackCookie,
+                            contexts = contexts.values,
+                            activeContextTypes = activeContextTypes,
+                            mediaType = mediaType,
+                            writer = requestWriter,
+                            poToken = poToken,
+                        )
+                    lastRequestStarted = TimeSource.Monotonic.markNow()
+                    val retryResponse =
                         preparePost(withRequestNumber(streamingUrl, requestNumber++)) {
                             expectSuccess = false
                             attributes.put(SABR_REQUEST_ATTRIBUTE, Unit)
@@ -316,13 +325,7 @@ private class SabrMediaStream(
                             }
                             consecutiveTransientFailures = 0
 
-                            val processor =
-                                SabrUmpProcessor(
-                                    shouldCollectMedia = { header ->
-                                        header.formatId.matches(selectedFormat) &&
-                                            (header.videoId == null || header.videoId == bootstrap.videoId)
-                                    },
-                                )
+                            processor.resetForNextResponse()
                             var responseMediaBytes = 0L
                             var responseBytes = 0L
                             var networkReadMs = 0L
@@ -573,7 +576,6 @@ private class SabrMediaStream(
                                 }
                             }
 
-                            val readBuffer = ByteArray(64 * 1024)
                             var drainTimedOut = false
                             try {
                                 while (!terminalProtection) {
@@ -606,7 +608,9 @@ private class SabrMediaStream(
                                     if (count == 0) continue
                                     responseBytes += count
                                     lastResponseBytes = responseBytes
-                                    for (event in processor.feed(readBuffer, count)) {
+                                    chunkEvents.clear()
+                                    processor.feed(readBuffer, count) { chunkEvents += it }
+                                    for (event in chunkEvents) {
                                         processEvent(event)
                                         if (terminalProtection) break
                                     }
@@ -761,8 +765,8 @@ private class SabrMediaStream(
                             }
                             false
                         }
-                    }
-                if (retryResponse) continue
+                    if (retryResponse) continue
+                }
             }
 
             if (protectionPending) {
@@ -899,10 +903,12 @@ private class SabrMediaStream(
     ) {
         while (true) {
             val playbackPosition = playbackPositionMs?.invoke()?.coerceAtLeast(0L) ?: return
-            if (downloadedPositionMs - playbackPosition <= targetAudioReadaheadMs) return
+            val excessMs = downloadedPositionMs - playbackPosition - targetAudioReadaheadMs
+            if (excessMs <= 0L) return
             val remaining = remainingWaitMs(deadline)
             if (remaining == 0L) return
-            delay(minOf(PLAYBACK_POLL_INTERVAL_MS, remaining))
+            val pollMs = excessMs.coerceIn(PLAYBACK_POLL_INTERVAL_MS, MAX_READAHEAD_POLL_INTERVAL_MS)
+            delay(minOf(pollMs, remaining))
         }
     }
 
@@ -952,10 +958,53 @@ private class SabrMediaStream(
     private fun withRequestNumber(
         url: String,
         requestNumber: Int,
-    ): String =
-        URLBuilder(url)
-            .apply { parameters["rn"] = requestNumber.toString() }
-            .buildString()
+    ): String {
+        val fragmentStart = url.indexOf('#').takeIf { it >= 0 } ?: url.length
+        val queryStart = url.indexOf('?')
+        if (queryStart < 0 || queryStart >= fragmentStart) {
+            return buildString(url.length + 14) {
+                append(url, 0, fragmentStart)
+                append("?rn=")
+                append(requestNumber)
+                append(url, fragmentStart, url.length)
+            }
+        }
+        var foundStart = -1
+        var foundEnd = -1
+        var cursor = queryStart + 1
+        while (cursor < fragmentStart) {
+            val amp = url.indexOf('&', cursor).let { if (it < 0 || it > fragmentStart) fragmentStart else it }
+            val isRn =
+                (amp - cursor == 2 && url[cursor] == 'r' && url[cursor + 1] == 'n') ||
+                    (amp - cursor >= 3 && url[cursor] == 'r' && url[cursor + 1] == 'n' && url[cursor + 2] == '=')
+            if (isRn) {
+                if (foundStart >= 0) {
+                    return URLBuilder(url)
+                        .apply { parameters["rn"] = requestNumber.toString() }
+                        .buildString()
+                }
+                foundStart = cursor
+                foundEnd = amp
+            }
+            cursor = amp + 1
+        }
+        if (foundStart >= 0) {
+            return buildString(url.length + 10) {
+                append(url, 0, foundStart)
+                append("rn=")
+                append(requestNumber)
+                append(url, foundEnd, url.length)
+            }
+        }
+        val separator = if (fragmentStart > 0 && url[fragmentStart - 1] in "?&") "" else "&"
+        return buildString(url.length + 14) {
+            append(url, 0, fragmentStart)
+            append(separator)
+            append("rn=")
+            append(requestNumber)
+            append(url, fragmentStart, url.length)
+        }
+    }
 
     private fun SabrSegment.toChunk() =
         SabrChunk(
@@ -1009,6 +1058,7 @@ private class SabrMediaStream(
         const val MIN_DURATION_TOLERANCE_MS = 2_000L
         const val STARVATION_TOLERANCE_MS = 2_000L
         const val PLAYBACK_POLL_INTERVAL_MS = 250L
+        const val MAX_READAHEAD_POLL_INTERVAL_MS = 1_000L
         const val DEFAULT_HEARTBEAT_INTERVAL_MS = 60_000L
         const val MAX_HEARTBEAT_INTERVAL_MS = 60_000L
         const val MAX_TRANSIENT_RETRIES = 2

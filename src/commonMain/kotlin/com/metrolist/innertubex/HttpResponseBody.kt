@@ -35,6 +35,8 @@ internal suspend fun HttpResponse.bodyAsTextLimited(
     var bytes = ByteArray(initialCapacity)
     var size = 0
     var nextCheck = FIRST_STOP_CHECK_BYTES.toLong()
+    val decoded = if (stopWhen != null) StringBuilder(initialCapacity) else null
+    var decodedBytes = 0
     try {
         while (true) {
             val count = channel.readAvailable(readBuffer, 0, readBuffer.size)
@@ -50,7 +52,12 @@ internal suspend fun HttpResponse.bodyAsTextLimited(
             size += count
             if (stopWhen != null && size >= nextCheck) {
                 nextCheck = size * 2L
-                val prefix = bytes.decodeToString(endIndex = size)
+                val safeEnd = completeUtf8End(bytes, decodedBytes, size)
+                if (safeEnd > decodedBytes) {
+                    decoded!!.append(bytes.decodeToString(startIndex = decodedBytes, endIndex = safeEnd))
+                    decodedBytes = safeEnd
+                }
+                val prefix = decoded!!.toString()
                 if (stopWhen(prefix)) {
                     channel.cancel(null)
                     return prefix
@@ -61,7 +68,42 @@ internal suspend fun HttpResponse.bodyAsTextLimited(
         channel.cancel(error)
         throw error
     }
+    if (decoded != null) {
+        if (size > decodedBytes) {
+            decoded.append(bytes.decodeToString(startIndex = decodedBytes, endIndex = size))
+        }
+        return decoded.toString()
+    }
     return bytes.decodeToString(endIndex = size)
+}
+
+/**
+ * Returns the largest index in `[from, limit]` that does not split a trailing multi-byte UTF-8 sequence,
+ * so incremental decoding never emits spurious replacement characters across chunk boundaries.
+ */
+private fun completeUtf8End(
+    bytes: ByteArray,
+    from: Int,
+    limit: Int,
+): Int {
+    if (limit <= from) return from
+    var index = limit - 1
+    var continuations = 0
+    while (index >= from && continuations < 3 && (bytes[index].toInt() and 0xC0) == 0x80) {
+        continuations++
+        index--
+    }
+    if (index < from) return limit
+    val lead = bytes[index].toInt() and 0xFF
+    val expectedLength =
+        when {
+            lead < 0x80 -> 1
+            lead in 0xC2..0xDF -> 2
+            lead in 0xE0..0xEF -> 3
+            lead in 0xF0..0xF4 -> 4
+            else -> return limit
+        }
+    return if (limit - index < expectedLength) index else limit
 }
 
 /** A bounded body exceeded its limit; deterministic, so callers should not retry it. */

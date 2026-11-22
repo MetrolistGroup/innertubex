@@ -4,6 +4,7 @@ import com.metrolist.innertubex.InnerTube
 import com.metrolist.innertubex.InnerTubeLogger
 import com.metrolist.innertubex.cipher.RemotePlayerConfigStore
 import com.metrolist.innertubex.cipher.YouTubeCipherService
+import com.metrolist.innertubex.cipher.getTextOnDirectClient
 import com.metrolist.innertubex.cipher.getTextWithoutRedirects
 import com.metrolist.innertubex.d
 import com.metrolist.innertubex.models.YouTubeClient
@@ -70,9 +71,20 @@ public class YtConfigParserImpl(
                 ?.joinToString("; ")
                 ?.takeIf { it.isNotEmpty() }
 
-        suspend fun fetchHtml(requestCookie: String?): Pair<String, Int?> {
+        data class FetchedConfigPage(
+            val html: String,
+            val timestamp: Int?,
+            val playerUrl: String?,
+            val visitorData: String?,
+            val clientVersion: String?,
+            val encryptedHostFlags: String?,
+            val stoppedEarly: Boolean,
+        )
+
+        suspend fun fetchHtml(requestCookie: String?): FetchedConfigPage {
             // Reuse completed-script progress, and accept only delimited timestamps from an unfinished script.
             val timestampScan = SignatureTimestampScan()
+            var playerUrl: String? = null
             var visitorData: String? = null
             var clientVersion: String? = null
             var encryptedHostFlags: String? = null
@@ -90,6 +102,7 @@ public class YtConfigParserImpl(
                 }
                 // A later prefix can contain a higher-priority player URL. Match the final parse.
                 val url = extractPlayerUrl(html) ?: return@hasConfig false
+                playerUrl = url
                 prefixTimestamp = timestampScan.scanPrefix(html)
                 if (prefixTimestamp != null) {
                     stoppedEarly = true
@@ -116,9 +129,17 @@ public class YtConfigParserImpl(
                 }
             // A prefix accepted via cache may end in a partial number. Only natural EOF delimits it.
             val timestamp = if (stoppedEarly) prefixTimestamp else timestampScan.scan(html, final = true)
-            return html to timestamp
+            return FetchedConfigPage(
+                html = html,
+                timestamp = timestamp,
+                playerUrl = playerUrl,
+                visitorData = visitorData,
+                clientVersion = clientVersion,
+                encryptedHostFlags = encryptedHostFlags,
+                stoppedEarly = stoppedEarly,
+            )
         }
-        val (html, sts) =
+        val fetched =
             try {
                 fetchHtml(cookie)
             } catch (error: CancellationException) {
@@ -132,19 +153,25 @@ public class YtConfigParserImpl(
                 )
                 fetchHtml(null)
             }
+        val html = fetched.html
         val playerUrl =
-            extractPlayerUrl(html) ?: fetchIframePlayerUrl()
+            (if (fetched.stoppedEarly) fetched.playerUrl else null)
+                ?: extractPlayerUrl(html)
+                ?: fetchIframePlayerUrl()
                 ?: error("Unable to parse YouTube player JavaScript URL")
-        val resolvedSts = sts ?: remotePlayerConfigStore?.getSignatureTimestamp(playerUrl) ?: fetchPlayerSignatureTimestamp(playerUrl)
-        val visitorData = extractVisitorData(html)
-        val encryptedHostFlags = extractEncryptedHostFlags(html).takeIf { pageKind == "embed" }
+        val resolvedSts =
+            fetched.timestamp ?: remotePlayerConfigStore?.getSignatureTimestamp(playerUrl) ?: fetchPlayerSignatureTimestamp(playerUrl)
+        val visitorData = fetched.visitorData ?: extractVisitorData(html)
+        val clientVersion = fetched.clientVersion ?: extractClientVersion(html)
+        val encryptedHostFlags =
+            if (pageKind == "embed") fetched.encryptedHostFlags ?: extractEncryptedHostFlags(html) else null
         logger.d(
             TAG,
             "fetchConfig parsed page=$pageKind htmlSize=${html.length} " +
                 "hasSts=${resolvedSts != null} hasVisitorData=${visitorData != null} " +
                 "hasEncryptedHostFlags=${encryptedHostFlags != null}",
         )
-        return PlayerConfig(playerUrl, resolvedSts, visitorData, extractClientVersion(html), encryptedHostFlags)
+        return PlayerConfig(playerUrl, resolvedSts, visitorData, clientVersion, encryptedHostFlags)
     }
 
     private suspend fun fetchPlayerSignatureTimestamp(playerUrl: String): Int? =
@@ -186,7 +213,7 @@ public class YtConfigParserImpl(
         }
 
     internal fun extractPlayerUrl(html: String): String? {
-        for (key in listOf("\"PLAYER_JS_URL\":\"", "\"jsUrl\":\"")) {
+        for (key in PLAYER_URL_KEYS) {
             var match = html.indexOf(key)
             while (match >= 0) {
                 val start = match + key.length
@@ -299,7 +326,8 @@ public class YtConfigParserImpl(
         while (position < html.length) {
             val start = position
             val char = html[position++]
-            val key: String
+            val keyStart: Int
+            val keyEnd: Int
             when {
                 char == '/' && html.getOrNull(position) == '/' -> {
                     position = html.indexOf('\n', position + 1).takeIf { it >= 0 } ?: html.length
@@ -335,7 +363,8 @@ public class YtConfigParserImpl(
                         position++
                     }
                     if (position >= html.length) break
-                    key = html.substring(start + 1, position)
+                    keyStart = start + 1
+                    keyEnd = position
                     position++
                 }
 
@@ -345,14 +374,15 @@ public class YtConfigParserImpl(
                     ) {
                         position++
                     }
-                    key = html.substring(start, position)
+                    keyStart = start
+                    keyEnd = position
                 }
 
                 else -> {
                     continue
                 }
             }
-            if (key !in TIMESTAMP_KEYS) continue
+            if (!isTimestampKey(html, keyStart, keyEnd)) continue
             while (position < html.length && html[position].isWhitespace()) position++
             if (html.getOrNull(position) != ':') continue
             position++
@@ -367,10 +397,36 @@ public class YtConfigParserImpl(
                     else -> !next.isLetterOrDigit() && next != '.' && next != '_'
                 }
             if (position - numberStart == 5 && hasBoundary) {
-                return html.substring(numberStart, position).toIntOrNull()
+                var value = 0
+                for (index in numberStart until position) {
+                    value = value * 10 + (html[index] - '0')
+                }
+                return value
             }
         }
         return null
+    }
+
+    private fun isTimestampKey(
+        html: String,
+        start: Int,
+        end: Int,
+    ): Boolean {
+        val len = end - start
+        return when (len) {
+            3 -> {
+                (html[start] == 's' && html[start + 1] == 't' && html[start + 2] == 's') ||
+                    (html[start] == 'S' && html[start + 1] == 'T' && html[start + 2] == 'S')
+            }
+
+            18 -> {
+                html[start] == 's' && html.regionMatches(start, "signatureTimestamp", 0, 18)
+            }
+
+            else -> {
+                false
+            }
+        }
     }
 
     internal fun extractClientVersion(html: String): String? = extractConfigString(html, CLIENT_VERSION_KEYS)
@@ -385,8 +441,17 @@ public class YtConfigParserImpl(
     ): String? {
         var searchStart = 0
         while (searchStart < html.length) {
-            val match = keys.map { html.indexOf(it, searchStart) to it }.filter { it.first >= 0 }.minByOrNull { it.first } ?: break
-            var start = match.first + match.second.length
+            var bestIndex = -1
+            var bestKey = ""
+            for (key in keys) {
+                val found = html.indexOf(key, searchStart)
+                if (found >= 0 && (bestIndex < 0 || found < bestIndex)) {
+                    bestIndex = found
+                    bestKey = key
+                }
+            }
+            if (bestIndex < 0) break
+            var start = bestIndex + bestKey.length
             searchStart = start
             while (html.getOrNull(start)?.let { it in " \t\r\n\u000B\u000C" } == true) start++
             if (html.getOrNull(start++) != ':') continue
@@ -427,7 +492,12 @@ public class YtConfigParserImpl(
     ): String {
         var currentUrl = url
         repeat(MAX_REDIRECTS + 1) { redirectCount ->
-            val response = httpClient.getTextWithoutRedirects(currentUrl, maxBytes, stopWhen, configure)
+            val response =
+                if (httpClient === innerTube.httpClient) {
+                    innerTube.noRedirectClient.getTextOnDirectClient(currentUrl, maxBytes, stopWhen, configure)
+                } else {
+                    httpClient.getTextWithoutRedirects(currentUrl, maxBytes, stopWhen, configure)
+                }
             if (response.status.isSuccess()) return requireNotNull(response.body)
 
             val redirectUrl =
@@ -471,7 +541,7 @@ public class YtConfigParserImpl(
         private val PLAYER_PATH = Regex("/s/player/[A-Za-z0-9_-]+/.+\\.js")
         private val LOOSE_PLAYER_URL_PATTERN = Regex("""(?<![A-Za-z0-9:/])(/s/player/[A-Za-z0-9_-]+/[^"'\\]*\.js[^"'\\]*)""")
         private val PLAYER_ID_REGEX = Regex("/s/player/([a-zA-Z0-9_-]+)/")
-        private val TIMESTAMP_KEYS = setOf("signatureTimestamp", "sts", "STS")
+        private val PLAYER_URL_KEYS = listOf("\"PLAYER_JS_URL\":\"", "\"jsUrl\":\"")
         private const val MAX_CONFIG_STRING_LENGTH = 64 * 1024
 
         @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
