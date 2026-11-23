@@ -6,6 +6,8 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-11-23
+
 ### Fixed
 
 - A blank `YouTubeLocale.gl` or `hl` is left out of the request context instead of being sent as
