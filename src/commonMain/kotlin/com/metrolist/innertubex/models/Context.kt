@@ -20,8 +20,9 @@ data class Context(
         val deviceModel: String? = null,
         val androidSdkVersion: String? = null,
         val platform: String? = null,
-        val gl: String,
-        val hl: String,
+        // InnerTube answers 400 for an empty gl or hl but accepts null, so a blank locale part is sent as null.
+        val gl: String?,
+        val hl: String?,
         val visitorData: String?,
     )
 

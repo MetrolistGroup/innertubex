@@ -53,8 +53,8 @@ data class YouTubeClient(
                 deviceModel = deviceModel,
                 androidSdkVersion = androidSdkVersion,
                 platform = platform,
-                gl = locale.gl,
-                hl = locale.hl,
+                gl = locale.gl.ifBlank { null },
+                hl = locale.hl.ifBlank { null },
                 visitorData = visitorData,
             ),
         user =

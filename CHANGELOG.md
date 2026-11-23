@@ -6,6 +6,12 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- A blank `YouTubeLocale.gl` or `hl` is left out of the request context instead of being sent as
+  an empty string, which InnerTube rejects with HTTP 400. A system locale without a region, such as
+  a bare `it`, previously broke every request on native targets.
+
 ## [0.13.0] - 2026-11-21
 
 ### Fixed
