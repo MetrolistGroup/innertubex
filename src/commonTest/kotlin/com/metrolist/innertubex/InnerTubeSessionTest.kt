@@ -1093,7 +1093,10 @@ class InnerTubeSessionTest {
 
             innerTube.browse(YouTubeClient.WEB_REMIX, browseId = "FEmusic_home")
 
-            assertEquals("en", engine.requestHistory.single().headers[HttpHeaders.AcceptLanguage])
+            val request = engine.requestHistory.single()
+            assertEquals("en", request.headers[HttpHeaders.AcceptLanguage])
+            // InnerTube rejects "gl":"" with HTTP 400.
+            assertTrue("\"gl\":\"\"" !in (request.body as io.ktor.http.content.TextContent).text)
         }
 
     @Test
