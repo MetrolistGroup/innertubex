@@ -50,6 +50,7 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.HttpStatement
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.http.ContentType
+import io.ktor.http.HeadersBuilder
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.Parameters
@@ -220,6 +221,8 @@ class InnerTube(
                 .defaultYouTubeLocale(),
         val visitorData: String? = null,
         val dataSyncId: String? = null,
+        /** Brand-account page id; null for a personal account. */
+        val delegatedSessionId: String? = null,
         val authUser: String = "0",
         val cookie: String? = null,
         val sapisid: String? = null,
@@ -232,6 +235,7 @@ class InnerTube(
                 "locale=$locale, " +
                 "visitorData=${visitorData.presence()}, " +
                 "dataSyncId=${dataSyncId.presence()}, " +
+                "delegatedSessionId=${delegatedSessionId.presence()}, " +
                 "authUser=${authUser.presence()}, " +
                 "cookie=${cookie.presence()}, " +
                 "sapisid=${sapisid.presence()}, " +
@@ -307,6 +311,7 @@ class InnerTube(
                     dataSyncId = current.dataSyncId.takeIf { includeAccount },
                     authUser = current.authUser.takeIf { includeAccount } ?: "0",
                     useLoginForBrowse = current.useLoginForBrowse && includeAccount,
+                    delegatedSessionId = current.delegatedSessionId.takeIf { includeAccount },
                 )
             }
         }
@@ -360,6 +365,7 @@ class InnerTube(
             expected.copy(
                 visitorData = null,
                 dataSyncId = null,
+                delegatedSessionId = null,
                 authUser = "0",
                 cookie = null,
                 sapisid = null,
@@ -443,12 +449,14 @@ class InnerTube(
         dataSyncId: String?,
         authUser: String,
         useLoginForBrowse: Boolean,
+        delegatedSessionId: String? = null,
     ) {
         val sanitizedCookie = cookie?.let(::sanitizeCookieString)
         updateSession { current ->
             current.copy(
                 visitorData = sanitizeVisitorData(visitorData),
                 dataSyncId = dataSyncId,
+                delegatedSessionId = delegatedSessionId?.takeIf(String::isNotBlank),
                 authUser = sanitizeAuthUser(authUser),
                 cookie = sanitizedCookie,
                 sapisid = resolveSapisidValue(sanitizedCookie),
@@ -480,6 +488,11 @@ class InnerTube(
     fun hasSapCookieAuth(): Boolean = hasSapCookieAuth(session.load())
 
     fun hasSapCookieAuth(session: SessionSnapshot): Boolean = !session.cookie.isNullOrBlank() && !session.sapisid.isNullOrBlank()
+
+    // Cookies alone attribute requests to the personal account; the web client names a brand-account page this way.
+    private fun HeadersBuilder.appendDelegatedSession(session: SessionSnapshot) {
+        session.delegatedSessionId?.let { append("X-Goog-PageId", it) }
+    }
 
     private fun HttpRequestBuilder.uploadAuthHeaders(session: SessionSnapshot) {
         userAgent(YouTubeClient.WEB_REMIX.userAgent)
@@ -1032,6 +1045,7 @@ class InnerTube(
                 "authEligible=${client.loginSupported} hasDataSync=${!requestSession.dataSyncId.isNullOrBlank()}",
         )
         ytClient(requestClient, requestSession, setLogin = true, visitorData = visitorDataForRequest)
+        if (client.loginSupported && !requestSession.cookie.isNullOrBlank()) headers { appendDelegatedSession(requestSession) }
         setBody(
             buildPlayerBody(
                 client = requestClient,
@@ -1327,6 +1341,7 @@ class InnerTube(
                                 requestSession.cookie?.let { cookieValue ->
                                     append("Cookie", cookieValue)
                                     append("X-Goog-AuthUser", requestSession.authUser)
+                                    appendDelegatedSession(requestSession)
                                     val sapisid = requestSession.sapisid
                                     if (!sapisid.isNullOrBlank()) {
                                         sapisidAuthHeader(origin, sapisid)?.let { append(HttpHeaders.Authorization, it) }
