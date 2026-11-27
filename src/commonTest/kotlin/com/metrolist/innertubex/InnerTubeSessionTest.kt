@@ -721,6 +721,77 @@ class InnerTubeSessionTest {
             assertEquals("SAPISID=secret", request.headers[HttpHeaders.Cookie])
             assertTrue(request.headers[HttpHeaders.Authorization]?.startsWith("SAPISIDHASH ") == true)
             assertEquals("0", request.headers["X-Goog-AuthUser"])
+            assertNull(request.headers["X-Goog-PageId"])
+        }
+
+    @Test
+    fun brandAccountStatsAndPlayerRequestsNameTheDelegatedPage() =
+        runBlocking {
+            val engine = MockEngine { respondOk() }
+            val innerTube = InnerTube(HttpClient(engine) { install(ContentNegotiation) { json() } })
+            innerTube.replaceSession(
+                cookie = "SAPISID=secret",
+                visitorData = null,
+                dataSyncId = "brand-page",
+                authUser = "0",
+                useLoginForBrowse = true,
+                delegatedSessionId = "brand-page",
+            )
+            val session = innerTube.sessionSnapshot()
+
+            innerTube.registerPlaybackWithSession(
+                YouTubeClient.WEB_REMIX,
+                "https://music.youtube.com/api/stats/playback",
+                "cpn",
+                null,
+                session,
+            )
+            innerTube.registerWatchtimeWithSession(
+                YouTubeClient.WEB_REMIX,
+                "https://music.youtube.com/api/stats/watchtime",
+                "cpn",
+                startTimes = "0",
+                endTimes = "10",
+                currentMediaTime = "10",
+                realTime = "10",
+                final = false,
+                format = null,
+                requestSession = session,
+            )
+            innerTube.playerWithSessionBound(YouTubeClient.WEB_REMIX, "video", null, null, null, null, session)
+
+            assertEquals(3, engine.requestHistory.size)
+            engine.requestHistory.forEach { request ->
+                assertEquals("brand-page", request.headers["X-Goog-PageId"])
+                assertEquals("0", request.headers["X-Goog-AuthUser"])
+            }
+        }
+
+    @Test
+    fun signedOutStatsRegistrationSendsNeitherCookiesNorDelegatedPage() =
+        runBlocking {
+            val engine = MockEngine { respondOk() }
+            val innerTube = InnerTube(HttpClient(engine))
+            innerTube.replaceSession(
+                cookie = null,
+                visitorData = null,
+                dataSyncId = null,
+                authUser = "0",
+                useLoginForBrowse = false,
+                delegatedSessionId = "brand-page",
+            )
+
+            innerTube.registerPlaybackWithSession(
+                YouTubeClient.WEB_REMIX,
+                "https://music.youtube.com/api/stats/playback",
+                "cpn",
+                null,
+                innerTube.sessionSnapshot(),
+            )
+
+            val request = engine.requestHistory.single()
+            assertNull(request.headers[HttpHeaders.Cookie])
+            assertNull(request.headers["X-Goog-PageId"])
         }
 
     @Test
