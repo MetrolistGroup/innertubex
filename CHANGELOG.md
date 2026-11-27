@@ -6,6 +6,14 @@ that `0.x` releases may contain breaking API changes.
 
 ## [Unreleased]
 
+## [0.13.2] - 2026-11-27
+
+### Fixed
+
+- Brand-account sessions send `X-Goog-PageId` on `player`, `stats/playback` and `stats/watchtime`, so
+  plays reach the brand account's YouTube Music history. `SessionSnapshot` and `replaceSession` gain
+  an optional `delegatedSessionId`.
+
 ## [0.13.1] - 2026-11-23
 
 ### Fixed
