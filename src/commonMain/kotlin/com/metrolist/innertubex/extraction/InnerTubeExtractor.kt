@@ -97,6 +97,7 @@ class InnerTubeExtractor internal constructor(
         private const val PLAYER_CONFIG_CACHE_TTL_MS = 3 * 60 * 60 * 1000L
         private const val PREWARM_VIDEO_ID = "dQw4w9WgXcQ"
         private const val WEB_EMBEDDED_PLAYER_ID = "WEB_EMBEDDED_PLAYER"
+        private const val MAX_FAILURE_MESSAGE_LENGTH = 200
         private val PO_TOKEN_PREFETCH_TIMEOUT = 18.seconds
         private const val TV_BEARER_PROVIDER_TIMEOUT_MS = 8_000L
         private val N_PARAMETER_REGEX = Regex("(?:[?&]|%26)n(?:=|%3[dD])", RegexOption.IGNORE_CASE)
@@ -708,6 +709,7 @@ class InnerTubeExtractor internal constructor(
                 throw error
             } catch (error: Exception) {
                 diagnostics.configFailure = error
+                diagnostics.recordStageFailure(if (useLoginCookies) "WATCH_PAGE_AUTH" else "WATCH_PAGE", "config", error)
                 if (useLoginCookies) {
                     logger.w(
                         TAG,
@@ -847,6 +849,7 @@ class InnerTubeExtractor internal constructor(
                 throw error
             } catch (error: Exception) {
                 diagnostics.configFailure = error
+                diagnostics.recordStageFailure("EMBED_PAGE", "config", error)
                 logger.w(TAG, "embedded config unavailable", details = mapOf("exceptionType" to (error::class.simpleName ?: "unknown")))
                 return null
             }
@@ -1277,6 +1280,7 @@ class InnerTubeExtractor internal constructor(
                                     ),
                                 ),
                             diagnostics = diagnostics,
+                            result = result,
                         ).firstOrNull()
                             ?.url
                     } else {
@@ -1597,6 +1601,7 @@ class InnerTubeExtractor internal constructor(
                     playerUrl = playerConfig.playerUrl,
                     formats = formatsForCipher,
                     diagnostics = diagnostics,
+                    result = result,
                 )
             val processedVideoFormat =
                 rawVideoCandidates.firstNotNullOfOrNull { candidate ->
@@ -1631,6 +1636,7 @@ class InnerTubeExtractor internal constructor(
                         playerUrl = playerConfig.playerUrl,
                         formats = rawAudioFormats,
                         diagnostics = diagnostics,
+                        result = result,
                     )
                 logger.d(
                     TAG,
@@ -1851,6 +1857,23 @@ class InnerTubeExtractor internal constructor(
         var usedAuthenticatedWatchPage = false
         var triedPublicConfigBeforeLogin = false
 
+        // Page and player-script failures happen outside any client request, so the batch never reports them.
+        fun recordStageFailure(
+            clientName: String,
+            stage: String,
+            error: Throwable,
+            profileId: String? = null,
+            userAgent: String = "",
+        ) {
+            val type = error::class.simpleName ?: "Exception"
+            val message =
+                error.message
+                    ?.take(MAX_FAILURE_MESSAGE_LENGTH)
+                    ?.let { ": $it" }
+                    .orEmpty()
+            attempts += StreamAttemptDiagnostic(clientName, profileId, userAgent, "$stage:$type$message")
+        }
+
         fun snapshot() =
             StreamDiagnostics(
                 attempts = attempts.takeLast(32),
@@ -1862,6 +1885,7 @@ class InnerTubeExtractor internal constructor(
         playerUrl: String,
         formats: List<Format>,
         diagnostics: ExtractionDiagnostics,
+        result: ClientResult,
     ): List<Format> =
         try {
             cipherService.processFormats(playerUrl, formats)
@@ -1869,6 +1893,7 @@ class InnerTubeExtractor internal constructor(
             throw error
         } catch (error: Exception) {
             diagnostics.requestFailures += error
+            diagnostics.recordStageFailure(result.clientName, "cipher", error, result.profileId, result.userAgent)
             emptyList()
         }.also { diagnostics.ensureSessionCurrent() }
 
